@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Loader2, Plus, Search, X } from 'lucide-react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
+import { ChevronLeft, ChevronRight, Loader2, Search } from 'lucide-react'
 import { fetchAPI } from '@panwatch/api'
 import { Input } from '@panwatch/base-ui/components/ui/input'
 import { Button } from '@panwatch/base-ui/components/ui/button'
-import { marketSignTextClass } from '@/lib/market-colors'
+import { STOCK_CARD_GRID_CLASS } from '@/components/fork/stock-grid'
 import type { BoardKey } from '@/lib/board-classify'
 
 /**
@@ -14,8 +15,11 @@ import type { BoardKey } from '@/lib/board-classify'
  * 必须是独立组件：不动上游 Stocks.tsx/Dashboard.tsx，merge 时才不会有冲突。
  *
  * 每页 100 只（用户要求的默认上限），页面内搜索，只给当前页拉行情。
- * 卡片形态刻意与「关注」列表一致（方块卡片 + 底部操作行）：已关注的在底部
- * 右端是 X（取消关注），未关注的是 +（关注）。
+ *
+ * 卡片**不在这里渲染**：本组件只管取数/分页，具体卡片由 renderCard 交给
+ * ForkAnalysis 用同一个 StockRichCard 渲染 —— 「关注」和「全部」的卡片
+ * 因此长得一模一样（用户抱怨过两次，根因就是这里曾自己写了一套简化卡片）。
+ * 网格类也取自 stock-grid.ts，两个列表列数一致。
  */
 
 const PAGE_SIZE = 100
@@ -43,11 +47,27 @@ interface CatalogResponse {
   items: CatalogItem[]
 }
 
-interface QuoteRow {
+export interface QuoteRow {
   symbol: string
   current_price?: number | null
   change_pct?: number | null
+  /** 后端 `_quote_to_response` 会带上 daily_quote_fields，用于价格悬停提示 */
+  daily_move_status?: string
+  quote_date?: string | null
 }
+
+/** 每行的状态与回调，交给 renderCard */
+export interface CatalogRowState {
+  quote?: QuoteRow
+  /** 已在自选里 */
+  followed: boolean
+  /** 关注请求进行中 */
+  busy: boolean
+  onFollow: () => void
+  onUnfollow: () => void
+}
+
+export type CatalogCardRenderer = (item: CatalogItem, state: CatalogRowState) => ReactNode
 
 export function MarketStockList({
   board,
@@ -55,12 +75,14 @@ export function MarketStockList({
   onCounts,
   onAdd,
   onRemove,
+  renderCard,
 }: {
   board: BoardKey
   existingSymbols: Set<string>
   onCounts?: (counts: CatalogCounts) => void
   onAdd: (item: CatalogItem) => Promise<void> | void
   onRemove: (item: CatalogItem) => void
+  renderCard: CatalogCardRenderer
 }) {
   const [query, setQuery] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -175,72 +197,18 @@ export function MarketStockList({
           {loading ? '加载中…' : debounced ? '没有匹配的股票' : '暂无数据'}
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {data?.items.map(item => {
-            const quote = quotes[item.symbol]
-            const changeClass = marketSignTextClass(quote?.change_pct)
-            const added = existingSymbols.has(item.symbol)
-            return (
-              <div
-                key={item.symbol}
-                className="group rounded-xl border border-border/40 bg-background/30 hover:bg-accent/20 transition-colors p-3"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="text-[9px] px-1 py-0.5 rounded bg-blue-500/10 text-blue-600">A</span>
-                      <span className="font-mono text-[12px] font-semibold text-foreground">{item.symbol}</span>
-                      <span className="text-[12px] text-muted-foreground truncate">{item.name}</span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className={`font-mono text-[14px] font-bold leading-tight ${changeClass}`}>
-                      {quote?.current_price != null ? quote.current_price.toFixed(2) : '--'}
-                    </div>
-                    <div className={`font-mono text-[11px] leading-tight ${changeClass}`}>
-                      {quote?.change_pct != null
-                        ? `${quote.change_pct >= 0 ? '+' : ''}${quote.change_pct.toFixed(2)}%`
-                        : '--'}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-2 pt-2 border-t border-border/30 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1 min-w-0">
-                    {added && <span className="text-[10px] text-muted-foreground/60">已关注</span>}
-                  </div>
-                  <div className="flex items-center gap-1">
-                    {added ? (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 hover:text-destructive"
-                        title="取消关注"
-                        aria-label="取消关注"
-                        onClick={() => onRemove(item)}
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 hover:text-primary"
-                        title="关注"
-                        aria-label="关注"
-                        disabled={adding === item.symbol}
-                        onClick={() => void handleAdd(item)}
-                      >
-                        {adding === item.symbol
-                          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          : <Plus className="w-3.5 h-3.5" />}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )
-          })}
+        <div className={STOCK_CARD_GRID_CLASS}>
+          {data?.items.map(item => (
+            <Fragment key={item.symbol}>
+              {renderCard(item, {
+                quote: quotes[item.symbol],
+                followed: existingSymbols.has(item.symbol),
+                busy: adding === item.symbol,
+                onFollow: () => void handleAdd(item),
+                onUnfollow: () => onRemove(item),
+              })}
+            </Fragment>
+          ))}
         </div>
       )}
 

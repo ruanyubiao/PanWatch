@@ -3,7 +3,9 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchAPI } from '@panwatch/api'
 import { MarketCalendarPanel } from '@/components/fork/MarketCalendarPanel'
-import { MarketStockList } from '@/components/fork/MarketStockList'
+import { MarketStockList, type CatalogCardRenderer } from '@/components/fork/MarketStockList'
+import { StockRichCard, type StockRichCardTexts } from '@/components/fork/StockRichCard'
+import { STOCK_CARD_GRID_CLASS } from '@/components/fork/stock-grid'
 import type { MarketStatus } from '@/components/MarketCalendarStatus'
 
 vi.mock('@panwatch/api', () => ({ fetchAPI: vi.fn() }))
@@ -71,8 +73,139 @@ describe('fork: 首页交易日历面板', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// fork：股票方块卡片（「关注」与「全部」共用）
+// ---------------------------------------------------------------------------
+
+const cardTexts: StockRichCardTexts = {
+  etf: 'ETF',
+  notConfigured: '未配置 Agent',
+  noAnalysis: '暂无分析',
+  klineIndicator: 'K线指标',
+  relatedNews: '相关资讯',
+  deepAnalysis: '深度分析',
+  detail: '详情',
+  follow: '关注',
+  unfollow: '取消关注',
+  deepAnalysisNeedsFollow: '关注后可做深度分析',
+  agentCount: count => `${count} 个 Agent`,
+}
+
+const noop = () => {}
+
+function renderCard(props: Partial<Parameters<typeof StockRichCard>[0]> = {}) {
+  return render(
+    <StockRichCard
+      symbol="600519"
+      name="贵州茅台"
+      market="CN"
+      badge={{ label: 'A', style: 'bg-blue-500/10 text-blue-600' }}
+      followed={false}
+      quote={{ current_price: 1712.5, change_pct: 1.35 }}
+      priceText="1712.50"
+      texts={cardTexts}
+      onOpenDetail={noop}
+      onOpenKline={noop}
+      onOpenNews={noop}
+      {...props}
+    />,
+  )
+}
+
+describe('fork: 共用股票卡片 StockRichCard', () => {
+  it('「关注」与「全部」的卡片结构完全一致，只有右下角操作不同', () => {
+    const notFollowed = renderCard({ followed: false })
+    const notFollowedIcons = screen.getAllByRole('button').map(b => b.getAttribute('aria-label') || b.textContent)
+    notFollowed.unmount()
+
+    renderCard({ followed: true })
+    const followedIcons = screen.getAllByRole('button').map(b => b.getAttribute('aria-label') || b.textContent)
+
+    // 除最后一颗按钮（+/X）外，两侧按钮数量与内容完全一致 —— 这正是用户要的「UI 一样」
+    expect(followedIcons.length).toBe(notFollowedIcons.length)
+    expect(followedIcons.slice(0, -1)).toEqual(notFollowedIcons.slice(0, -1))
+    expect(notFollowedIcons.at(-1)).toBe('关注')
+    expect(followedIcons.at(-1)).toBe('取消关注')
+  })
+
+  it('未关注时渲染 + 且点击走关注；已关注时渲染 X 且点击走取消关注', async () => {
+    const onFollow = vi.fn()
+    const onUnfollow = vi.fn()
+    const view = renderCard({ followed: false, onFollow, onUnfollow })
+
+    await userEvent.click(screen.getByRole('button', { name: '关注' }))
+    expect(onFollow).toHaveBeenCalledTimes(1)
+    expect(onUnfollow).not.toHaveBeenCalled()
+
+    view.rerender(
+      <StockRichCard
+        symbol="600519"
+        name="贵州茅台"
+        market="CN"
+        badge={{ label: 'A', style: 'bg-blue-500/10 text-blue-600' }}
+        followed
+        priceText="1712.50"
+        texts={cardTexts}
+        onOpenDetail={noop}
+        onOpenKline={noop}
+        onOpenNews={noop}
+        onFollow={onFollow}
+        onUnfollow={onUnfollow}
+      />,
+    )
+    await userEvent.click(screen.getByRole('button', { name: '取消关注' }))
+    expect(onUnfollow).toHaveBeenCalledTimes(1)
+  })
+
+  it('没有股票记录（无 id）时深度分析置灰但位置保留，避免少一个图标', () => {
+    renderCard({ followed: false })
+    const brain = screen.getByRole('button', { name: '深度分析' })
+    expect((brain as HTMLButtonElement).disabled).toBe(true)
+    expect(brain.getAttribute('title')).toBe('关注后可做深度分析')
+
+    cleanup()
+    renderCard({ followed: true, onDeepAnalysis: noop })
+    const enabled = screen.getByRole('button', { name: '深度分析' })
+    expect((enabled as HTMLButtonElement).disabled).toBe(false)
+    expect(enabled.getAttribute('title')).toBe('深度分析')
+  })
+
+  it('带上 agent 数量与「未配置 Agent」两种状态', () => {
+    const first = renderCard({ agentCount: 4 })
+    expect(screen.getByText('4 个 Agent')).toBeTruthy()
+    first.unmount()
+
+    renderCard({ agentCount: 0 })
+    expect(screen.getByText('未配置 Agent')).toBeTruthy()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// fork：「全部」（A 股全市场）列表
+// ---------------------------------------------------------------------------
+
 const catalogItem = { symbol: '600519', name: '贵州茅台', board: 'sh' }
 const counts = { all: 5758, sh: 1665, sz: 1447, kcb: 605, cyb: 1371, st: 320 }
+
+/** 与 ForkAnalysis 里的 renderCatalogCard 同构：交给同一个 StockRichCard 渲染 */
+const testRenderer: CatalogCardRenderer = (item, state) => (
+  <StockRichCard
+    symbol={item.symbol}
+    name={item.name}
+    market="CN"
+    badge={{ label: 'A', style: 'bg-blue-500/10 text-blue-600' }}
+    followed={state.followed}
+    quote={state.quote}
+    priceText={state.quote?.current_price != null ? state.quote.current_price.toFixed(2) : '--'}
+    texts={cardTexts}
+    onOpenDetail={noop}
+    onOpenKline={noop}
+    onOpenNews={noop}
+    onFollow={state.onFollow}
+    onUnfollow={state.onUnfollow}
+    followBusy={state.busy}
+  />
+)
 
 function mockCatalog() {
   vi.mocked(fetchAPI).mockImplementation(async (path: string) => {
@@ -101,6 +234,7 @@ describe('fork: 全部列表（A 股全市场）', () => {
         existingSymbols={new Set<string>()}
         onAdd={() => {}}
         onRemove={() => {}}
+        renderCard={testRenderer}
       />,
     )
 
@@ -115,6 +249,30 @@ describe('fork: 全部列表（A 股全市场）', () => {
     expect(await screen.findByText('共 1 只，当前 1-1')).toBeTruthy()
   })
 
+  it('行交给 renderCard 渲染，用的是与「关注」同一张卡片和同一套网格', async () => {
+    mockCatalog()
+    const { container } = render(
+      <MarketStockList
+        board="all"
+        existingSymbols={new Set<string>()}
+        onAdd={() => {}}
+        onRemove={() => {}}
+        renderCard={testRenderer}
+      />,
+    )
+
+    // 同一张卡片组件：带 data-fork-stock-card 标识，且带「未配置 Agent」等关注卡片才有的行
+    const card = await waitFor(() => {
+      const node = container.querySelector('[data-fork-stock-card="600519"]')
+      expect(node).toBeTruthy()
+      return node as HTMLElement
+    })
+    expect(within(card).getByText('未配置 Agent')).toBeTruthy()
+    expect(within(card).getByText('暂无分析')).toBeTruthy()
+    // 网格类来自 stock-grid.ts，与「关注」列表共用 → 列数一致
+    expect(container.querySelector(`.${STOCK_CARD_GRID_CLASS.split(' ')[0]}`)?.className).toBe(STOCK_CARD_GRID_CLASS)
+  })
+
   it('未关注显示 + 且点击走关注，已关注显示 X 且点击走取消关注', async () => {
     const onAdd = vi.fn()
     const onRemove = vi.fn()
@@ -126,28 +284,26 @@ describe('fork: 全部列表（A 股全市场）', () => {
         existingSymbols={new Set<string>()}
         onAdd={onAdd}
         onRemove={onRemove}
+        renderCard={testRenderer}
       />,
     )
 
-    // 未关注：+ 号，没有「已关注」标记
     const addButton = await screen.findByRole('button', { name: '关注' })
-    expect(screen.queryByText('已关注')).toBeNull()
     await userEvent.click(addButton)
     expect(onAdd).toHaveBeenCalledWith(catalogItem)
     expect(onRemove).not.toHaveBeenCalled()
 
-    // 已关注：X 号 + 「已关注」标记
     view.rerender(
       <MarketStockList
         board="all"
         existingSymbols={new Set(['600519'])}
         onAdd={onAdd}
         onRemove={onRemove}
+        renderCard={testRenderer}
       />,
     )
     const removeButton = await screen.findByRole('button', { name: '取消关注' })
     expect(screen.queryByRole('button', { name: '关注' })).toBeNull()
-    expect(screen.getByText('已关注')).toBeTruthy()
     await userEvent.click(removeButton)
     expect(onRemove).toHaveBeenCalledWith(catalogItem)
   })
