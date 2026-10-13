@@ -1,14 +1,30 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import process from 'node:process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchAPI } from '@panwatch/api'
 import { MarketCalendarPanel } from '@/components/fork/MarketCalendarPanel'
 import { MarketStockList, type CatalogCardRenderer } from '@/components/fork/MarketStockList'
 import { StockRichCard, type StockRichCardTexts } from '@/components/fork/StockRichCard'
-import { STOCK_CARD_GRID_CLASS } from '@/components/fork/stock-grid'
+import {
+  FORK_PAGE_WIDTH_CLASS,
+  STOCK_CARD_GRID_CLASS,
+  STOCK_PAGE_SIZE,
+} from '@/components/fork/stock-grid'
+import { StockListToolbar } from '@/components/fork/StockListToolbar'
 import type { MarketStatus } from '@/components/MarketCalendarStatus'
 
 vi.mock('@panwatch/api', () => ({ fetchAPI: vi.fn() }))
+
+const readSource = (relative: string) => {
+  for (const base of [process.cwd(), join(process.cwd(), 'frontend')]) {
+    const candidate = join(base, 'src', relative)
+    if (existsSync(candidate)) return readFileSync(candidate, 'utf8')
+  }
+  throw new Error(`source not found: ${relative} (cwd=${process.cwd()})`)
+}
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.clearAllMocks() })
 
 const markets: MarketStatus[] = ['CN', 'HK', 'US'].map(code => ({
@@ -231,6 +247,8 @@ describe('fork: 全部列表（A 股全市场）', () => {
     render(
       <MarketStockList
         board="all"
+        query=""
+        onQueryChange={() => {}}
         existingSymbols={new Set<string>()}
         onAdd={() => {}}
         onRemove={() => {}}
@@ -254,6 +272,8 @@ describe('fork: 全部列表（A 股全市场）', () => {
     const { container } = render(
       <MarketStockList
         board="all"
+        query=""
+        onQueryChange={() => {}}
         existingSymbols={new Set<string>()}
         onAdd={() => {}}
         onRemove={() => {}}
@@ -281,6 +301,8 @@ describe('fork: 全部列表（A 股全市场）', () => {
     const view = render(
       <MarketStockList
         board="all"
+        query=""
+        onQueryChange={() => {}}
         existingSymbols={new Set<string>()}
         onAdd={onAdd}
         onRemove={onRemove}
@@ -296,6 +318,8 @@ describe('fork: 全部列表（A 股全市场）', () => {
     view.rerender(
       <MarketStockList
         board="all"
+        query=""
+        onQueryChange={() => {}}
         existingSymbols={new Set(['600519'])}
         onAdd={onAdd}
         onRemove={onRemove}
@@ -306,5 +330,83 @@ describe('fork: 全部列表（A 股全市场）', () => {
     expect(screen.queryByRole('button', { name: '关注' })).toBeNull()
     await userEvent.click(removeButton)
     expect(onRemove).toHaveBeenCalledWith(catalogItem)
+  })
+})
+
+describe('fork: 两个列表共用一个 UI（切换范围只换数据）', () => {
+  it('「全部」范围渲染共用的工具栏（搜索框），搜索词由页面持有并进入请求', async () => {
+    mockCatalog()
+    render(
+      <MarketStockList
+        board="all"
+        query="茅台"
+        onQueryChange={() => {}}
+        existingSymbols={new Set<string>()}
+        onAdd={() => {}}
+        onRemove={() => {}}
+        renderCard={testRenderer}
+      />,
+    )
+
+    expect(await screen.findByPlaceholderText('搜索代码或名称')).toBeTruthy()
+    // 受控搜索词经过 300ms 防抖后进入服务端请求
+    await waitFor(() => expect(fetchAPI).toHaveBeenCalledWith(
+      '/stocks/catalog?board=all&q=%E8%8C%85%E5%8F%B0&offset=0&limit=100',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    ))
+  })
+
+  it('工具栏高度固定（h-8），两个范围切换不会位移', () => {
+    const { container } = render(
+      <StockListToolbar value="" onChange={() => {}} placeholder="搜索代码或名称" status="共 21 只" />,
+    )
+    const row = container.firstElementChild as HTMLElement
+    expect(row.className).toContain('h-8')
+    expect(container.querySelector('input')?.className).toContain('h-8')
+    expect(screen.getByText('共 21 只')).toBeTruthy()
+  })
+
+  it('当前页股票回传给页面（用于批量预取 K 线摘要 → 未关注也能显示技术面徽章）', async () => {
+    mockCatalog()
+    const onPageItems = vi.fn()
+    render(
+      <MarketStockList
+        board="all"
+        query=""
+        onQueryChange={() => {}}
+        existingSymbols={new Set<string>()}
+        onAdd={() => {}}
+        onRemove={() => {}}
+        onPageItems={onPageItems}
+        renderCard={testRenderer}
+      />,
+    )
+
+    await waitFor(() => expect(onPageItems).toHaveBeenCalled())
+    expect(onPageItems.mock.calls[0][0]).toEqual([catalogItem])
+  })
+
+  it('内容宽度与导航条一致（不加 max-w），超宽屏靠加列而不是限宽', () => {
+    expect(FORK_PAGE_WIDTH_CLASS).toBe('w-full')
+    expect(STOCK_PAGE_SIZE).toBe(100)
+    // 3828px 屏：≥3700px 出 8 列 → 单卡约 460px（用户认可的密度）
+    expect(STOCK_CARD_GRID_CLASS).toContain('min-[3700px]:grid-cols-8')
+    expect(STOCK_CARD_GRID_CLASS).toContain('min-[1900px]:grid-cols-5')
+  })
+
+  it('「仅预警」按钮已按用户要求移除，分析页两个范围都走共用工具栏', () => {
+    const page = readSource('pages/ForkAnalysis.tsx')
+    expect(page).not.toContain('onlyAlerts')
+    expect(page).not.toContain('仅预警')
+    expect(page).not.toContain('max-w-[2400px]')
+    // 关注范围 = StockListToolbar 自己渲染；全部范围 = MarketStockList 内部渲染
+    expect(page).toContain('<StockListToolbar')
+  })
+
+  it('首页：收盘复盘与交易日历横向并列，放不下时转竖直', () => {
+    const dashboard = readSource('pages/ForkDashboard.tsx')
+    expect(dashboard).toContain('xl:grid-cols-2')
+    expect(dashboard).toContain('FORK_PAGE_WIDTH_CLASS')
+    expect(dashboard).not.toContain('max-w-4xl')
   })
 })

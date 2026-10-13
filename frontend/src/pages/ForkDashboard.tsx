@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import { Newspaper, RefreshCw } from 'lucide-react'
 import { dashboardApi, fetchAPI, type DashboardBrief } from '@panwatch/api'
 import { MarketCalendarPanel } from '@/components/fork/MarketCalendarPanel'
+import { FORK_PAGE_WIDTH_CLASS } from '@/components/fork/stock-grid'
 import type { MarketStatus } from '@/components/MarketCalendarStatus'
 import { useTranslation } from 'react-i18next'
 
@@ -58,7 +59,10 @@ export default function ForkDashboardPage() {
   const briefLabel = t('dashboardRuntime.briefTypes.eod', { defaultValue: '收盘复盘' })
 
   return (
-    <div className="mx-auto w-full max-w-4xl">
+    <div className={FORK_PAGE_WIDTH_CLASS}>
+      {/* fork：内容宽度与导航条一致（外层 main 已给 px-4/md:px-6，这里不再加 max-w）。
+          收盘复盘 + 交易日历横向并列；窗口放不下时自动变竖直（xl 断点以下）。 */}
+      <div className="grid grid-cols-1 items-start gap-4 xl:grid-cols-2">
       <div className="card p-5">
         <div className="mb-2 flex items-center justify-between gap-2">
           <h1 className="flex items-center gap-2 text-[15px] font-semibold">
@@ -128,17 +132,18 @@ export default function ForkDashboardPage() {
         )}
       </div>
 
-      {/* fork：交易日历（紧跟在「收盘复盘」之后）。
+      {/* fork：交易日历（紧跟在「收盘复盘」之后，桌面上与它并列）。
           用户要求：去掉上游那行「A股 已收盘 港股 已收盘 美股 盘前」的悬停触发器，
           把原来的弹窗内容直接铺在首页上（MarketCalendarPanel，fork 自有组件）。 */}
       {marketStatus.length > 0 && (
-        <div className="card mt-4 p-4">
+        <div className="card p-4">
           <MarketCalendarPanel
             markets={marketStatus}
             labelMarket={code => (code === 'CN' ? 'A 股' : code === 'HK' ? '港股' : code === 'US' ? '美股' : code)}
           />
         </div>
       )}
+      </div>
     </div>
   )
 }

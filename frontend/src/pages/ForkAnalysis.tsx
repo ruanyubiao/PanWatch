@@ -1,7 +1,7 @@
 import { useConfirm } from '@panwatch/base-ui/components/ui/confirm-dialog'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3, Brain } from 'lucide-react'
+import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronLeft, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3, Brain } from 'lucide-react'
 import { fetchAPI, stocksApi, type AIService, type NotifyChannel } from '@panwatch/api'
 import { klinesApi } from '@panwatch/api/klines'
 import { useLocalStorage, formatDateTime } from '@/lib/utils'
@@ -48,7 +48,12 @@ import {
   type CatalogRowState,
 } from '@/components/fork/MarketStockList'
 import { StockRichCard, type StockRichCardTexts } from '@/components/fork/StockRichCard'
-import { FORK_PAGE_MAX_WIDTH_CLASS, STOCK_CARD_GRID_CLASS } from '@/components/fork/stock-grid'
+import {
+  FORK_PAGE_WIDTH_CLASS,
+  STOCK_CARD_GRID_CLASS,
+  STOCK_PAGE_SIZE,
+} from '@/components/fork/stock-grid'
+import { StockListToolbar } from '@/components/fork/StockListToolbar'
 import { BatchAddStocksDialog } from '@/components/fork/BatchAddStocksDialog'
 
 import { parseAssistantPortfolioTarget } from '@/lib/assistant-navigation'
@@ -345,11 +350,16 @@ export default function StocksPage() {
   const [marketCounts, setMarketCounts] = useState<CatalogCounts | null>(null)
   // fork：批量添加弹窗
   const [showBatchAdd, setShowBatchAdd] = useState(false)
+  /* fork：两个范围（关注 / 全部）共用的搜索词。
+     用户要求「搜索框两个列表都要有，切换范围只是换数据不换界面」，
+     所以搜索词由页面持有，MarketStockList 受控。 */
+  const [stockQuery, setStockQuery] = useState('')
+  /* fork：关注范围的前端分页（与全部范围同样的 100 上限） */
+  const [watchScopeOffset, setWatchScopeOffset] = useState(0)
   useEffect(() => {
     if (!tour?.active || !['stock', 'quote', 'analysis'].includes(tour.step || '')) return
     setStockListFilter('all')
   }, [tour?.active, tour?.step])
-  const [watchlistOnlyAlerts, setWatchlistOnlyAlerts] = useLocalStorage<boolean>('panwatch_watchlist_only_alerts', false)
 
   // fork：进页面就把「全部」的总数与各板块数取回来，pill 上直接显示真实数量
   // （否则要点一下「全部」才有数）。MarketStockList 之后会持续回传更新的计数。
@@ -1465,6 +1475,55 @@ export default function StocksPage() {
     [watchStocks],
   )
 
+  /**
+   * fork：关注范围的当前页数据（前端过滤 + 前端分页，与「全部」同样的 100 上限）。
+   * 搜索词与「全部」范围共用，所以切换范围是「换数据」而不是「换界面」。
+   */
+  const watchFiltered = useMemo(() => {
+    const q = stockQuery.trim().toLowerCase()
+    return watchStocks
+      .filter(s => matchesBoard(s, stockListFilter))
+      .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || a.id - b.id)
+      .filter(
+        s =>
+          !q ||
+          String(s.symbol || '').toLowerCase().includes(q) ||
+          String(s.name || '').toLowerCase().includes(q),
+      )
+  }, [watchStocks, stockListFilter, stockQuery])
+
+  const watchPageItems = useMemo(
+    () => watchFiltered.slice(watchScopeOffset, watchScopeOffset + STOCK_PAGE_SIZE),
+    [watchFiltered, watchScopeOffset],
+  )
+
+  // 换搜索词 / 换板块时回到第一页
+  useEffect(() => {
+    setWatchScopeOffset(0)
+  }, [stockQuery, stockListFilter, stockScope])
+
+  /**
+   * fork：「全部」当前页的 K 线摘要预取。
+   *
+   * 技术面徽章（回避/买入等）是按代码现算的，不需要自选记录，所以未关注的
+   * 股票也能显示徽章 —— 这就是用户问的「非关注能不能分析」的答案：
+   * 技术面能，AI 深度分析（TradingAgents）仍需要自选记录（stockId）。
+   * 100 只冷启动约 12s（服务端按代码取日线后缓存，命中后 0.2s），
+   * 因此放在行情之后异步加载，卡片先出、徽章后到，不阻塞列表。
+   */
+  const handleCatalogPage = useCallback(
+    (items: CatalogItem[]) => {
+      void requestKlineSummaries(items.map(item => ({ symbol: item.symbol, market: 'CN' })))
+        .then(map => {
+          if (Object.keys(map).length > 0) setKlineSummaries(prev => ({ ...prev, ...map }))
+        })
+        .catch(() => {
+          /* 徽章是增强信息，失败就保持「暂无技术面/AI 分析」 */
+        })
+    },
+    [requestKlineSummaries],
+  )
+
   /** fork：两个列表共用同一张卡片的文案（StockRichCard 不依赖 i18n，文案由这里注入） */
   const cardTexts: StockRichCardTexts = {
     etf: stockT('stocksPage.assetTypes.etf'),
@@ -1592,7 +1651,7 @@ export default function StocksPage() {
   }
 
   return (
-    <div className={FORK_PAGE_MAX_WIDTH_CLASS}>
+    <div className={FORK_PAGE_WIDTH_CLASS}>
       <FirstAnalysis />
       {/* Header */}
       <div className="flex flex-col gap-2 md:gap-3 mb-5 md:mb-6">
@@ -2383,50 +2442,49 @@ export default function StocksPage() {
                 {opt.label} ({boardCounts[opt.key]})
               </button>
             ))}
-            <div className="ml-auto flex items-center gap-2">
-              {stockScope === 'watch' && (
-                <button
-                  onClick={() => setWatchlistOnlyAlerts(!watchlistOnlyAlerts)}
-                  className={`text-[11px] px-2.5 py-1 rounded-md border transition-colors ${
-                    watchlistOnlyAlerts
-                      ? 'bg-rose-500/10 border-rose-500/30 text-rose-600'
-                      : 'bg-accent/30 border-border/50 text-muted-foreground hover:border-rose-500/30'
-                  }`}
-                  title={stockT('stocksPage.messages.onlyAlerts')}
-                >
-                  {stockT('stocksPage.messages.onlyAlerts')}
-                </button>
-              )}
-            </div>
           </div>
 
-          {/* fork：「仅预警」按钮已并入上面的 pill 行；这里按范围渲染两种列表 ——
+          {/* fork：两个范围共用同一个工具栏、同一个网格、同一张卡片 ——
+              切换范围只换数据（服务端搜索 vs 前端过滤），界面不变化（用户要求）。
               全部 = A 股全市场（后端 /stocks/catalog，分页），关注 = 自选股票卡片。 */}
           {stockScope === 'market' ? (
             <MarketStockList
               board={stockListFilter}
+              query={stockQuery}
+              onQueryChange={setStockQuery}
               existingSymbols={watchSymbolSet}
               onCounts={setMarketCounts}
               onAdd={handleQuickAdd}
               onRemove={handleQuickRemove}
+              onPageItems={handleCatalogPage}
               renderCard={renderCatalogCard}
             />
-          ) : watchStocks.length === 0 ? (
-            <div className="py-12 text-center">
-              <div className="text-[13px] text-muted-foreground">{stockT('stocksPage.messages.noWatchlist')}</div>
-              <div className="mt-2 text-[11px] text-muted-foreground/70">{stockT('stocksPage.messages.startAddWatchlist')}</div>
-            </div>
           ) : (
-            <div className={STOCK_CARD_GRID_CLASS}>
-              {watchStocks
-                .filter(s => matchesBoard(s, stockListFilter))
-                .sort((a, b) => Number(a.sort_order || 0) - Number(b.sort_order || 0) || a.id - b.id)
-                .filter(stock => {
-                  if (tour?.active || !watchlistOnlyAlerts) return true
-                  const { suggestion } = getSuggestionForStock(stock.symbol, stock.market)
-                  return !!suggestion?.should_alert
-                })
-                .map((stock) => {
+            <>
+              <StockListToolbar
+                value={stockQuery}
+                onChange={setStockQuery}
+                placeholder="搜索代码或名称"
+                status={`共 ${watchFiltered.length} 只${
+                  watchFiltered.length > STOCK_PAGE_SIZE
+                    ? `，当前 ${watchScopeOffset + 1}-${Math.min(watchScopeOffset + STOCK_PAGE_SIZE, watchFiltered.length)}`
+                    : ''
+                }`}
+              />
+              {watchFiltered.length === 0 ? (
+                <div className="py-12 text-center">
+                  {watchStocks.length === 0 ? (
+                    <>
+                      <div className="text-[13px] text-muted-foreground">{stockT('stocksPage.messages.noWatchlist')}</div>
+                      <div className="mt-2 text-[11px] text-muted-foreground/70">{stockT('stocksPage.messages.startAddWatchlist')}</div>
+                    </>
+                  ) : (
+                    <div className="text-[13px] text-muted-foreground">没有匹配的股票</div>
+                  )}
+                </div>
+              ) : (
+                <div className={STOCK_CARD_GRID_CLASS}>
+              {watchPageItems.map((stock) => {
                 const quote = getStockQuote(`${stock.market}:${stock.symbol}`)
                 const { suggestion, kline } = getSuggestionForStock(stock.symbol, stock.market)
                 const running = runningAgents[stock.id]
@@ -2441,15 +2499,15 @@ export default function StocksPage() {
                       role: tour?.active && tour.step === 'stock' ? 'button' : undefined,
                       tabIndex: tour?.active && tour.step === 'stock' ? 0 : undefined,
                       onKeyDown: e => { if (tour?.active && tour.step === 'stock' && ['Enter', ' '].includes(e.key)) { e.preventDefault(); void tour.selectStock(stock.id) } },
-                      draggable: stockListFilter === 'all' && !watchlistOnlyAlerts,
+                      draggable: stockListFilter === 'all',
                       onDragStart: (e) => {
-                        if (stockListFilter !== 'all' || watchlistOnlyAlerts) return
+                        if (stockListFilter !== 'all') return
                         watchDragSnapshotRef.current = stocks
                         setDraggingWatchStockId(stock.id)
                         e.dataTransfer.effectAllowed = 'move'
                       },
                       onDragOver: (e) => {
-                        if (stockListFilter !== 'all' || watchlistOnlyAlerts) return
+                        if (stockListFilter !== 'all') return
                         e.preventDefault()
                         e.dataTransfer.dropEffect = 'move'
                         if (draggingWatchStockId != null) {
@@ -2457,7 +2515,7 @@ export default function StocksPage() {
                         }
                       },
                       onDrop: (e) => {
-                        if (stockListFilter !== 'all' || watchlistOnlyAlerts) return
+                        if (stockListFilter !== 'all') return
                         e.preventDefault()
                         if (draggingWatchStockId != null) commitWatchlistReorder()
                         setDraggingWatchStockId(null)
@@ -2509,7 +2567,33 @@ export default function StocksPage() {
                   />
                 )
               })}
-            </div>
+                </div>
+              )}
+              {watchFiltered.length > STOCK_PAGE_SIZE && (
+                <div className="mt-3 flex items-center justify-end gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={watchScopeOffset === 0}
+                    onClick={() => setWatchScopeOffset(Math.max(0, watchScopeOffset - STOCK_PAGE_SIZE))}
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                    上一页
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={watchScopeOffset + STOCK_PAGE_SIZE >= watchFiltered.length}
+                    onClick={() => setWatchScopeOffset(watchScopeOffset + STOCK_PAGE_SIZE)}
+                  >
+                    下一页
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
