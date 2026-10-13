@@ -1,0 +1,32 @@
+[Unit]
+Description=PanWatch fork (source deploy at /opt/PanWatch)
+Documentation=file:/opt/PanWatch/deploy/README.txt
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/PanWatch/app
+
+# 数据目录独立于 app/，publish 覆盖源码时不会动到 SQLite 与缓存
+Environment=DATA_DIR=/opt/PanWatch/data
+Environment=TZ=Asia/Shanghai
+Environment=PYTHONUNBUFFERED=1
+
+# 倾听 127.0.0.1 而不是上游默认的 0.0.0.0：应用自身不再做登录校验
+# （数据库不设密码时后端放行所有请求），唯一入口必须是 nginx 的 basic auth。
+# 绑回环后即使有人扫到 8000 端口也进不来。
+ExecStart=/opt/PanWatch/venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8000
+
+Restart=on-failure
+RestartSec=5
+# 机器只有 4G 内存且与 MySQL、采集管道共用，给个上限避免 OOM 波及邻居
+MemoryMax=1800M
+
+StandardOutput=append:/opt/PanWatch/logs/panwatch.log
+StandardError=append:/opt/PanWatch/logs/panwatch.err.log
+
+[Install]
+WantedBy=multi-user.target

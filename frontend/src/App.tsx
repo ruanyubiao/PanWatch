@@ -3,6 +3,7 @@ import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom'
 import { TrendingUp, Bot, ScrollText, Settings, List, Database, Clock, LayoutDashboard, Github, BellRing, Sparkles, Activity, ClipboardCheck, MessageCircle, Compass } from 'lucide-react'
 import { useTheme } from '@/hooks/use-theme'
 import { appApi } from '@panwatch/api/app'
+import { authApi } from '@panwatch/api'
 import { fetchAPI, isAuthenticated } from '@panwatch/api/client'
 import LogsModal from '@panwatch/biz-ui/components/logs-modal'
 import AmbientBackground from '@panwatch/biz-ui/components/AmbientBackground'
@@ -20,19 +21,18 @@ import { NotificationBell, NotificationProvider } from '@/components/notificatio
 
 const {
   LoginPage,
-  DashboardPage,
+  ForkDashboardPage,
+  ForkAnalysisPage,
   GettingStartedPage,
-  OpportunitiesPage,
-  StocksPage,
   AgentsPage,
   SettingsPage,
   DataSourcesPage,
   HistoryPage,
   AnalysisDetailPage,
   PriceAlertsPage,
-  PaperTradingPage,
   EvaluationsPage,
-  AssistantPage,
+  // fork: AssistantPage / OpportunitiesPage / PaperTradingPage 不再挂路由
+  // （直接访问跳回首页），组件文件保留在 pages/ 下以降低 merge upstream 成本。
 } = routePages
 
 const NAV_ITEMS: Array<{ to: string; icon: typeof LayoutDashboard; labelKey: NavigationItemKey }> = [
@@ -62,8 +62,13 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
       return
     }
 
-    // 没有 token，需要去登录页（设置密码或登录）
-    setAuthState('unauthenticated')
+    // fork：应用未设置密码时（后端 /auth/status 返回 initialized=false）直接放行。
+    // 本部署的访问控制由外层 nginx basic auth 承担，应用自身不再要求登录；
+    // 后端 get_current_user() 在无密码时本来就放行所有请求。
+    authApi
+      .status()
+      .then(data => setAuthState(data?.initialized ? 'unauthenticated' : 'authenticated'))
+      .catch(() => setAuthState('unauthenticated'))
   }, [])
 
   if (authState === 'checking') {
@@ -98,10 +103,25 @@ function App() {
     icon: item.icon,
     label: t(`navigation:items.${item.labelKey}`),
   }))
-  const desktopPrimaryNavItems = navItems.slice(0, 5)
-  const desktopMoreNavItems = navItems.slice(5)
-  const mobilePrimaryNavItems = navItems.slice(0, 5)
-  const mobileMoreNavItems = navItems.slice(5)
+  // fork 精简：主导航只保留「首页 / 分析」两页；助手、机会、模拟盘、预警、
+  // Agent、评估、历史、数据源、入门都不再进导航；「设置」移进右上角账号菜单。
+  // NAV_ITEMS / navItems 本身保持原样不动，便于 merge upstream 时零冲突。
+  const FORK_PRIMARY_KEYS: NavigationItemKey[] = ['home', 'portfolio']
+  // fork：「持仓」这一项改成「分析」并指向 /analysis（/portfolio 仍可访问，会重定向）。
+  const forkNavEntry = (entry: { to: string; icon: typeof LayoutDashboard; label: string }) =>
+    entry.to === '/portfolio' ? { ...entry, to: '/analysis', label: '分析' } : entry
+  const forkPrimaryNavItems = NAV_ITEMS
+    .map((item, i) => ({ item, entry: navItems[i] }))
+    .filter(({ item }) => FORK_PRIMARY_KEYS.includes(item.labelKey))
+    .map(({ entry }) => forkNavEntry(entry))
+  const forkAccountNavItems = NAV_ITEMS
+    .map((item, i) => ({ item, entry: navItems[i] }))
+    .filter(({ item }) => item.labelKey === 'settings')
+    .map(({ entry }) => entry)
+  const desktopPrimaryNavItems = forkPrimaryNavItems
+  const desktopMoreNavItems = forkAccountNavItems
+  const mobilePrimaryNavItems = forkPrimaryNavItems
+  const mobileMoreNavItems = forkAccountNavItems
 
   useEffect(() => {
     appApi.version()
@@ -301,17 +321,20 @@ function App() {
         <RouteErrorBoundary>
           <Suspense fallback={<RouteLoadingFallback />}>
             <Routes>
-              <Route path="/" element={<DashboardPage />} />
+              <Route path="/" element={<ForkDashboardPage />} />
               <Route path="/getting-started" element={<GettingStartedPage />} />
-              <Route path="/opportunities" element={<OpportunitiesPage />} />
-              <Route path="/portfolio" element={<StocksPage />} />
+              {/* fork: 机会 / 模拟盘 / 助手 三页不再提供入口，直接访问跳回首页 */}
+              <Route path="/opportunities" element={<Navigate to="/" replace />} />
+              <Route path="/analysis" element={<ForkAnalysisPage />} />
+              {/* fork: 旧的 /portfolio 地址保留，重定向到 /analysis */}
+              <Route path="/portfolio" element={<Navigate to="/analysis" replace />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/evaluations" element={<EvaluationsPage />} />
               <Route path="/history" element={<HistoryPage />} />
-              <Route path="/paper-trading" element={<PaperTradingPage />} />
+              <Route path="/paper-trading" element={<Navigate to="/" replace />} />
               <Route path="/alerts" element={<PriceAlertsPage />} />
-              <Route path="/assistant" element={<AssistantPage />} />
-              <Route path="/assistant/:conversationId" element={<AssistantPage />} />
+              <Route path="/assistant" element={<Navigate to="/" replace />} />
+              <Route path="/assistant/:conversationId" element={<Navigate to="/" replace />} />
               <Route path="/datasources" element={<DataSourcesPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/analysis/:symbol/:date" element={<AnalysisDetailPage />} />

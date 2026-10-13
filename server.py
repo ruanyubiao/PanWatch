@@ -263,24 +263,25 @@ def setup_playwright():
 
 
 def seed_sample_stocks():
-    """首次启动时添加示例股票"""
+    """首次启动时添加示例股票（fork：只放 A 股，港股/美股不进默认关注）"""
     db = SessionLocal()
     try:
         # 只在没有任何股票时才添加示例
         if db.query(Stock).count() > 0:
             return
 
+        # fork：默认关注只保留 A 股股票。上游这里还塞了 00700(港股)/AAPL(美股)，
+        # 而 fork 的关注列表只服务 A 股（见 frontend/src/lib/board-classify.ts），
+        # 留着只会在自选里产生永远不显示的条目。
         samples = [
             {"symbol": "600519", "name": "贵州茅台", "market": "CN"},
             {"symbol": "002594", "name": "比亚迪", "market": "CN"},
             {"symbol": "300750", "name": "宁德时代", "market": "CN"},
-            {"symbol": "00700", "name": "腾讯控股", "market": "HK"},
-            {"symbol": "AAPL", "name": "苹果", "market": "US"},
         ]
         for s in samples:
             db.add(Stock(**s))
         db.commit()
-        logger.info("已添加 5 只示例股票（首次启动）")
+        logger.info("已添加 %d 只示例股票（首次启动）", len(samples))
     finally:
         db.close()
 

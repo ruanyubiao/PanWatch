@@ -29,6 +29,7 @@ from src.modules.assistant.export_jobs import context_export_runner
 from src.modules.automation.api import agents, suggestions, templates
 from src.modules.market.api import (
     discovery,
+    fork_catalog,
     klines,
     market,
     news,
@@ -72,6 +73,11 @@ protected = [Depends(get_current_user)]
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["onboarding"], dependencies=protected)
 app.include_router(
     stocks.router, prefix="/api/stocks", tags=["stocks"], dependencies=protected
+)
+# fork: A 股全市场目录浏览（「全部 / 上证 / 深证 / 科创 / 创业 / ST」）
+# 与 stocks.router 共用同一前缀，路径是 /api/stocks/catalog。
+app.include_router(
+    fork_catalog.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
 )
 app.include_router(
     quotes.router, prefix="/api/quotes", tags=["quotes"], dependencies=protected

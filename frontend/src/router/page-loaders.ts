@@ -2,6 +2,10 @@ import { lazy } from 'react'
 
 export const pageLoaders = {
   login: () => import('@/pages/Login'),
+  // fork 专用首页（只保留收盘复盘 + 交易日历）；上游 Dashboard 保留但不再挂在 "/"
+  forkDashboard: () => import('@/pages/ForkDashboard'),
+  // fork 专用分析页（上游 Stocks.tsx 的副本 + fork 改造）；上游 Stocks 保留但不再挂路由
+  forkAnalysis: () => import('@/pages/ForkAnalysis'),
   dashboard: () => import('@/pages/Dashboard'),
   gettingStarted: () => import('@/pages/GettingStarted'),
   stocks: () => import('@/pages/Stocks'),
@@ -21,6 +25,8 @@ export type RouteKey = keyof typeof pageLoaders
 
 export const routePages = {
   LoginPage: lazy(pageLoaders.login),
+  ForkDashboardPage: lazy(pageLoaders.forkDashboard),
+  ForkAnalysisPage: lazy(pageLoaders.forkAnalysis),
   DashboardPage: lazy(pageLoaders.dashboard),
   GettingStartedPage: lazy(pageLoaders.gettingStarted),
   StocksPage: lazy(pageLoaders.stocks),
@@ -38,9 +44,13 @@ export const routePages = {
 
 const routeMatchers: Array<{ key: RouteKey; matches: (pathname: string) => boolean }> = [
   { key: 'login', matches: pathname => pathname === '/login' },
-  { key: 'dashboard', matches: pathname => pathname === '/' },
+  // fork: "/" 预加载的是 ForkDashboard，不是上游 Dashboard
+  { key: 'forkDashboard', matches: pathname => pathname === '/' },
   { key: 'gettingStarted', matches: pathname => pathname === '/getting-started' },
-  { key: 'stocks', matches: pathname => pathname === '/portfolio' },
+  // fork: "/analysis" = 分析页（上游 "/portfolio" 现在只是重定向到它）
+  { key: 'forkAnalysis', matches: pathname => pathname === '/analysis' || pathname === '/portfolio' },
+  // fork: 上游 stocks 页面不再挂任何路径（"/portfolio" 已重定向到 /analysis），
+  // 因此这里不再为它登记预加载匹配；pageLoaders.stocks 保留以降低 merge 成本。
   { key: 'opportunities', matches: pathname => pathname === '/opportunities' },
   { key: 'paperTrading', matches: pathname => pathname === '/paper-trading' },
   { key: 'assistant', matches: pathname => pathname === '/assistant' || pathname.startsWith('/assistant/') },

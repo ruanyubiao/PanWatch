@@ -6,6 +6,10 @@ describe('route page loaders', () => {
   it('registers every route page exactly once', () => {
     expect(Object.keys(pageLoaders)).toEqual([
       'login',
+      // fork: 首页由 ForkDashboard 加载器提供（上游 dashboard 保留但不再挂 "/"）
+      'forkDashboard',
+      // fork: 分析页由 ForkAnalysis 加载器提供（上游 stocks 保留但不再挂路由）
+      'forkAnalysis',
       'dashboard',
       'gettingStarted',
       'stocks',
