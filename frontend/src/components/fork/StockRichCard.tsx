@@ -19,9 +19,10 @@ import { marketSignTextClass } from '@/lib/market-colors'
  *   已关注 → X（取消关注）；未关注 → +（关注）。
  * 其余（AI 建议徽章行、Agent 行、指标/预警/资讯/深度分析/详情图标行）完全相同。
  *
- * 深度分析按钮需要自选里的一条股票记录（上游 DeepAnalysisModal 要求 stockId）。
- * 「全部」里未关注的股票没有 id，此时 onDeepAnalysis 省略 → 图标置灰并提示先关注，
- * 位置保留，避免出现「有一张卡片少一个图标」的视觉差异。
+ * 深度分析（TradingAgents）对未关注的股票同样可用：后端支持「无绑定」触发
+ * （stock_id<=0 + symbol/market + allow_unbound=true，不落库、不写自选），
+ * 所以这里不做任何「先关注才能分析」的限制。两者的唯一区别是未关注时前端传
+ * stockId=0，让后端走无绑定通道。
  */
 
 /** 卡片右上角价格区所需的行情字段（关注列表与全市场列表的行情结构略有差异，这里取交集） */
@@ -43,7 +44,6 @@ export interface StockRichCardTexts {
   detail: string
   follow: string
   unfollow: string
-  deepAnalysisNeedsFollow: string
   agentCount: (count: number) => string
 }
 
@@ -224,7 +224,7 @@ export function StockRichCard({
             variant="ghost"
             size="icon"
             className="h-7 w-7 hover:text-primary"
-            title={onDeepAnalysis ? texts.deepAnalysis : texts.deepAnalysisNeedsFollow}
+            title={texts.deepAnalysis}
             aria-label={texts.deepAnalysis}
             disabled={!onDeepAnalysis}
             onClick={() => onDeepAnalysis?.()}

@@ -327,14 +327,20 @@ export default function StocksPage() {
   const [agentDialogStock, setAgentDialogStock] = useState<Stock | null>(null)
 
   // 深度分析(TradingAgents)弹窗
+  // fork：stockId<=0 表示该股票未关注 —— 后端走无绑定通道（不落库、不写自选），
+  // 因此「全部」列表里未关注的股票同样能做 AI 深度分析。
   const [deepAnalysisTarget, setDeepAnalysisTarget] = useState<{
     stockId: number
     symbol: string
     name: string
+    market: string
   } | null>(null)
-  const openDeepAnalysis = useCallback((stockId: number, symbol: string, name: string) => {
-    setDeepAnalysisTarget({ stockId, symbol, name })
-  }, [])
+  const openDeepAnalysis = useCallback(
+    (stockId: number, symbol: string, name: string, market = 'CN') => {
+      setDeepAnalysisTarget({ stockId, symbol, name, market })
+    },
+    [],
+  )
   const [triggeringAgent, setTriggeringAgent] = useState<string | null>(null)
   const [schedulePreviewCache, setSchedulePreviewCache] = useState<Record<string, SchedulePreview | { error: string }>>({})
   const [schedulePreviewLoading, setSchedulePreviewLoading] = useState<Record<string, boolean>>({})
@@ -1506,8 +1512,8 @@ export default function StocksPage() {
    * fork：「全部」当前页的 K 线摘要预取。
    *
    * 技术面徽章（回避/买入等）是按代码现算的，不需要自选记录，所以未关注的
-   * 股票也能显示徽章 —— 这就是用户问的「非关注能不能分析」的答案：
-   * 技术面能，AI 深度分析（TradingAgents）仍需要自选记录（stockId）。
+   * 股票也能显示徽章；AI 深度分析（TradingAgents）同样不受关注状态限制 ——
+   * 未关注时前端传 stockId=0，后端走无绑定通道按 symbol/market 分析。
    * 100 只冷启动约 12s（服务端按代码取日线后缓存，命中后 0.2s），
    * 因此放在行情之后异步加载，卡片先出、徽章后到，不阻塞列表。
    */
@@ -1535,7 +1541,6 @@ export default function StocksPage() {
     detail: stockT('stocksPage.messages.detail'),
     follow: '关注',
     unfollow: '取消关注',
-    deepAnalysisNeedsFollow: '关注后可做深度分析',
     agentCount: (count: number) => stockT('stocksPage.messages.agentCount', { count }),
   }
 
@@ -1543,8 +1548,8 @@ export default function StocksPage() {
    * fork：「全部」（A 股全市场）每一行的卡片 —— 与「关注」列表渲染同一个
    * StockRichCard，唯一差别是右下角操作（未关注 +／已关注 X）。
    *
-   * 未关注的股票在自选里没有记录（没有 id），因此深度分析按钮置灰（位置保留，
-   * 避免出现「某张卡片少一个图标」的视觉差异）；已关注的行直接复用自选记录。
+   * 未关注的股票在自选里没有记录（没有 id），此时深度分析传 stockId=0，
+   * 后端按 symbol/market 走无绑定通道；已关注的行直接复用自选记录。
    */
   const renderCatalogCard = (item: CatalogItem, state: CatalogRowState) => {
     const market = 'CN'
@@ -1572,7 +1577,7 @@ export default function StocksPage() {
         onOpenDetail={() => openStockDetail(item.symbol, market, item.name, false)}
         onOpenKline={() => openKlineDialog(item.symbol, market, item.name, false)}
         onOpenNews={() => openNewsDialog(item.name)}
-        onDeepAnalysis={row ? () => openDeepAnalysis(row.id, row.symbol, row.name) : undefined}
+        onDeepAnalysis={() => openDeepAnalysis(row?.id ?? 0, item.symbol, item.name, market)}
         alertPanel={(
           <StockPriceAlertPanel
             mode="icon"
@@ -2626,6 +2631,7 @@ export default function StocksPage() {
           stockId={deepAnalysisTarget.stockId}
           stockSymbol={deepAnalysisTarget.symbol}
           stockName={deepAnalysisTarget.name}
+          stockMarket={deepAnalysisTarget.market}
         />
       )}
 

@@ -103,7 +103,6 @@ const cardTexts: StockRichCardTexts = {
   detail: '详情',
   follow: '关注',
   unfollow: '取消关注',
-  deepAnalysisNeedsFollow: '关注后可做深度分析',
   agentCount: count => `${count} 个 Agent`,
 }
 
@@ -173,11 +172,14 @@ describe('fork: 共用股票卡片 StockRichCard', () => {
     expect(onUnfollow).toHaveBeenCalledTimes(1)
   })
 
-  it('没有股票记录（无 id）时深度分析置灰但位置保留，避免少一个图标', () => {
-    renderCard({ followed: false })
+  it('未关注（无 id）时深度分析同样可点，不置灰、不提示先关注', async () => {
+    const onDeepAnalysis = vi.fn()
+    renderCard({ followed: false, onDeepAnalysis })
     const brain = screen.getByRole('button', { name: '深度分析' })
-    expect((brain as HTMLButtonElement).disabled).toBe(true)
-    expect(brain.getAttribute('title')).toBe('关注后可做深度分析')
+    expect((brain as HTMLButtonElement).disabled).toBe(false)
+    expect(brain.getAttribute('title')).toBe('深度分析')
+    await userEvent.click(brain)
+    expect(onDeepAnalysis).toHaveBeenCalledTimes(1)
 
     cleanup()
     renderCard({ followed: true, onDeepAnalysis: noop })
