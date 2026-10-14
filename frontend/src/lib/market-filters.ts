@@ -2,7 +2,7 @@
  * fork 专用：分析页表格的**筛选**（除板块以外的三组）。
  *
  * 用户第二轮要求把筛选做成「机会页」那种形式（下拉 + 清空筛选），四组：
- *   组1 市场   全部 | 上证 | 深证 | 创业 | 科创 | ST  （单选，pill 行，见 board-classify.ts）
+ *   组1 市场   全部 | 上证 | 深证 | 创业 | 科创 | ST  （单选**下拉**，选项带计数，见 board-classify.ts）
  *   组2 状态   全部 | 买入 | 回避 | 观望               （**多选**下拉）
  *   组3 涨跌   全部 | 上涨 | 下跌                       （单选下拉）
  *   组4 市值   全部 | 50亿 | 100亿 | 300亿 | 500亿 | 1000亿 | 其他
@@ -138,7 +138,7 @@ export function hasActiveFilters(filters: MarketTableFilters): boolean {
 }
 
 /**
- * 「清空筛选」要连**市场**（板块 pill）一起复位 —— 用户明确要求
+ * 「清空筛选」要连**市场**（板块下拉）一起复位 —— 用户明确要求
  * （「清空筛选 把市场也加进去」），所以只要有任意一组生效就显示这个入口。
  */
 export function hasAnyFilterActive(board: BoardKey, filters: MarketTableFilters): boolean {

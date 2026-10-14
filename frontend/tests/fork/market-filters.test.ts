@@ -22,8 +22,8 @@ import type { MarketRow } from '@/lib/fork-kline-summary'
  *   - 市值分档：50亿 = **小于** 50 亿，往上每档是「上一档 ~ 本档」，「其他」= 1000 亿以上
  *   - 市值与状态都是**多选**：一档都不选 = 不限，选了若干 = 并集（命中任一即可）
  *   - 涨跌：平盘既不算涨也不算跌
- *   - 「清空筛选」要连**市场**（板块 pill）一起复位 → hasAnyFilterActive(board, filters)
- *   - 板块 pill 顺序：全部 / 上证 / 深证 / **创业** / **科创** / ST
+ *   - 「清空筛选」要连**市场**（板块下拉）一起复位 → hasAnyFilterActive(board, filters)
+ *   - 板块选项顺序：全部 / 上证 / 深证 / **创业** / **科创** / ST
  */
 
 const row = (over: Partial<MarketRow> = {}): MarketRow => ({
@@ -50,7 +50,7 @@ const row = (over: Partial<MarketRow> = {}): MarketRow => ({
 
 const YI = 1e8
 
-describe('fork: 板块 pill 的顺序', () => {
+describe('fork: 板块选项的顺序', () => {
   it('全部 / 上证 / 深证 / 创业 / 科创 / ST（「全部」由范围那一格单独渲染）', () => {
     expect(BOARD_OPTIONS.map(o => o.key)).toEqual(['sh', 'sz', 'cyb', 'kcb', 'st'])
     expect(BOARD_OPTIONS.map(o => o.label)).toEqual(['上证', '深证', '创业', '科创', 'ST'])

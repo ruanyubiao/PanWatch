@@ -23,7 +23,7 @@ export interface BoardOption {
 }
 
 /**
- * 顺序即界面上 pill 的呈现顺序（不含 'all'——「全部」由范围组单独渲染）。
+ * 顺序即界面上市场下拉的选项顺序（不含 'all'——「全部」是下拉的第一项）。
  *
  * 用户第二轮指定：全部 / 上证 / 深证 / **创业** / **科创** / ST
  * （创业在科创前面，与常见的「沪、深、创、科」一致）。
@@ -94,7 +94,7 @@ export function onlyAShares<T extends BoardClassifiable>(stocks: T[]): T[] {
   )
 }
 
-/** 统计每个板块的数量，用于 pill 上的计数。 */
+/** 统计每个板块的数量，用于市场下拉每一行的计数。 */
 export function countByBoard(stocks: BoardClassifiable[]): Record<BoardKey, number> {
   const out: Record<BoardKey, number> = { all: stocks.length, sh: 0, sz: 0, kcb: 0, cyb: 0, st: 0 }
   for (const s of stocks) {
