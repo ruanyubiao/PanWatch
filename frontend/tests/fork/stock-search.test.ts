@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildStockSearchText, stockMatchesSearch } from '@/lib/stock-search'
 import { paginationItems } from '@/components/fork/TablePagination'
-import { nextSortState, DEFAULT_SORT } from '@/components/fork/StockMarketTable'
+import { nextSortState, sortHintOf, sortIconState } from '@/components/fork/StockMarketTable'
 
 /**
  * fork 分析页表格的三块纯逻辑：
@@ -68,16 +68,27 @@ describe('TablePagination：页码序列', () => {
   })
 })
 
-describe('表头排序：默认方向', () => {
-  it('换列时文字/代码/市场升序，数值与分数降序', () => {
-    expect(nextSortState(DEFAULT_SORT, 'name')).toEqual({ key: 'name', dir: 'asc' })
-    expect(nextSortState(DEFAULT_SORT, 'market')).toEqual({ key: 'market', dir: 'asc' })
-    expect(nextSortState(DEFAULT_SORT, 'score')).toEqual({ key: 'score', dir: 'desc' })
-    expect(nextSortState(DEFAULT_SORT, 'close')).toEqual({ key: 'close', dir: 'desc' })
+describe('表头排序：三态循环（用户指定的交互）', () => {
+  it('未排序 → 降序 → 升序 → 取消（回原始顺序）', () => {
+    // 第一次点任意一列都是降序
+    expect(nextSortState(null, 'name')).toEqual({ key: 'name', dir: 'desc' })
+    expect(nextSortState(null, 'score')).toEqual({ key: 'score', dir: 'desc' })
+    // 同列再点：降序 → 升序 → 取消
+    expect(nextSortState({ key: 'score', dir: 'desc' }, 'score')).toEqual({ key: 'score', dir: 'asc' })
+    expect(nextSortState({ key: 'score', dir: 'asc' }, 'score')).toBeNull()
+    // 换一列则从降序重新开始
+    expect(nextSortState({ key: 'code', dir: 'asc' }, 'close')).toEqual({ key: 'close', dir: 'desc' })
   })
 
-  it('同列再点则翻转方向', () => {
-    expect(nextSortState({ key: 'score', dir: 'desc' }, 'score')).toEqual({ key: 'score', dir: 'asc' })
-    expect(nextSortState({ key: 'code', dir: 'asc' }, 'code')).toEqual({ key: 'code', dir: 'desc' })
+  it('悬停提示说的是「下一次点击会做什么」，图标状态三态对应', () => {
+    expect(sortHintOf(null, 'score')).toBe('点击降序')
+    expect(sortIconState(null, 'score')).toBe('none')
+    expect(sortHintOf({ key: 'score', dir: 'desc' }, 'score')).toBe('点击升序')
+    expect(sortIconState({ key: 'score', dir: 'desc' }, 'score')).toBe('desc')
+    expect(sortHintOf({ key: 'score', dir: 'asc' }, 'score')).toBe('取消排序')
+    expect(sortIconState({ key: 'score', dir: 'asc' }, 'score')).toBe('asc')
+    // 别的列在排序时，本列仍是未排序状态
+    expect(sortIconState({ key: 'close', dir: 'desc' }, 'score')).toBe('none')
+    expect(sortHintOf({ key: 'close', dir: 'desc' }, 'score')).toBe('点击降序')
   })
 })
