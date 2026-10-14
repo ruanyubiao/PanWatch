@@ -181,10 +181,20 @@ export interface HistoryComparisonResponse {
 
 export const tradingAgentsApi = {
   /** 触发深度分析(异步排队)。force=true 跳过同日缓存。
-   *  TradingAgents 不要求 StockAgent 绑定 — 始终带 allow_unbound=true。 */
-  trigger(stockId: number, opts: { force?: boolean } = {}): Promise<TradingAgentsTriggerResult> {
+   *  TradingAgents 不要求 StockAgent 绑定 — 始终带 allow_unbound=true。
+   *
+   *  stockId<=0 时走后端「无绑定」通道（不落库、不写自选），此时必须带
+   *  symbol/market，否则后端以 stock_symbol_required 拒绝。用于未关注股票的
+   *  一次性分析。 */
+  trigger(
+    stockId: number,
+    opts: { force?: boolean; symbol?: string; market?: string; name?: string } = {},
+  ): Promise<TradingAgentsTriggerResult> {
     const qsParts = ['allow_unbound=true']
     if (opts.force) qsParts.push('force_refresh=true')
+    if (opts.symbol) qsParts.push(`symbol=${encodeURIComponent(opts.symbol)}`)
+    if (opts.market) qsParts.push(`market=${encodeURIComponent(opts.market)}`)
+    if (opts.name) qsParts.push(`name=${encodeURIComponent(opts.name)}`)
     return fetchAPI(
       `/stocks/${stockId}/agents/tradingagents/trigger?${qsParts.join('&')}`,
       {

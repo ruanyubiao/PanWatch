@@ -1,7 +1,7 @@
 {
   "name": "盯盘侠 PanWatch",
   "short_name": "盯盘侠",
-  "description": "AI 驱动的股票监控助手",
+  "description": "自托管的 AI 监控助手",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f1117",
@@ -21,6 +21,6 @@
       "purpose": "any maskable"
     }
   ],
-  "categories": ["finance", "productivity"],
+  "categories": ["productivity"],
   "lang": "zh-CN"
 }

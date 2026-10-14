@@ -2,6 +2,8 @@ import { lazy } from 'react'
 
 export const pageLoaders = {
   login: () => import('@/pages/Login'),
+  // fork：分析页 —— A 股全市场行情表（读本机 MySQL），挂在 /analysis
+  forkAnalysis: () => import('@/pages/ForkAnalysis'),
   dashboard: () => import('@/pages/Dashboard'),
   gettingStarted: () => import('@/pages/GettingStarted'),
   stocks: () => import('@/pages/Stocks'),
@@ -21,6 +23,8 @@ export type RouteKey = keyof typeof pageLoaders
 
 export const routePages = {
   LoginPage: lazy(pageLoaders.login),
+  // fork：分析页
+  ForkAnalysisPage: lazy(pageLoaders.forkAnalysis),
   DashboardPage: lazy(pageLoaders.dashboard),
   GettingStartedPage: lazy(pageLoaders.gettingStarted),
   StocksPage: lazy(pageLoaders.stocks),
@@ -41,6 +45,8 @@ const routeMatchers: Array<{ key: RouteKey; matches: (pathname: string) => boole
   { key: 'dashboard', matches: pathname => pathname === '/' },
   { key: 'gettingStarted', matches: pathname => pathname === '/getting-started' },
   { key: 'stocks', matches: pathname => pathname === '/portfolio' },
+  // fork: /analysis 预加载的是分析页（不是上游 Stocks）
+  { key: 'forkAnalysis', matches: pathname => pathname === '/analysis' },
   { key: 'opportunities', matches: pathname => pathname === '/opportunities' },
   { key: 'paperTrading', matches: pathname => pathname === '/paper-trading' },
   { key: 'assistant', matches: pathname => pathname === '/assistant' || pathname.startsWith('/assistant/') },
