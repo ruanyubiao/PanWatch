@@ -5,16 +5,17 @@ import { StockFilterBar } from '@/components/fork/StockFilterBar'
 import { EMPTY_MARKET_FILTERS, type MarketTableFilters } from '@/lib/market-filters'
 
 /**
- * 分析页筛选行（用户第二轮：控件照「机会页」那套下拉 + 清空筛选）。
+ * 分析页筛选行（第四轮：四组**全部**做成下拉 + 清空筛选紧跟其后）。
  *
  * 钉住四件事：
- *   1. 板块 pill 是单选，顺序 = 全部 / 上证 / 深证 / **创业** / **科创** / ST，带计数
+ *   1. 板块也是**单选下拉**（不再是 pill），选项顺序 = 全部 / 上证 / 深证 / **创业** / **科创** / ST，带计数
  *   2. 状态与市值是**多选下拉**（勾多项 = 并集，再点一次 = 取消）
  *   3. 涨跌是单选下拉
- *   4. 「清空筛选」连**市场**一起复位；没有任何筛选生效时它不出现
+ *   4. 「清空筛选」连**市场**一起复位，且位置**紧跟在下拉菜单后面**（不是被推到行尾）；
+ *      没有任何筛选生效时它不出现
  *
- * 注：Radix 的单选下拉（涨跌）在 jsdom 里点选项不稳，这里只断言它在位并带无障碍名字，
- * 交互本身由 lib 层单测（matchChange / 选项表）与浏览器里的实测覆盖。
+ * 注：Radix 的下拉在 jsdom 里能开能点（tests/setup.ts 已补 PointerEvent / scrollIntoView 等），
+ * 所以单选下拉这里也直接断言选项顺序与点击结果。
  */
 
 const STATUS_OPTIONS = [
@@ -44,17 +45,17 @@ function renderBar(over: Partial<React.ComponentProps<typeof StockFilterBar>> = 
 
 afterEach(() => cleanup())
 
-const pillTexts = () =>
-  Array.from(document.querySelectorAll('button[aria-pressed]')).map(node => node.textContent)
-
 const openSelect = async (user: ReturnType<typeof userEvent.setup>, label: string) => {
-  await user.click(screen.getByRole('button', { name: label }))
+  await user.click(screen.getByLabelText(label))
 }
 
 describe('fork: 分析页筛选行', () => {
-  it('板块 pill：单选，顺序 全部 / 上证 / 深证 / 创业 / 科创 / ST，带计数', () => {
+  it('市场是单选下拉：选项 全部 / 上证 / 深证 / 创业 / 科创 / ST，各带计数', async () => {
+    const user = userEvent.setup()
     renderBar()
-    expect(pillTexts()).toEqual([
+    await openSelect(user, '全部市场')
+    const options = await screen.findAllByRole('option')
+    expect(options.map(o => o.textContent)).toEqual([
       '全部 (5574)',
       '上证 (1632)',
       '深证 (1421)',
@@ -64,11 +65,18 @@ describe('fork: 分析页筛选行', () => {
     ])
   })
 
-  it('点板块 pill 走 onBoardChange（单选）', async () => {
+  it('市场下拉的触发器显示当前板块（带计数）', () => {
+    renderBar({ board: 'cyb' })
+    expect(screen.getByLabelText('全部市场').textContent).toContain('创业 (1369)')
+  })
+
+  it('点市场下拉的某一项走 onBoardChange（单选）', async () => {
     const user = userEvent.setup()
     const { onBoardChange } = renderBar()
-    await user.click(screen.getByRole('button', { name: '创业 (1369)' }))
-    expect(onBoardChange).toHaveBeenCalledWith('cyb')
+    await openSelect(user, '全部市场')
+    const options = await screen.findAllByRole('option')
+    await user.click(options[4])
+    expect(onBoardChange).toHaveBeenCalledWith('kcb')
   })
 
   it('状态是多选下拉：勾一项 → 数组里多一项；再点一次 → 取消', async () => {
@@ -112,6 +120,20 @@ describe('fork: 分析页筛选行', () => {
   it('涨跌是单选下拉（选项里「全部涨跌」= 不限）', () => {
     renderBar()
     expect(screen.getByLabelText('全部涨跌')).toBeTruthy()
+  })
+
+  it('四组都是下拉，一个 pill 都不剩', () => {
+    renderBar()
+    expect(document.querySelectorAll('button[aria-pressed]')).toHaveLength(0)
+    expect(document.querySelectorAll('[role="combobox"]')).toHaveLength(2)
+    expect(document.querySelectorAll('[aria-haspopup="listbox"]')).toHaveLength(2)
+  })
+
+  it('「清空筛选」紧跟在下拉菜单后面（DOM 里就是筛选行的最后一个元素）', () => {
+    renderBar({ board: 'cyb' })
+    const bar = screen.getByLabelText('全部市场').parentElement as HTMLElement
+    const clear = screen.getByRole('button', { name: '清空筛选' })
+    expect(bar.lastElementChild).toBe(clear)
   })
 
   it('「清空筛选」把市场一起复位；没有筛选生效时不出现', async () => {
