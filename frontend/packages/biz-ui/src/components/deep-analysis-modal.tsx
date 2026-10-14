@@ -86,9 +86,12 @@ function clearRunningTrace(stockSymbol: string): void {
 export interface DeepAnalysisModalProps {
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** 自选记录 id。<=0 表示该股票未关注：走后端无绑定通道，需要 symbol/market。 */
   stockId: number
   stockName: string
   stockSymbol: string
+  /** 股票所属市场（无绑定触发时需要，默认 CN） */
+  stockMarket?: string
   /** 历史分析(若有,直接展示) */
   initialResult?: DeepAnalysisResult | null
 }
@@ -99,6 +102,7 @@ export function DeepAnalysisModal({
   stockId,
   stockName,
   stockSymbol,
+  stockMarket = 'CN',
   initialResult = null,
 }: DeepAnalysisModalProps) {
   const { toast } = useToast()
@@ -316,7 +320,13 @@ export function DeepAnalysisModal({
     setError('')
     setProgress(null)
     try {
-      const triggerResp = await tradingAgentsApi.trigger(stockId, { force })
+      const triggerResp = await tradingAgentsApi.trigger(stockId, {
+        force,
+        // stockId<=0（未关注）时后端需要 symbol/market 才能走无绑定通道
+        symbol: stockId > 0 ? undefined : stockSymbol,
+        market: stockId > 0 ? undefined : stockMarket,
+        name: stockId > 0 ? undefined : stockName,
+      })
       const tid = triggerResp.trace_id || ''
       setTraceId(tid)
       if (!tid) {
