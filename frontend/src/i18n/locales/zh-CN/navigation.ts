@@ -3,6 +3,8 @@ export const navigation = {
     gettingStarted: '引导中心',
     home: '首页',
     portfolio: '持仓',
+    // fork：分析页（A 股全市场行情表），插在「持仓」之后
+    analysis: '分析',
     opportunities: '机会',
     paperTrading: '模拟盘',
     assistant: '助手',

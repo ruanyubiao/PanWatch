@@ -21,6 +21,8 @@ import { NotificationBell, NotificationProvider } from '@/components/notificatio
 const {
   LoginPage,
   DashboardPage,
+  // fork：分析页（上游 Stocks.tsx 的副本 + fork 改造），挂在 /analysis
+  ForkAnalysisPage,
   GettingStartedPage,
   OpportunitiesPage,
   StocksPage,
@@ -38,6 +40,8 @@ const {
 const NAV_ITEMS: Array<{ to: string; icon: typeof LayoutDashboard; labelKey: NavigationItemKey }> = [
   { to: '/', icon: LayoutDashboard, labelKey: 'home' },
   { to: '/portfolio', icon: List, labelKey: 'portfolio' },
+  // fork：新增「分析」页（A 股全市场行情表，读本机 MySQL），紧跟在「持仓」之后。
+  { to: '/analysis', icon: TrendingUp, labelKey: 'analysis' },
   { to: '/assistant', icon: MessageCircle, labelKey: 'assistant' },
   { to: '/opportunities', icon: Sparkles, labelKey: 'opportunities' },
   { to: '/paper-trading', icon: Activity, labelKey: 'paperTrading' },
@@ -98,10 +102,13 @@ function App() {
     icon: item.icon,
     label: t(`navigation:items.${item.labelKey}`),
   }))
-  const desktopPrimaryNavItems = navItems.slice(0, 5)
-  const desktopMoreNavItems = navItems.slice(5)
-  const mobilePrimaryNavItems = navItems.slice(0, 5)
-  const mobileMoreNavItems = navItems.slice(5)
+  // fork：导航栏从 5 项放到 6 项 —— 新增的「分析」页必须留在导航栏里，
+  // 否则它会把「模拟盘」挤进右上角的「更多」菜单。
+  const FORK_PRIMARY_NAV_COUNT = 6
+  const desktopPrimaryNavItems = navItems.slice(0, FORK_PRIMARY_NAV_COUNT)
+  const desktopMoreNavItems = navItems.slice(FORK_PRIMARY_NAV_COUNT)
+  const mobilePrimaryNavItems = navItems.slice(0, FORK_PRIMARY_NAV_COUNT)
+  const mobileMoreNavItems = navItems.slice(FORK_PRIMARY_NAV_COUNT)
 
   useEffect(() => {
     appApi.version()
@@ -305,6 +312,8 @@ function App() {
               <Route path="/getting-started" element={<GettingStartedPage />} />
               <Route path="/opportunities" element={<OpportunitiesPage />} />
               <Route path="/portfolio" element={<StocksPage />} />
+              {/* fork：分析页（A 股全市场行情表） */}
+              <Route path="/analysis" element={<ForkAnalysisPage />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/evaluations" element={<EvaluationsPage />} />
               <Route path="/history" element={<HistoryPage />} />
