@@ -35,7 +35,6 @@ import { marketSignTextClass } from '@/lib/market-colors'
 // fork：本页是上游 Stocks.tsx 的副本，改动全部只发生在本文件里，
 // 上游 Stocks.tsx 保持原样（「不修改项目原来的文件」）。
 import {
-  BOARD_OPTIONS,
   countByBoard,
   matchesBoard,
   onlyAShares,
@@ -43,9 +42,16 @@ import {
 } from '@/lib/board-classify'
 import {
   buildSummaryFromMarketRow,
+  marketRowAction,
   type MarketRow,
   type MarketTableResponse,
 } from '@/lib/fork-kline-summary'
+import {
+  EMPTY_MARKET_FILTERS,
+  STATUS_FILTER_KEYS,
+  type MarketTableFilters,
+} from '@/lib/market-filters'
+import { StockFilterBar } from '@/components/fork/StockFilterBar'
 import {
   StockMarketTable,
   type MarketRowState,
@@ -226,12 +232,19 @@ const toPriceAlertSummaryMap = (rows: PriceAlertRuleSummary[]): Record<string, {
 }
 
 
+/** fork：「来源」列与「技术指标」口径的两段固定文案（变量名以 _ZH 结尾，check:i18n 放行）。 */
 const MARKET_ROW_TEXTS_ZH = {
   expired: '（已过期）',
   technical: '技术指标',
 }
 
-/** fork：表中「来源」列与板块 pill 的两段固定文案（变量名以 _ZH 结尾，check:i18n 放行）。 */
+/** fork：点股票代码复制时的提示文案（变量名以 _ZH 结尾，check:i18n 放行）。 */
+const COPY_CODE_TEXTS_ZH = {
+  done: (text: string) => `已复制 ${text}`,
+  blocked: '当前浏览器不允许剪贴板写入（请用 https 或手动选择文本）',
+  failed: '复制失败，请手动选择文本',
+}
+
 export default function StocksPage() {
   const tour = useGuidedTour()
   const tourQuoteBusy = useRef(false)
@@ -371,8 +384,10 @@ export default function StocksPage() {
   const [marketCounts, setMarketCounts] = useState<MarketTableResponse['counts'] | null>(null)
   // fork：批量添加弹窗
   const [showBatchAdd, setShowBatchAdd] = useState(false)
-  /* fork：搜索词由页面持有，StockMarketTable 受控（搜索框常驻，换筛选只换数据）。 */
+  /* fork：搜索词由页面持有，StockMarketTable 受控（搜索框在分页条左侧，上下各一个）。 */
   const [stockQuery, setStockQuery] = useState('')
+  /* fork：除板块以外的三组筛选（状态/涨跌/市值），见 lib/market-filters.ts */
+  const [marketFilters, setMarketFilters] = useState<MarketTableFilters>(EMPTY_MARKET_FILTERS)
   /* fork：关注范围的前端分页（与全部范围同样的 100 上限） */
   const [watchScopeOffset, setWatchScopeOffset] = useState(0)
   useEffect(() => {
@@ -1552,6 +1567,44 @@ export default function StocksPage() {
     [klineTr],
   )
 
+  /**
+   * fork：「状态」筛选组的候选动作文案 —— 与状态列那颗技术面徽章取同一个 i18n 键
+   * （bizUi 的 kline.actions.*），所以筛选项的文字与徽章上的文字不可能不一致。
+   */
+  const statusFilterOptions = useMemo(
+    () => STATUS_FILTER_KEYS.map(key => ({ key, label: klineTr(`actions.${key}`) })),
+    [klineTr],
+  )
+
+  /**
+   * fork：一行 → 技术面动作（buy/avoid/watch），喂给表格的「状态」筛选。
+   * 走的就是徽章那条路径（marketRowAction），所以「筛出来的」与「看到的」是同一批。
+   */
+  const marketRowActionOf = useCallback(
+    (row: MarketRow) => marketRowAction(row, klineTr),
+    [klineTr],
+  )
+
+  /**
+   * fork：点表格里的代码 → 复制「代码 + 名称」（空格隔开的纯文本），
+   * 名称本身点击仍然是打开详情弹窗（用户要求）。
+   */
+  const handleCopyRowCode = useCallback(
+    (row: MarketRow) => {
+      const text = `${row.code} ${row.name}`
+      const write = navigator.clipboard?.writeText(text)
+      if (!write) {
+        toast(COPY_CODE_TEXTS_ZH.blocked, 'error')
+        return
+      }
+      void write.then(
+        () => toast(COPY_CODE_TEXTS_ZH.done(text), 'success'),
+        () => toast(COPY_CODE_TEXTS_ZH.failed, 'error'),
+      )
+    },
+    [toast],
+  )
+
   /** fork：表格里点 K 线图标 —— 弹窗直接用库里复原的摘要，不触发外网取数。 */
   const openMarketKline = useCallback(
     (row: MarketRow) => {
@@ -2568,42 +2621,19 @@ export default function StocksPage() {
       {/* Watchlist（fork：合并了「A 股全市场」范围） */}
       {viewTab === 'watchlist' && (
         <div data-tour="watchlist" className="card p-4">
-          {/* fork：板块 pill 行与搜索框**合并成同一行**（宽屏一行放下，窄屏自动换行）——
-              用户要求「窗口宽度足够时把这两行并起来」。
-              pill 只保留板块维度（上证/深证/科创/创业/ST），「关注」已去掉（本页不服务自选）；
-              「全部」= A 股全市场（含北交所）。搜索走 Everything 语法（lib/stock-search.ts），
-              匹配对象是「代码 + 名称」。没有主标题（上游那行 h3 是被删掉的截图红框部分）。 */}
-          <div className="mb-3 flex flex-wrap items-center gap-x-1 gap-y-2">
-            <button
-              onClick={() => setStockListFilter('all')}
-              className={`text-[11px] px-2 py-0.5 rounded transition-colors ${
-                stockListFilter === 'all'
-                  ? 'bg-primary text-primary-foreground'
-                  : 'bg-accent/50 text-muted-foreground hover:bg-accent'
-              }`}
-            >
-              全部 ({marketCounts?.all ?? '—'})
-            </button>
-            <div className="mx-1 h-4 w-px bg-border" />
-            {BOARD_OPTIONS.map(opt => (
-              <button
-                key={opt.key}
-                onClick={() => setStockListFilter(opt.key)}
-                className={`text-[11px] px-2 py-0.5 rounded transition-colors ${
-                  stockListFilter === opt.key
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-accent/50 text-muted-foreground hover:bg-accent'
-                }`}
-              >
-                {opt.label} ({boardCounts[opt.key]})
-              </button>
-            ))}
-            <StockSearchBox
-              value={stockQuery}
-              onChange={setStockQuery}
-              className="ml-auto w-full min-w-[220px] sm:w-[280px]"
-            />
-          </div>
+          {/* fork：筛选行（板块 + 状态 + 涨跌 + 市值四组）。
+              搜索框不在这一行了 —— 用户要求它跟着分页条走（放在分页条左侧，
+              也就是原来「共 N 条」的位置），顶部与底部两条分页条各一个受控输入框。
+              全部筛选都在前端做（数据是一次全量取回的），不发任何请求。 */}
+          <StockFilterBar
+            className="mb-3"
+            board={stockListFilter}
+            onBoardChange={setStockListFilter}
+            counts={boardCounts}
+            filters={marketFilters}
+            onFiltersChange={setMarketFilters}
+            statusOptions={statusFilterOptions}
+          />
 
           {/* fork：全部 = A 股全市场（后端 /stocks/market-table，读本机 MySQL，分页）。
               行情/市值/技术面全部来自库，**一个外网请求都不发** —— 这是
@@ -2612,11 +2642,15 @@ export default function StocksPage() {
             <StockMarketTable
               board={stockListFilter}
               query={stockQuery}
+              filters={marketFilters}
               existingSymbols={watchSymbolSet}
               onCounts={setMarketCounts}
               onAdd={handleQuickAdd}
               onRemove={handleQuickRemove}
+              onCopyCode={handleCopyRowCode}
               onOpenDetail={row => openStockDetail(row.code, 'CN', row.name, false)}
+              getRowAction={marketRowActionOf}
+              searchSlot={<StockSearchBox value={stockQuery} onChange={setStockQuery} />}
               renderStatus={renderMarketStatus}
               renderAgentStatus={renderMarketAgentStatus}
               renderSource={renderMarketSource}

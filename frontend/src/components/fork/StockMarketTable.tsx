@@ -5,7 +5,8 @@ import { fetchAPI } from '@panwatch/api'
 import { marketSignTextClass } from '@/lib/market-colors'
 import { STOCK_PAGE_SIZE } from '@/components/fork/stock-grid'
 import { TablePagination } from '@/components/fork/TablePagination'
-import { stockMatchesSearch } from '@/lib/stock-search'
+import { filterMarketRows, EMPTY_MARKET_FILTERS, type MarketTableFilters } from '@/lib/market-filters'
+import { originalStockName } from '@/lib/stock-name'
 import type { BoardKey } from '@/lib/board-classify'
 import type { MarketRow, MarketTableResponse } from '@/lib/fork-kline-summary'
 
@@ -21,16 +22,21 @@ import type { MarketRow, MarketTableResponse } from '@/lib/fork-kline-summary'
  * ------------------------------------------
  * 用户要求「一下子获取全部的数据，剩下的就是前端缓存，然后自己处理数据」。
  * 所以这里只发**一次**请求（``limit=20000``，覆盖全市场 5600 余只），
- * 板块筛选、搜索、排序、分页**全部在前端做**：
+ * 板块 / 状态 / 涨跌 / 市值筛选、搜索、排序、分页**全部在前端做**：
  *   - 翻页不再打接口（上游那套「每翻一页 100 只」的请求彻底消失）
  *   - 每页条数可以给到 10000（只是浏览器里切一刀）
- *   - 搜索语法用 Everything 风格那个库（见 lib/stock-search.ts）
+ *   - 排序作用于**全量**（5000 余行）之后再切片，不是只排当前页
  *
- * 列宽与排序（用户逐条指定）
- * -------------------------
- *   固定列宽：市场 / 代码 / 名称 / 状态 / Agent 状态 / 来源 / 操作
- *   其余列给最小列宽，宽屏时摊开剩余空间
- *   可排序：表头点击；「状态」按库里的 tech_score 排（新股无分 → 恒排最后）
+ * 表头排序：三态循环（用户指定的交互）
+ * --------------------------------
+ *   未排序（灰 ↕，提示「点击降序」）→ 降序（蓝 ↓，提示「点击升序」）
+ *   → 升序（蓝 ↑，提示「取消排序」）→ 未排序
+ * 「市场」列不给排序（用户明确说不需要）。「状态」列按库里的 ``tech_score`` 排，
+ * 无分的新股恒排最后。
+ *
+ * 列宽（用户逐列指定）：市场 60 / 代码 80 / 名称 140 / 状态 200（左内边距 40，
+ * 免得紧挨着右对齐的总市值）/ Agent 状态 120 / 来源 200 / 操作 220；
+ * 其余数值列只给最小列宽，宽屏时摊开剩余空间。
  *
  * 本组件只管「取数 / 筛选 / 排序 / 分页 / 表格骨架 / 列的格式」——四个富列
  * （状态、Agent 状态、来源、操作）由页面通过 render prop 注入：它们要弹上游的
@@ -56,6 +62,11 @@ const MARKET_TABLE_TEXTS_ZH = {
   colSource: '来源',
   colActions: '操作',
   sortBy: (label: string) => `按${label}排序`,
+  // 表头排序提示：说的是「下一次点击会发生什么」（与截图一致）
+  sortToDesc: '点击降序',
+  sortToAsc: '点击升序',
+  sortCancel: '取消排序',
+  copyHint: '点击复制代码与名称',
   loading: '加载中…',
   empty: '暂无数据',
   noMatch: '没有匹配的股票',
@@ -79,9 +90,6 @@ const EXCHANGE_CLASS: Record<string, string> = {
   SZ: 'bg-violet-500/10 text-violet-600',
   BJ: 'bg-amber-500/10 text-amber-600',
 }
-
-/** 市场列的排序权重：沪 → 深 → 北（库里 exchange 只有这三个值）。 */
-const EXCHANGE_RANK: Record<string, number> = { SH: 0, SZ: 1, BJ: 2 }
 
 /** 市场列：沪 / 深 / 北（库里 exchange 只有这三个值）。 */
 export function exchangeLabel(exchange: string | null | undefined): string {
@@ -107,7 +115,6 @@ export function formatMarketCap(value: number | null | undefined): string {
 // ------------------------------------------------------------------ 排序
 
 export type SortKey =
-  | 'market'
   | 'code'
   | 'name'
   | 'pre_close'
@@ -123,13 +130,9 @@ export interface SortState {
   dir: 'asc' | 'desc'
 }
 
-export const DEFAULT_SORT: SortState = { key: 'code', dir: 'asc' }
-
 /** 取排序用的值；「状态」取库里的 tech_score（无分返回 null）。 */
 function sortValue(row: MarketRow, key: SortKey): number | string | null {
   switch (key) {
-    case 'market':
-      return EXCHANGE_RANK[String(row.exchange || '').toUpperCase()] ?? 9
     case 'code':
       return row.code
     case 'name':
@@ -172,11 +175,14 @@ export function compareRows(a: MarketRow, b: MarketRow, sort: SortState): number
   return sort.dir === 'asc' ? diff : -diff
 }
 
-/** 点表头：换列按默认方向（文字/代码/市场升序，数值与分数降序），同列则翻转。 */
-export function nextSortState(current: SortState, key: SortKey): SortState {
-  if (current.key === key) return { key, dir: current.dir === 'asc' ? 'desc' : 'asc' }
-  const textLike = key === 'market' || key === 'code' || key === 'name'
-  return { key, dir: textLike ? 'asc' : 'desc' }
+/**
+ * 表头三态循环：未排序 → 降序 → 升序 → 未排序（``null`` = 回到接口给的原始顺序，
+ * 也就是按代码升序）。提示语与图标状态都跟这三态走。
+ */
+export function nextSortState(current: SortState | null, key: SortKey): SortState | null {
+  if (!current || current.key !== key) return { key, dir: 'desc' }
+  if (current.dir === 'desc') return { key, dir: 'asc' }
+  return null
 }
 
 // ------------------------------------------------------------------ 列定义
@@ -190,11 +196,13 @@ interface ColumnDef {
   width?: number
   /** 其余列只给最小列宽，宽屏摊开 */
   minWidth?: number
-  cellClassName?: string
+  /** 左内边距（px）——表头与单元格共用，否则表头与内容对不齐 */
+  padLeft?: number
 }
 
 const COLUMNS: ColumnDef[] = [
-  { key: 'market', label: MARKET_TABLE_TEXTS_ZH.colMarket, sortKey: 'market', width: 56 },
+  // 市场列不参与排序（用户明确说不需要）
+  { key: 'market', label: MARKET_TABLE_TEXTS_ZH.colMarket, width: 60 },
   { key: 'code', label: MARKET_TABLE_TEXTS_ZH.colCode, sortKey: 'code', width: 80 },
   { key: 'name', label: MARKET_TABLE_TEXTS_ZH.colName, sortKey: 'name', width: 140 },
   { key: 'pre_close', label: MARKET_TABLE_TEXTS_ZH.colPreClose, sortKey: 'pre_close', align: 'right', minWidth: 84 },
@@ -203,12 +211,26 @@ const COLUMNS: ColumnDef[] = [
   { key: 'high', label: MARKET_TABLE_TEXTS_ZH.colHigh, sortKey: 'high', align: 'right', minWidth: 84 },
   { key: 'low', label: MARKET_TABLE_TEXTS_ZH.colLow, sortKey: 'low', align: 'right', minWidth: 84 },
   { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', minWidth: 104 },
-  // 状态列固定 200px，且左内边距 20px —— 总市值是右对齐的，两块贴一起会糊成一片
-  { key: 'status', label: MARKET_TABLE_TEXTS_ZH.colStatus, sortKey: 'score', width: 200, cellClassName: 'px-5' },
-  { key: 'agent', label: MARKET_TABLE_TEXTS_ZH.colAgent, width: 116 },
+  // 状态列固定 200px + 左内边距 40px —— 总市值是右对齐的，两块贴一起会糊成一片
+  { key: 'status', label: MARKET_TABLE_TEXTS_ZH.colStatus, sortKey: 'score', width: 200, padLeft: 40 },
+  { key: 'agent', label: MARKET_TABLE_TEXTS_ZH.colAgent, width: 120 },
   { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 200 },
-  { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 212 },
+  { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 220 },
 ]
+
+/** 每个可排序列三种状态的图标（未排序灰 ↕ / 降序蓝 ↓ / 升序蓝 ↑）。 */
+export function sortIconState(sort: SortState | null, key: SortKey): 'none' | 'asc' | 'desc' {
+  if (!sort || sort.key !== key) return 'none'
+  return sort.dir
+}
+
+/** 表头悬停提示：说的是「下一次点击会发生什么」（与用户给的截图一致）。 */
+export function sortHintOf(sort: SortState | null, key: SortKey): string {
+  const state = sortIconState(sort, key)
+  if (state === 'none') return MARKET_TABLE_TEXTS_ZH.sortToDesc
+  if (state === 'desc') return MARKET_TABLE_TEXTS_ZH.sortToAsc
+  return MARKET_TABLE_TEXTS_ZH.sortCancel
+}
 
 /** 各板块计数（从全量数据里数，保证与列表口径必然一致）。 */
 export function boardCountsOf(rows: MarketRow[]): MarketTableResponse['counts'] {
@@ -223,13 +245,6 @@ export function boardCountsOf(rows: MarketRow[]): MarketTableResponse['counts'] 
   return counts
 }
 
-/** 按板块 + 搜索串过滤（搜索走 Everything 语法，匹配「代码 + 名称」）。 */
-export function filterRows(rows: MarketRow[], board: BoardKey, query: string): MarketRow[] {
-  return rows.filter(
-    row => (board === 'all' || row.board === board) && stockMatchesSearch(row, query),
-  )
-}
-
 export interface MarketRowState {
   followed: boolean
   busy: boolean
@@ -239,15 +254,27 @@ export interface MarketRowState {
 
 interface StockMarketTableProps {
   board: BoardKey
-  /** 搜索词（页面持有：与板块 pill 同一行，见 ForkAnalysis） */
+  /** 搜索词（页面持有：与筛选行分开，跟着分页条走） */
   query: string
+  /** 状态/涨跌/市值三组筛选（板块由 board 传，见 lib/market-filters.ts） */
+  filters?: MarketTableFilters
   /** 已在自选里的代码集合（决定操作列是 + 还是 X） */
   existingSymbols: Set<string>
   onCounts?: (counts: MarketTableResponse['counts']) => void
   onAdd: (row: MarketRow) => Promise<void> | void
   onRemove: (row: MarketRow) => void
-  /** 点代码 / 名称（文字按钮）→ 页面弹详情 */
+  /** 点代码（文字按钮）→ 复制「代码 + 名称」 */
+  onCopyCode?: (row: MarketRow) => void
+  /** 点名称（文字按钮）→ 页面弹详情 */
   onOpenDetail: (row: MarketRow) => void
+  /**
+   * 「状态」筛选用的技术面动作（buy/avoid/watch）。由页面注入：它才知道怎么把
+   * 库里的 tech_* 还原成动作（lib/fork-kline-summary.ts 的 marketRowAction），
+   * 组件这边不重算口径 —— 否则筛出来的集合与状态列的徽章可能不是同一批。
+   */
+  getRowAction?: (row: MarketRow) => string | null
+  /** 分页条左侧的搜索框（页面传入，顶部与底部两行共用同一个受控组件） */
+  searchSlot?: ReactNode
   renderStatus: (row: MarketRow) => ReactNode
   renderAgentStatus: (row: MarketRow) => ReactNode
   renderSource: (row: MarketRow) => ReactNode
@@ -257,11 +284,15 @@ interface StockMarketTableProps {
 export function StockMarketTable({
   board,
   query,
+  filters,
   existingSymbols,
   onCounts,
   onAdd,
   onRemove,
+  onCopyCode,
   onOpenDetail,
+  getRowAction,
+  searchSlot,
   renderStatus,
   renderAgentStatus,
   renderSource,
@@ -271,13 +302,13 @@ export function StockMarketTable({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
-  const [sort, setSort] = useState<SortState>(DEFAULT_SORT)
+  const [sort, setSort] = useState<SortState | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(STOCK_PAGE_SIZE)
   const countsRef = useRef(onCounts)
   countsRef.current = onCounts
 
-  // 全量只取一次：换板块 / 搜索 / 翻页都不再打接口（用户要求的前端缓存）
+  // 全量只取一次：换板块 / 筛选 / 搜索 / 排序 / 翻页都不再打接口（用户要求的前端缓存）
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)
@@ -301,8 +332,16 @@ export function StockMarketTable({
     return () => controller.abort()
   }, [])
 
-  const filtered = useMemo(() => filterRows(rows, board, query), [rows, board, query])
-  const sorted = useMemo(() => [...filtered].sort((a, b) => compareRows(a, b, sort)), [filtered, sort])
+  const activeFilters = filters ?? EMPTY_MARKET_FILTERS
+  // 全量（5000 余行）过滤 → 排序 → 再切片：排序是「对所有数据」的排序，不是只排当前页
+  const filtered = useMemo(
+    () => filterMarketRows(rows, board, query, activeFilters, getRowAction),
+    [rows, board, query, activeFilters, getRowAction],
+  )
+  const sorted = useMemo(
+    () => (sort ? [...filtered].sort((a, b) => compareRows(a, b, sort)) : filtered),
+    [filtered, sort],
+  )
   const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize))
   const safePage = Math.min(page, pageCount)
   const pageRows = useMemo(
@@ -310,10 +349,10 @@ export function StockMarketTable({
     [sorted, safePage, pageSize],
   )
 
-  // 换板块 / 改搜索 / 换每页条数 → 回第一页（否则会停在一个不存在的页码上）
+  // 换板块 / 改筛选 / 改搜索 / 换每页条数 → 回第一页（否则会停在一个不存在的页码上）
   useEffect(() => {
     setPage(1)
-  }, [board, query, pageSize])
+  }, [board, query, pageSize, activeFilters])
 
   const handleFollow = useCallback(
     async (row: MarketRow) => {
@@ -339,23 +378,26 @@ export function StockMarketTable({
           </span>
         )
       case 'code':
+        // 用户要求：点代码 = 复制「代码 + 名称」（空格隔开），不再是打开详情。
+        // 悬停样式与股票卡片里的文字按钮一致（hover:text-primary，不带下划线）。
         return (
           <button
             type="button"
-            onClick={() => onOpenDetail(row)}
-            title={row.code}
-            className="font-mono font-semibold text-foreground transition-colors hover:text-primary hover:underline"
+            onClick={() => (onCopyCode ? onCopyCode(row) : undefined)}
+            title={`${MARKET_TABLE_TEXTS_ZH.copyHint} ${row.code} ${originalStockName(row.name)}`}
+            className="font-mono font-semibold text-foreground transition-colors hover:text-primary"
           >
             {row.code}
           </button>
         )
       case 'name':
+        // 悬停显示**原始名字**（剥掉 *ST/ST 前缀），单元格里仍是库里那个带标记的名字
         return (
           <button
             type="button"
             onClick={() => onOpenDetail(row)}
-            title={row.name}
-            className="block max-w-full truncate text-left text-muted-foreground transition-colors hover:text-primary hover:underline"
+            title={originalStockName(row.name)}
+            className="block max-w-full truncate text-left text-muted-foreground transition-colors hover:text-primary"
           >
             {row.name}
           </button>
@@ -399,17 +441,22 @@ export function StockMarketTable({
       ? MARKET_TABLE_TEXTS_ZH.empty
       : MARKET_TABLE_TEXTS_ZH.noMatch
 
+  const pagination = (
+    <TablePagination
+      total={sorted.length}
+      page={safePage}
+      pageSize={pageSize}
+      onPageChange={setPage}
+      onPageSizeChange={setPageSize}
+      disabled={loading}
+      leading={searchSlot}
+    />
+  )
+
   return (
     <div>
-      {/* 分页条：上下各一条，形式完全一致（用户要求「上下都一样」） */}
-      <TablePagination
-        total={sorted.length}
-        page={safePage}
-        pageSize={pageSize}
-        onPageChange={setPage}
-        onPageSizeChange={setPageSize}
-        disabled={loading}
-      />
+      {/* 分页条：上下各一条，形式完全一致（用户要求「上下都一样」）；搜索框在它左侧 */}
+      {pagination}
 
       {sorted.length === 0 ? (
         <div className="py-10 text-center text-[12px] text-muted-foreground">{emptyText}</div>
@@ -428,11 +475,14 @@ export function StockMarketTable({
             <thead>
               <tr className="border-b border-border/50 text-[11px] text-muted-foreground">
                 {COLUMNS.map(column => {
-                  const active = column.sortKey != null && sort.key === column.sortKey
+                  const iconState = column.sortKey ? sortIconState(sort, column.sortKey) : 'none'
                   return (
                     <th
                       key={column.key}
-                      style={column.minWidth ? { minWidth: column.minWidth } : undefined}
+                      style={{
+                        ...(column.minWidth ? { minWidth: column.minWidth } : {}),
+                        ...(column.padLeft ? { paddingLeft: column.padLeft } : {}),
+                      }}
                       className={`whitespace-nowrap px-2 py-2 font-normal ${
                         column.align === 'right' ? 'text-right' : 'text-left'
                       }`}
@@ -441,21 +491,18 @@ export function StockMarketTable({
                         <button
                           type="button"
                           aria-label={MARKET_TABLE_TEXTS_ZH.sortBy(column.label)}
+                          title={sortHintOf(sort, column.sortKey)}
                           onClick={() => setSort(current => nextSortState(current, column.sortKey as SortKey))}
-                          className={`inline-flex items-center gap-1 transition-colors hover:text-foreground ${
-                            active ? 'text-foreground' : ''
+                          className={`inline-flex items-center gap-1 transition-colors hover:text-primary ${
+                            iconState === 'none' ? '' : 'text-primary'
                           }`}
                         >
                           {column.label}
-                          {active ? (
-                            sort.dir === 'asc' ? (
-                              <ArrowUp className="h-3 w-3" />
-                            ) : (
-                              <ArrowDown className="h-3 w-3" />
-                            )
-                          ) : (
+                          {iconState === 'none' && (
                             <ArrowUpDown className="h-3 w-3 text-muted-foreground/40" />
                           )}
+                          {iconState === 'desc' && <ArrowDown className="h-3 w-3" />}
+                          {iconState === 'asc' && <ArrowUp className="h-3 w-3" />}
                         </button>
                       ) : (
                         column.label
@@ -480,10 +527,11 @@ export function StockMarketTable({
                       {COLUMNS.map(column => (
                         <td
                           key={column.key}
-                          style={column.minWidth ? { minWidth: column.minWidth } : undefined}
-                          className={`py-2 ${column.cellClassName || 'px-2'} ${
-                            column.align === 'right' ? 'text-right' : 'text-left'
-                          } ${
+                          style={{
+                            ...(column.minWidth ? { minWidth: column.minWidth } : {}),
+                            ...(column.padLeft ? { paddingLeft: column.padLeft } : {}),
+                          }}
+                          className={`py-2 px-2 ${column.align === 'right' ? 'text-right' : 'text-left'} ${
                             column.key === 'source' || column.key === 'agent'
                               ? 'whitespace-nowrap text-[11px] text-muted-foreground'
                               : ''
@@ -501,14 +549,7 @@ export function StockMarketTable({
         </div>
       )}
 
-      <TablePagination
-        total={sorted.length}
-        page={safePage}
-        pageSize={pageSize}
-        onPageChange={setPage}
-        onPageSizeChange={setPageSize}
-        disabled={loading}
-      />
+      {pagination}
     </div>
   )
 }
