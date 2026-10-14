@@ -22,12 +22,17 @@ export interface BoardOption {
   label: string
 }
 
-/** 顺序即界面上 pill 的呈现顺序（不含 'all'——「全部」由范围组单独渲染）。 */
+/**
+ * 顺序即界面上 pill 的呈现顺序（不含 'all'——「全部」由范围组单独渲染）。
+ *
+ * 用户第二轮指定：全部 / 上证 / 深证 / **创业** / **科创** / ST
+ * （创业在科创前面，与常见的「沪、深、创、科」一致）。
+ */
 export const BOARD_OPTIONS: BoardOption[] = [
   { key: 'sh', label: '上证' },
   { key: 'sz', label: '深证' },
-  { key: 'kcb', label: '科创' },
   { key: 'cyb', label: '创业' },
+  { key: 'kcb', label: '科创' },
   { key: 'st', label: 'ST' },
 ]
 

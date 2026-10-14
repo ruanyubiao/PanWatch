@@ -1,34 +1,37 @@
 /**
  * fork 专用：分析页表格的**筛选**（除板块以外的三组）。
  *
- * 用户要求把筛选放在板块 pill 那一行，一共四组：
- *   组1 市场   全部 | 上证 | 深证 | 科创 | 创业 | ST      （单选，见 board-classify.ts）
- *   组2 状态   全部 | 买入 | 回避 | 观望                  （**多选**，取状态列里「技术面」
- *                                                          那颗徽章的动作，即库里 tech_score
- *                                                          按上游阈值换算出来的动作）
- *   组3 涨跌   全部 | 上涨 | 下跌                          （单选）
- *   组4 市值   全部 | 50亿 | 100亿 | 300亿 | 500亿 | 1000亿 | 其他（单选）
+ * 用户第二轮要求把筛选做成「机会页」那种形式（下拉 + 清空筛选），四组：
+ *   组1 市场   全部 | 上证 | 深证 | 创业 | 科创 | ST  （单选，pill 行，见 board-classify.ts）
+ *   组2 状态   全部 | 买入 | 回避 | 观望               （**多选**下拉）
+ *   组3 涨跌   全部 | 上涨 | 下跌                       （单选下拉）
+ *   组4 市值   全部 | 50亿 | 100亿 | 300亿 | 500亿 | 1000亿 | 其他
+ *                                                     （**多选**下拉）
  *              其中「50亿」表示**小于 50 亿**，往上每档是「上一档 ~ 本档」，
  *              「其他」表示 1000 亿以上 —— 与用户给的写法一致。
  *
- * 本文件是纯函数 + 常量，界面在 components/fork/StockFilterBar.tsx，
- * 数据量级是「全市场一次取回后在前端过滤」（5000 余行），所以匹配函数要便宜。
+ * 多选组的语义：一档都不选 = 不限；选了若干档 = **并集**（命中任一档即通过）。
+ *
+ * 本文件是纯函数 + 常量，界面在 components/fork/StockFilterBar.tsx 与
+ * components/fork/MultiSelectFilter.tsx，数据量级是「全市场一次取回后在前端过滤」
+ * （5000 余行），所以匹配函数要便宜。
  */
 import { stockMatchesSearch } from '@/lib/stock-search'
 import type { BoardKey } from '@/lib/board-classify'
 import type { MarketRow } from '@/lib/fork-kline-summary'
 
 export type ChangeFilter = 'all' | 'up' | 'down'
-export type CapFilter = 'all' | 'lt50' | 'lt100' | 'lt300' | 'lt500' | 'lt1000' | 'gt1000'
+export type CapFilter = 'lt50' | 'lt100' | 'lt300' | 'lt500' | 'lt1000' | 'gt1000'
 
 export interface MarketTableFilters {
   /** 技术面动作 key（kline-scorer 的 Action）：空数组 = 不限；多选 = 命中其一即可 */
   status: string[]
   change: ChangeFilter
-  cap: CapFilter
+  /** 市值档位：空数组 = 不限；多选 = 命中任一档即可 */
+  cap: CapFilter[]
 }
 
-export const EMPTY_MARKET_FILTERS: MarketTableFilters = { status: [], change: 'all', cap: 'all' }
+export const EMPTY_MARKET_FILTERS: MarketTableFilters = { status: [], change: 'all', cap: [] }
 
 /**
  * 组2 的候选动作 —— 就是状态列里「技术面」那颗徽章能给出的动作全集
@@ -50,8 +53,11 @@ export const CHANGE_FILTER_OPTIONS_ZH: FilterOption<ChangeFilter>[] = [
   { key: 'down', label: '下跌', hint: '当日涨跌幅小于 0' },
 ]
 
+/**
+ * 市值档位（**不含「全部」**——多选下拉里「全部」是「一档都不选」，
+ * 不是一个可勾的档位，见 MultiSelectFilter 的 allLabel）。
+ */
 export const CAP_FILTER_OPTIONS_ZH: FilterOption<CapFilter>[] = [
-  { key: 'all', label: '全部', hint: '不限总市值' },
   { key: 'lt50', label: '50亿', hint: '总市值小于 50 亿' },
   { key: 'lt100', label: '100亿', hint: '总市值 50 亿 ~ 100 亿' },
   { key: 'lt300', label: '300亿', hint: '总市值 100 亿 ~ 300 亿' },
@@ -62,27 +68,23 @@ export const CAP_FILTER_OPTIONS_ZH: FilterOption<CapFilter>[] = [
 
 const YI = 1e8
 
-/** 总市值落在哪一档。库里有市值缺失（新股）→ 只在「全部」里出现。 */
-export function matchCap(cap: number | null | undefined, filter: CapFilter): boolean {
-  if (filter === 'all') return true
-  if (cap == null || cap <= 0) return false
+/** 总市值落在哪一档。库里有市值缺失（新股）→ 只在「不限」里出现。 */
+export function capBucketOf(cap: number | null | undefined): CapFilter | null {
+  if (cap == null || cap <= 0) return null
   const value = cap / YI
-  switch (filter) {
-    case 'lt50':
-      return value < 50
-    case 'lt100':
-      return value >= 50 && value < 100
-    case 'lt300':
-      return value >= 100 && value < 300
-    case 'lt500':
-      return value >= 300 && value < 500
-    case 'lt1000':
-      return value >= 500 && value < 1000
-    case 'gt1000':
-      return value >= 1000
-    default:
-      return true
-  }
+  if (value < 50) return 'lt50'
+  if (value < 100) return 'lt100'
+  if (value < 300) return 'lt300'
+  if (value < 500) return 'lt500'
+  if (value < 1000) return 'lt1000'
+  return 'gt1000'
+}
+
+/** 市值（多选）：空数组 = 不限；否则命中任一档即可。 */
+export function matchCap(cap: number | null | undefined, filters: CapFilter[]): boolean {
+  if (filters.length === 0) return true
+  const bucket = capBucketOf(cap)
+  return bucket != null && filters.includes(bucket)
 }
 
 /** 涨跌：平盘（0.00%）既不算上涨也不算下跌，所以「上涨/下跌」两档都选不中它。 */
@@ -130,7 +132,15 @@ export function filterMarketRows(
   return rows.filter(row => passesMarketFilters(row, board, query, filters, actionOf))
 }
 
-/** 除板块外的筛选是否处于「不限」状态（用于决定要不要显示「清除筛选」）。 */
+/** 除板块外的筛选是否处于「不限」状态。 */
 export function hasActiveFilters(filters: MarketTableFilters): boolean {
-  return filters.status.length > 0 || filters.change !== 'all' || filters.cap !== 'all'
+  return filters.status.length > 0 || filters.change !== 'all' || filters.cap.length > 0
+}
+
+/**
+ * 「清空筛选」要连**市场**（板块 pill）一起复位 —— 用户明确要求
+ * （「清空筛选 把市场也加进去」），所以只要有任意一组生效就显示这个入口。
+ */
+export function hasAnyFilterActive(board: BoardKey, filters: MarketTableFilters): boolean {
+  return board !== 'all' || hasActiveFilters(filters)
 }
