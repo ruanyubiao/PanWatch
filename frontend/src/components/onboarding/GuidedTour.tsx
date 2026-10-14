@@ -10,6 +10,10 @@ import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@panwatch/base-ui/components/ui/dialog'
 import { Popover, PopoverAnchor, PopoverContent } from '@panwatch/base-ui/components/ui/popover'
 
+// fork: 关闭「首次访问自动跳转到引导中心」。本部署只保留首页+持仓两页，
+// 引导流程（Guide center / 分步 tour）对用户是噪音。改回 false 即恢复上游行为。
+const FORK_DISABLE_ONBOARDING_REDIRECT = true
+
 const paths: Record<SetupStep, string> = { stock: '/portfolio', quote: '/portfolio', ai: '/settings', analysis: '/portfolio', alert: '/alerts', notify: '/settings' }
 export function tourSteps(): SetupStep[] {
   return ['stock', 'quote', 'ai', 'analysis', 'alert', 'notify']
@@ -107,6 +111,8 @@ export function GuidedTourProvider({ children }: { children: ReactNode }) {
     return () => { alive.current = false; revision.current++; window.removeEventListener('focus', onFocus) }
   }, [refresh])
   useEffect(() => {
+    // fork: 见文件顶部 FORK_DISABLE_ONBOARDING_REDIRECT —— 不自动跳引导中心
+    if (FORK_DISABLE_ONBOARDING_REDIRECT) return
     if (!status || status.started || status.deferred) return
     setWelcome(true)
     navigate('/getting-started', { replace: true })
