@@ -3,13 +3,13 @@ import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@panwatch/base-ui/components/ui/select'
 
 /**
- * fork：分析页表格的分页条（上、下各一条，同一种形式）。
+ * fork：分析页表格的分页条（上、下各一条）。
  *
  * 用户给的参考（截图）是一个「共 N 条 + ‹ 1 2 3 … › + 每页条数下拉」的横条。
- * 后续按用户要求调成现在的排布：
- *   - 左侧留给**搜索框**（``leading``，原来「共 N 条」占的那个位置）
- *   - 「共 N 条 + 页码 + 每页条数」整块**靠右**（页码在每页条数下拉的前面）
- * 顶部与底部用同一个组件，所以两行必然长得一样，翻页也不用先把滚动条拖回顶部。
+ * 排布按用户要求定成：
+ *   - **上**一条：左边是「刷新 / 添加股票 两个按钮 + 50px 间距 + 搜索框」，
+ *     右边是「共 N 条 + 页码 + 每页条数」（页码在下拉前面）
+ *   - **下**一条：只保留右边那一块（用户明确说底部不要搜索框）
  *
  * 每页条数给到 10000：数据是**一次性全量取回**的（见 StockMarketTable），
  * 所以「每页 10000 条」只是浏览器里切一刀，不会再打接口。
@@ -17,6 +17,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 
 /** 每页条数下拉的取值（用户指定）。 */
 export const PAGE_SIZE_OPTIONS = [100, 200, 500, 1000, 2000, 5000, 10000] as const
+
+/** 工具条里「按钮组」与「搜索框」之间的间距（用户指定 50px）。 */
+export const TOOLBAR_GAP_PX = 50
 
 const PAGINATION_TEXTS_ZH = {
   total: (n: number) => `共 ${n} 条`,
@@ -52,7 +55,9 @@ interface TablePaginationProps {
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
   disabled?: boolean
-  /** 左侧槽位（分析页放搜索框；原来这里是「共 N 条」） */
+  /** 工具条左端的按钮组（「刷新」「添加股票」），排在 leading 前面，中间留 50px */
+  actions?: ReactNode
+  /** 工具条里的搜索框（只有上方那条分页条传） */
   leading?: ReactNode
 }
 
@@ -63,15 +68,25 @@ export function TablePagination({
   onPageChange,
   onPageSizeChange,
   disabled = false,
+  actions,
   leading,
 }: TablePaginationProps) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const arrowClass =
     'inline-flex h-6 w-6 items-center justify-center rounded border border-border/60 text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40'
 
+  // 工具条：按钮组 + 50px + 搜索框（两样都传时才有间距，只有一个时不留空）
+  const toolbar =
+    actions || leading ? (
+      <div className="flex items-center" style={actions && leading ? { columnGap: TOOLBAR_GAP_PX } : undefined}>
+        {actions}
+        {leading ? <div className="w-[260px] shrink-0">{leading}</div> : null}
+      </div>
+    ) : null
+
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[11px] text-muted-foreground">
-      {leading ? <div className="w-full min-w-[200px] sm:w-[300px]">{leading}</div> : null}
+      {toolbar}
 
       {/* 页码与每页条数整块靠右；页码在下拉前面 */}
       <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
