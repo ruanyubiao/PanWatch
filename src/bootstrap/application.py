@@ -29,6 +29,7 @@ from src.modules.assistant.export_jobs import context_export_runner
 from src.modules.automation.api import agents, suggestions, templates
 from src.modules.market.api import (
     discovery,
+    fork_market,
     klines,
     market,
     news,
@@ -72,6 +73,11 @@ protected = [Depends(get_current_user)]
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["onboarding"], dependencies=protected)
 app.include_router(
     stocks.router, prefix="/api/stocks", tags=["stocks"], dependencies=protected
+)
+# fork: A 股全市场行情表（分析页的表格）。数据来自本机 MySQL（stock 库），
+# 全市场列表一个外网请求都不发；路径 /api/stocks/market-table。
+app.include_router(
+    fork_market.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
 )
 app.include_router(
     quotes.router, prefix="/api/quotes", tags=["quotes"], dependencies=protected
