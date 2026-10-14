@@ -50,9 +50,8 @@ const row = (over: Partial<MarketRow> = {}): MarketRow => ({
   ...over,
 })
 
-/** 三只票：沪（score 6）／深（score -3）／北（无 tech_*） */
+/** 三只票（**按代码升序**，与后端 ORDER BY code 的口径一致）：深→沪→北，北交所那只无 tech_* */
 const threeRows = (): MarketRow[] => [
-  row(),
   row({
     code: '000001',
     symbol: 'sz000001',
@@ -64,6 +63,7 @@ const threeRows = (): MarketRow[] => [
     total_market_cap: 224914591914.82,
     tech: { ...row().tech!, score: -3 },
   }),
+  row(),
   row({
     code: '920000',
     symbol: 'bj920000',
@@ -243,17 +243,159 @@ describe('fork: 分析页全市场表格', () => {
     expect(within(hu).getByText('操作-600519')).toBeTruthy()
   })
 
-  it('代码与名称是文字按钮，点击回调到页面的详情弹窗', async () => {
+  it('代码点击 = 复制「代码 + 名称」，名称点击 = 打开详情弹窗', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response())
-    const { onOpenDetail } = renderTable()
+    const onCopyCode = vi.fn()
+    const { onOpenDetail } = renderTable({ onCopyCode })
 
     await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+
+    // 名称 → 详情弹窗（行为不变）
     await userEvent.click(screen.getByRole('button', { name: '贵州茅台' }))
     expect(onOpenDetail).toHaveBeenCalledTimes(1)
     expect(onOpenDetail.mock.calls[0][0].code).toBe('600519')
 
+    // 代码 → 复制（不再是详情）
     await userEvent.click(screen.getByRole('button', { name: '600519' }))
-    expect(onOpenDetail).toHaveBeenCalledTimes(2)
+    expect(onCopyCode).toHaveBeenCalledTimes(1)
+    expect(onCopyCode.mock.calls[0][0].code).toBe('600519')
+    expect(onOpenDetail).toHaveBeenCalledTimes(1)
+  })
+
+  it('名称悬停提示显示**原始名字**（剥掉 *ST/ST 标记）', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(
+      response([row({ code: '600745', name: '*ST闻泰' }), row({ code: '600079', name: 'ST人福' })]),
+    )
+    renderTable()
+
+    await waitFor(() => expect(screen.getByText('*ST闻泰')).toBeTruthy())
+    expect(screen.getByRole('button', { name: '*ST闻泰' }).getAttribute('title')).toBe('闻泰')
+    expect(screen.getByRole('button', { name: 'ST人福' }).getAttribute('title')).toBe('人福')
+  })
+
+  it('市场列不给排序；其余列是「降序 → 升序 → 取消」三态循环', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable()
+
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    // 市场列没有排序按钮
+    expect(screen.queryByRole('button', { name: '按市场排序' })).toBeNull()
+    // 未排序 = 接口给的顺序（后端 ORDER BY code）
+    expect(codesInOrder()).toEqual(['000001', '600519', '920000'])
+
+    const sortButton = () => screen.getByRole('button', { name: '按涨跌排序' })
+    // 未排序：灰图标 + 「点击降序」
+    expect(sortButton().getAttribute('title')).toBe('点击降序')
+
+    // 第一次点击 → 降序（+0.35 → −1.60 → −1.61）
+    await userEvent.click(sortButton())
+    await waitFor(() => expect(codesInOrder()).toEqual(['600519', '920000', '000001']))
+    expect(sortButton().getAttribute('title')).toBe('点击升序')
+
+    // 第二次点击 → 升序
+    await userEvent.click(sortButton())
+    await waitFor(() => expect(codesInOrder()).toEqual(['000001', '920000', '600519']))
+    expect(sortButton().getAttribute('title')).toBe('取消排序')
+
+    // 第三次点击 → 取消排序：回到接口给的原始顺序（后端 ORDER BY code，即代码升序）
+    await userEvent.click(sortButton())
+    await waitFor(() => expect(codesInOrder()).toEqual(['000001', '600519', '920000']))
+    expect(sortButton().getAttribute('title')).toBe('点击降序')
+  })
+
+  it('排序作用于全量数据（先排 5000 余行再切片，不是只排当前页）', async () => {
+    // 250 行：每页 100 → 3 页；按市值降序后第 1 页应是最大的 100 只
+    const many = Array.from({ length: 250 }, (_, index) =>
+      row({
+        code: String(100000 + index),
+        name: `票${index}`,
+        total_market_cap: (index + 1) * 1e8,
+      }),
+    )
+    vi.mocked(fetchAPI).mockResolvedValue(response(many))
+    renderTable()
+
+    await waitFor(() => expect(screen.getByText('票0')).toBeTruthy())
+    await userEvent.click(screen.getByRole('button', { name: '按总市值排序' }))
+
+    // 第 1 页第 1 行 = 全局最大（index 249），最后 1 行 = 第 100 大（index 150）
+    await waitFor(() => expect(screen.getByText('票249')).toBeTruthy())
+    const codes = codesInOrder()
+    expect(codes).toHaveLength(100)
+    expect(codes[0]).toBe('100249')
+    expect(codes[99]).toBe('100150')
+  })
+
+  it('三组筛选（状态/涨跌/市值）都在前端做，且不发新请求', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    const filters = { status: [], change: 'down' as const, cap: 'all' as const }
+    const { rerender } = render(
+      <StockMarketTable
+        board="all"
+        query=""
+        filters={filters}
+        existingSymbols={new Set<string>()}
+        onAdd={vi.fn()}
+        onRemove={vi.fn()}
+        onOpenDetail={vi.fn()}
+        renderStatus={() => null}
+        renderAgentStatus={() => null}
+        renderSource={() => null}
+        renderActions={() => null}
+      />,
+    )
+    // 涨跌=下跌 → 只剩 000001 与 920000（茅台是涨的）
+    await waitFor(() => expect(screen.queryByText('贵州茅台')).toBeNull())
+    expect(screen.getByText('平安银行')).toBeTruthy()
+
+    // 市值 < 50 亿 → 只剩北交所那只（10 亿）
+    rerender(
+      <StockMarketTable
+        board="all"
+        query=""
+        filters={{ status: [], change: 'all', cap: 'lt50' }}
+        existingSymbols={new Set<string>()}
+        onAdd={vi.fn()}
+        onRemove={vi.fn()}
+        onOpenDetail={vi.fn()}
+        renderStatus={() => null}
+        renderAgentStatus={() => null}
+        renderSource={() => null}
+        renderActions={() => null}
+      />,
+    )
+    await waitFor(() => expect(screen.queryByText('贵州茅台')).toBeNull())
+    expect(screen.getByText('安徽凤凰')).toBeTruthy()
+
+    // 状态筛选走页面注入的 getRowAction（技术面动作）
+    rerender(
+      <StockMarketTable
+        board="all"
+        query=""
+        filters={{ status: ['avoid'], change: 'all', cap: 'all' }}
+        existingSymbols={new Set<string>()}
+        getRowAction={(r: MarketRow) => (r.tech ? (r.tech.score <= -2 ? 'avoid' : 'buy') : null)}
+        onAdd={vi.fn()}
+        onRemove={vi.fn()}
+        onOpenDetail={vi.fn()}
+        renderStatus={() => null}
+        renderAgentStatus={() => null}
+        renderSource={() => null}
+        renderActions={() => null}
+      />,
+    )
+    await waitFor(() => expect(screen.queryByText('贵州茅台')).toBeNull())
+    expect(screen.getByText('平安银行')).toBeTruthy()
+
+    expect(urlsOf()).toHaveLength(1)
+  })
+
+  it('分页条左侧是搜索槽位（上下各一个受控输入框）', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable({ searchSlot: <input aria-label="测试搜索" /> })
+
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    expect(screen.getAllByLabelText('测试搜索')).toHaveLength(2)
   })
 
   it('各板块计数从全量数据里数出来并回传（pill 上的数字）', async () => {
