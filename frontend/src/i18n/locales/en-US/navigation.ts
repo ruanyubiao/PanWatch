@@ -6,6 +6,8 @@ export const navigation = {
     gettingStarted: 'Guide center',
     home: 'Home',
     portfolio: 'Portfolio',
+    // fork: analysis page (A-share market table), right after Portfolio
+    analysis: 'Analysis',
     opportunities: 'Opportunities',
     paperTrading: 'Paper trading',
     assistant: 'Assistant',

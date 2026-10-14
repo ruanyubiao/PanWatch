@@ -1,7 +1,7 @@
 {
   "name": "PanWatch",
   "short_name": "PanWatch",
-  "description": "Self-hosted AI stock monitoring powered by TradingAgents",
+  "description": "Self-hosted AI monitoring assistant",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f1117",
@@ -21,6 +21,6 @@
       "purpose": "any maskable"
     }
   ],
-  "categories": ["finance", "productivity"],
+  "categories": ["productivity"],
   "lang": "en-US"
 }
