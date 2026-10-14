@@ -60,7 +60,11 @@ beforeEach(async () => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); localStorage.clear() })
 
 describe('interactive page tour', () => {
-  it('automatically opens the unified main tour, then navigates to actual controls without automatic model or quote actions', async () => {
+  // fork：本 fork 关闭了「首次访问自动弹出引导 / 自动跳引导中心」
+  // （见 frontend/src/components/onboarding/GuidedTour.tsx 的
+  //  FORK_DISABLE_ONBOARDING_REDIRECT）。下面两条上游用例正是断言自动打开
+  // 行为，因此 skip；文件末尾补了一条断言 fork 契约的用例。
+  it.skip('automatically opens the unified main tour, then navigates to actual controls without automatic model or quote actions', async () => {
     localStorage.setItem('panwatch_onboarding_completed', 'true')
     renderTour()
     const dialog = await screen.findByRole('dialog')
@@ -207,7 +211,7 @@ describe('guide center', () => {
     await screen.findByRole('heading', { name: '引导中心' })
     expect(screen.getAllByRole('button', { name: '再次体验' })).toHaveLength(2)
   })
-  it('starts automatically at first sign-in, but does not reopen after a persistent pause', async () => {
+  it.skip('starts automatically at first sign-in, but does not reopen after a persistent pause', async () => {
     const first = renderTour('/')
     await screen.findByRole('dialog')
     await userEvent.click(screen.getByRole('button', { name: '稍后处理' }))
@@ -229,5 +233,13 @@ describe('guide center', () => {
     await screen.findByText('阅读信号，再决定是否关注')
     expect(onboardingApi.update).toHaveBeenCalledWith({ track: 'opportunities', restart: false, deferred: false })
     expect(current.tour_step).toBe('ai')
+  })
+
+  // fork 契约：首次进入不再自动弹出引导（也不跳 /getting-started）。
+  it('fork: 首次登录不自动弹出引导', async () => {
+    renderTour('/')
+    await screen.findByTestId('path')
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByTestId('path').textContent).toBe('/')
   })
 })
