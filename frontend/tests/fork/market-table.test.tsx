@@ -15,7 +15,7 @@ vi.mock('@panwatch/api', () => ({ fetchAPI: vi.fn() }))
  *   3. 市场列只出 沪/深/北
  *   4. **全量取一次**，此后筛选/排序/翻页/搜索全在前端（不再打接口）
  *   5. 表头可排序，「状态」按库里 tech_score 排、无分恒排最后
- *   6. 分页条上下各一条（同一种形式）
+ *   6. 分页条上下各一条：上一条左侧是「工具条按钮 + 50px + 搜索框」，下一条只有页码区
  */
 
 const row = (over: Partial<MarketRow> = {}): MarketRow => ({
@@ -328,7 +328,7 @@ describe('fork: 分析页全市场表格', () => {
 
   it('三组筛选（状态/涨跌/市值）都在前端做，且不发新请求', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response())
-    const filters = { status: [], change: 'down' as const, cap: 'all' as const }
+    const filters = { status: [], change: 'down' as const, cap: [] }
     const { rerender } = render(
       <StockMarketTable
         board="all"
@@ -353,7 +353,7 @@ describe('fork: 分析页全市场表格', () => {
       <StockMarketTable
         board="all"
         query=""
-        filters={{ status: [], change: 'all', cap: 'lt50' }}
+        filters={{ status: [], change: 'all', cap: ['lt50'] }}
         existingSymbols={new Set<string>()}
         onAdd={vi.fn()}
         onRemove={vi.fn()}
@@ -372,7 +372,7 @@ describe('fork: 分析页全市场表格', () => {
       <StockMarketTable
         board="all"
         query=""
-        filters={{ status: ['avoid'], change: 'all', cap: 'all' }}
+        filters={{ status: ['avoid'], change: 'all', cap: [] }}
         existingSymbols={new Set<string>()}
         getRowAction={(r: MarketRow) => (r.tech ? (r.tech.score <= -2 ? 'avoid' : 'buy') : null)}
         onAdd={vi.fn()}
@@ -390,12 +390,20 @@ describe('fork: 分析页全市场表格', () => {
     expect(urlsOf()).toHaveLength(1)
   })
 
-  it('分页条左侧是搜索槽位（上下各一个受控输入框）', async () => {
+  it('搜索框只在上一条分页条里，工具条按钮排在它前面（底下那条没有搜索框）', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response())
-    renderTable({ searchSlot: <input aria-label="测试搜索" /> })
+    renderTable({
+      toolbarActions: <button type="button">刷新</button>,
+      searchSlot: <input aria-label="测试搜索" />,
+    })
 
     await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
-    expect(screen.getAllByLabelText('测试搜索')).toHaveLength(2)
+    // 用户第二轮要求：底部不要搜索框 → 全页只有 1 个
+    expect(screen.getAllByLabelText('测试搜索')).toHaveLength(1)
+    // 按钮在搜索框**前面**（同一行，两者之间留 50px，见 TablePagination 的 TOOLBAR_GAP_PX）
+    const search = screen.getByLabelText('测试搜索')
+    const toolbarButton = screen.getByRole('button', { name: '刷新' })
+    expect(toolbarButton.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('各板块计数从全量数据里数出来并回传（pill 上的数字）', async () => {
