@@ -157,3 +157,17 @@ export function marketRowScore(row: MarketRow, tr: KlineTranslate): number | nul
   if (!summary) return null
   return buildKlineSuggestion(summary as never, false, tr).score
 }
+
+/**
+ * 状态列那颗**技术面**徽章的动作（buy / avoid / watch）—— 分析页的「状态」筛选
+ * 就按它分组，保证「筛出来的集合」与「徽章显示的动作」必然是同一批。
+ *
+ * 走的是与徽章完全相同的路径（``buildSummaryFromMarketRow`` → ``buildKlineSuggestion``，
+ * holding=false），不是另写一套阈值 —— 阈值改在上游 kline-scorer 里时这里自动跟随。
+ * 库里没有 tech_*（新股）时返回 null，只出现在「状态：全部」里。
+ */
+export function marketRowAction(row: MarketRow, tr: KlineTranslate): string | null {
+  const summary = buildSummaryFromMarketRow(row, tr)
+  if (!summary) return null
+  return buildKlineSuggestion(summary as never, false, tr).action
+}
