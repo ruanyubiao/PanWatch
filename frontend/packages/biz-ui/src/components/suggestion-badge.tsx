@@ -82,6 +82,14 @@ interface SuggestionBadgeProps {
   market?: string           // 市场（用于技术指标弹窗）
   hasPosition?: boolean     // 是否持仓（用于技术指标弹窗）
   showTechnicalCompanion?: boolean // 是否展示技术指标对照徽章
+  /**
+   * 是否隐藏徽章下方的「来源：xxx · 时间（已过期）」那一行。
+   *
+   * 默认 false = 保持上游行为不变。fork 的分析页表格里**单独有一列「来源」**，
+   * 徽章再自带一行就会同一份信息出现两次（用户截图反馈的那个 bug），
+   * 那里传 true。弹窗里的来源信息不受影响。
+   */
+  hideSourceLine?: boolean
 }
 
 // 格式化建议时间（自动转换为本地时区，只显示时:分）
@@ -139,6 +147,7 @@ export function SuggestionBadge({
   market = 'CN',
   hasPosition = false,
   showTechnicalCompanion = true,
+  hideSourceLine = false,
 }: SuggestionBadgeProps) {
   const { t, i18n } = useTranslation('bizUi')
   const tr = (key: string, options?: Record<string, unknown>) =>
@@ -405,8 +414,8 @@ export function SuggestionBadge({
             })()
           )}
         </div>
-        {/* 来源和时间（显示在徽章下方，仅 AI 建议以增强区分）*/}
-        {isAI && (
+        {/* 来源和时间（显示在徽章下方，仅 AI 建议以增强区分；开关见 hideSourceLine）*/}
+        {isAI && !hideSourceLine && (
           <div className="mt-1 text-[10px] text-muted-foreground/70">
             {tr('source')}{localizedAgent || 'AI'}{timeStr && ` · ${timeStr}`}
             {suggestion.is_expired && <span className="ml-1 text-amber-600">{tr('expired')}</span>}

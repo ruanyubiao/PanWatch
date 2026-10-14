@@ -41,7 +41,10 @@ router = APIRouter()
 BOARD_KEYS = ("all", "sh", "sz", "kcb", "cyb", "st")
 
 DEFAULT_LIMIT = 100
-MAX_LIMIT = 200
+# 前端一次性把全市场取回去（约 5600 行）后在浏览器里筛选/排序/分页，
+# 所以上限必须放得比全市场大：翻页不再打接口，也就不会出现「每翻一页 100 只」
+# 那种反复请求。取 2 万是给将来扩容留的余量（A 股现存约 5600 只）。
+MAX_LIMIT = 20000
 
 # 板块判定（与前端 frontend/src/lib/board-classify.ts 同一套规则，顺序即优先级）：
 #   ST > 科创 > 创业 > 上证 > 深证，其余（北交所 920xxx 等）只计入「全部」。
