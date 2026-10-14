@@ -4,7 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronLeft, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3, Brain, Loader2 } from 'lucide-react'
 import { fetchAPI, stocksApi, type AIService, type NotifyChannel } from '@panwatch/api'
 import { klinesApi } from '@panwatch/api/klines'
-import { useLocalStorage, formatDateTime } from '@/lib/utils'
+import { formatDateTime } from '@/lib/utils'
 import {
   buildPortfolioStockKeys,
   loadPortfolioPageBackgroundData,
@@ -275,11 +275,9 @@ export default function StocksPage() {
   // Keyed by `${market}:${symbol}` to avoid cross-market symbol collisions
   const [klineSummaries, setKlineSummaries] = useState<Record<string, KlineSummary>>({})
 
-  // Auto-refresh (持久化到 localStorage)
-  const [autoRefresh, setAutoRefresh] = useLocalStorage('panwatch_stocks_autoRefresh', false)
-  const [refreshInterval, setRefreshInterval] = useLocalStorage('panwatch_stocks_refreshInterval', 30)
-  const [lastRefreshTime, setLastRefreshTime] = useState<Date | null>(null)
-  const refreshTimerRef = useRef<ReturnType<typeof setInterval>>()
+  // fork：自动刷新整块按用户要求移除（开关 + 时间戳 + 定时器 + 持久化的两个 key）。
+  // 是「整块」而不是只删界面：localStorage 里上次打开的值会让定时器继续跑，
+  // 而页面上已经没有开关能关掉它了。
 
   type ViewTab = 'positions' | 'watchlist'
   // fork：上游默认打开「持仓」视图，本页只保留关注列表（+ 全市场浏览），
@@ -313,7 +311,6 @@ export default function StocksPage() {
   // Market status
   const [marketStatus, setMarketStatus] = useState<MarketStatus[]>([])
   const marketStatusRef = useRef<MarketStatus[]>([])
-  const previousMarketStatusRef = useRef<MarketStatus[]>([])
   marketStatusRef.current = marketStatus
   // Guard to prevent overlapping K线刷新任务导致实际并发超限
   const klineRefreshInFlight = useRef<Promise<void> | null>(null)
@@ -602,7 +599,6 @@ export default function StocksPage() {
       const data = await requestQuotes(items)
       if (data.length > 0) {
         setQuotes(previous => ({ ...previous, ...toQuoteMap(data) }))
-        setLastRefreshTime(new Date())
       }
     } finally {
       setQuotesLoading(false)
@@ -627,14 +623,6 @@ export default function StocksPage() {
     klineRefreshInFlight.current = run
     try { await run } finally { klineRefreshInFlight.current = null }
   }, [buildQuoteItems, requestKlineSummaries])
-
-  // Fetch the closing snapshot once, then stop polling closed-market quotes.
-  useEffect(() => {
-    const previous = previousMarketStatusRef.current
-    previousMarketStatusRef.current = marketStatus
-    if (autoRefresh && marketStatus.some(market => market.status === 'after_hours' &&
-      previous.some(old => old.code === market.code && old.is_trading))) void refreshQuotes()
-  }, [marketStatus, autoRefresh, refreshQuotes])
 
   // 从建议池加载建议（包含历史建议和多来源建议）
   const loadPoolSuggestions = useCallback(async (itemsOverride?: QuoteRequestItem[]) => {
@@ -749,7 +737,6 @@ export default function StocksPage() {
       }, coreData.stocks, coreData.portfolio, signal).then(data => {
         if (signal.aborted) return
         setQuotes(toQuoteMap(data.quotes))
-        if (data.quotes.length > 0) setLastRefreshTime(new Date())
       }).catch(error => {
         if (!signal.aborted) console.warn('Portfolio quotes unavailable:', error)
       })
@@ -949,28 +936,6 @@ export default function StocksPage() {
 
     return () => { cancelled = true }
   }, [agentDialogStock, agents, schedulePreviewCache, schedulePreviewLoading])
-
-  // Auto-refresh timer
-  useEffect(() => {
-    if (autoRefresh) {
-      refreshQuotes(true)
-      refreshTimerRef.current = setInterval(() => {
-        refreshQuotes(true)
-      }, refreshInterval * 1000)
-    } else {
-      // Clear interval when disabled
-      if (refreshTimerRef.current) {
-        clearInterval(refreshTimerRef.current)
-        refreshTimerRef.current = undefined
-      }
-    }
-
-    return () => {
-      if (refreshTimerRef.current) {
-        clearInterval(refreshTimerRef.current)
-      }
-    }
-  }, [autoRefresh, refreshInterval, refreshQuotes])
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -1866,106 +1831,39 @@ export default function StocksPage() {
     )
   }
 
+  /**
+   * fork：表格工具条上的两个按钮 —— 原来在页头，用户要求缩小并挪到搜索框前面。
+   * 放在上一条分页条里（见 StockMarketTable 的 toolbarActions），中间留 50px。
+   */
+  const tableToolbarActions = (
+    <div className="flex items-center gap-1.5">
+      <Button
+        data-tour="refresh-quotes"
+        variant="secondary"
+        size="sm"
+        className="h-7 px-2 text-[12px]"
+        onClick={handleRefresh}
+        disabled={quotesLoading || tour?.busy}
+      >
+        <RefreshCw className={`h-3.5 w-3.5 ${quotesLoading ? 'animate-spin' : ''}`} />
+        {stockT('stocksPage.messages.refreshed')}
+      </Button>
+      <Button
+        data-tour="add-stock"
+        size="sm"
+        className="h-7 px-2 text-[12px]"
+        onClick={() => setShowBatchAdd(true)}
+      >
+        <Plus className="h-3.5 w-3.5" /> 添加股票
+      </Button>
+    </div>
+  )
+
   return (
     <div className={FORK_PAGE_WIDTH_CLASS}>
       <FirstAnalysis />
-      {/* Header */}
-      <div className="flex flex-col gap-2 md:gap-3 mb-5 md:mb-6">
-        <div className="flex items-center justify-between gap-2">
-          {/* fork：截图红框标注的标题区整块删除（标题 + A股/港股/美股 市场状态）。
-              本页只服务 A 股，「分析」的含义由左侧导航直接表达。 */}
-          {/* Desktop buttons + controls */}
-          <div className="hidden md:flex items-center gap-3">
-            {/* Controls */}
-            <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-accent/30">
-              <div className="flex items-center gap-1.5">
-                <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} className="scale-90" />
-                <span className="text-[11px] text-muted-foreground">{stockT('stocksPage.autoRefresh')}</span>
-                {autoRefresh && (
-                  <Select value={refreshInterval.toString()} onValueChange={v => setRefreshInterval(parseInt(v))}>
-                    <SelectTrigger className="h-6 w-14 text-[10px] px-1.5">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="10">10s</SelectItem>
-                      <SelectItem value="30">30s</SelectItem>
-                      <SelectItem value="60">{stockT('stocksPage.messages.everyMinutes', { minutes: 1 })}</SelectItem>
-                      <SelectItem value="120">{stockT('stocksPage.messages.everyMinutes', { minutes: 2 })}</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
-              </div>
-              {lastRefreshTime && (
-                <>
-                  <div className="w-px h-4 bg-border" />
-                  <span className="text-[10px] text-muted-foreground/60">
-                    {lastRefreshTime.toLocaleTimeString(getCurrentLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  </span>
-                </>
-              )}
-            </div>
-            {/* Buttons */}
-            <Button data-tour="refresh-quotes" variant="secondary" onClick={handleRefresh} disabled={quotesLoading || tour?.busy}>
-              <RefreshCw className={`w-4 h-4 ${quotesLoading ? 'animate-spin' : ''}`} />
-              {stockT('stocksPage.messages.refreshed')}
-            </Button>
-            {/* fork：「添加账户」属于已移除的持仓视图（viewTab 固定 watchlist），不再渲染 */}
-            {viewTab === 'positions' && (
-              <Button variant="secondary" onClick={() => openAccountDialog()}>
-                <Building2 className="w-4 h-4" /> {stockT('stocksPage.messages.addAccount')}
-              </Button>
-            )}
-            <Button data-tour="add-stock" onClick={() => setShowBatchAdd(true)}>
-              <Plus className="w-4 h-4" /> 添加股票
-            </Button>
-          </div>
-          {/* Mobile buttons */}
-          <div className="flex md:hidden items-center gap-1.5">
-            <Button data-tour="refresh-quotes" aria-label={stockT('stocksPage.messages.refreshed')} variant="secondary" size="sm" className="h-8 w-8 p-0" onClick={handleRefresh} disabled={quotesLoading || tour?.busy}>
-              <RefreshCw className={`w-4 h-4 ${quotesLoading ? 'animate-spin' : ''}`} />
-            </Button>
-            {/* fork：移动端「添加账户」按钮，同属已移除的持仓视图 */}
-            {viewTab === 'positions' && (
-              <Button variant="secondary" size="sm" className="h-8 w-8 p-0" onClick={() => openAccountDialog()}>
-                <Building2 className="w-4 h-4" />
-              </Button>
-            )}
-            <Button data-tour="add-stock" aria-label="添加股票" size="sm" className="h-8 w-8 p-0" onClick={() => setShowBatchAdd(true)}>
-              <Plus className="w-4 h-4" />
-            </Button>
-          </div>
-        </div>
-
-        {/* fork：截图红框内的「A股/港股/美股 市场状态 + 交易日历悬停弹层」已删除，
-             交易日历移到首页（ForkDashboard）。这里只留移动端自动刷新与时间戳。
-              原：{marketStatus.length > 0 && <MarketCalendarStatus ... />} */}
-        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none -mx-1 px-1 md:flex-wrap md:overflow-visible">
-          {/* 移动端紧凑型自动刷新控件 */}
-          <div className="flex md:hidden shrink-0 items-center gap-1 px-2 py-0.5 rounded-full bg-accent/30 ml-1">
-            <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} className="scale-75" />
-            {autoRefresh ? (
-              <Select value={refreshInterval.toString()} onValueChange={v => setRefreshInterval(parseInt(v))}>
-                <SelectTrigger className="h-5 w-12 text-[10px] px-1 border-0 bg-transparent">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="10">10s</SelectItem>
-                  <SelectItem value="30">30s</SelectItem>
-                  <SelectItem value="60">{stockT('stocksPage.messages.everyMinutes', { minutes: 1 })}</SelectItem>
-                  <SelectItem value="120">{stockT('stocksPage.messages.everyMinutes', { minutes: 2 })}</SelectItem>
-                </SelectContent>
-              </Select>
-            ) : (
-              <span className="text-[10px] text-muted-foreground">{stockT('stocksPage.autoRefresh')}</span>
-            )}
-          </div>
-          {lastRefreshTime && (
-            <span className="md:hidden shrink-0 text-[10px] text-muted-foreground/60 font-mono ml-1">
-              {lastRefreshTime.toLocaleTimeString(getCurrentLocale(), { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-            </span>
-          )}
-        </div>
-      </div>
+      {/* fork：整块页头已删除（标题、A股/港股/美股 市场状态、自动刷新开关与时间戳）。
+          「刷新」「添加股票」两个按钮移到了表格上方那条工具条上，位置在搜索框前面。 */}
 
       {/* Portfolio Total Summary */}
       {/* fork：组合汇总（总市值/盈亏/可用资金/仓位）属于已移除的持仓视图，
@@ -2650,6 +2548,7 @@ export default function StocksPage() {
               onCopyCode={handleCopyRowCode}
               onOpenDetail={row => openStockDetail(row.code, 'CN', row.name, false)}
               getRowAction={marketRowActionOf}
+              toolbarActions={tableToolbarActions}
               searchSlot={<StockSearchBox value={stockQuery} onChange={setStockQuery} />}
               renderStatus={renderMarketStatus}
               renderAgentStatus={renderMarketAgentStatus}

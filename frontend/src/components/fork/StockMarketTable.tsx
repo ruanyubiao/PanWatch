@@ -273,7 +273,12 @@ interface StockMarketTableProps {
    * 组件这边不重算口径 —— 否则筛出来的集合与状态列的徽章可能不是同一批。
    */
   getRowAction?: (row: MarketRow) => string | null
-  /** 分页条左侧的搜索框（页面传入，顶部与底部两行共用同一个受控组件） */
+  /**
+   * 表格**上方**那条工具条里、搜索框左边的按钮（页面把「刷新」「添加股票」放进来）。
+   * 只有上一条分页条渲染它；下一条只保留「共 N 条 / 页码 / 每页条数」。
+   */
+  toolbarActions?: ReactNode
+  /** 搜索框（只在**上**一条分页条里出现，用户要求底部不要） */
   searchSlot?: ReactNode
   renderStatus: (row: MarketRow) => ReactNode
   renderAgentStatus: (row: MarketRow) => ReactNode
@@ -292,6 +297,7 @@ export function StockMarketTable({
   onCopyCode,
   onOpenDetail,
   getRowAction,
+  toolbarActions,
   searchSlot,
   renderStatus,
   renderAgentStatus,
@@ -441,7 +447,12 @@ export function StockMarketTable({
       ? MARKET_TABLE_TEXTS_ZH.empty
       : MARKET_TABLE_TEXTS_ZH.noMatch
 
-  const pagination = (
+  /**
+   * 分页条：上、下各一条。
+   *   上：工具条（刷新 / 添加股票 + 50px + 搜索框）+ 右侧「共 N 条 / 页码 / 每页条数」
+   *   下：只有右侧那一块（用户要求底部不要搜索框）
+   */
+  const pagination = (position: 'top' | 'bottom') => (
     <TablePagination
       total={sorted.length}
       page={safePage}
@@ -449,14 +460,15 @@ export function StockMarketTable({
       onPageChange={setPage}
       onPageSizeChange={setPageSize}
       disabled={loading}
-      leading={searchSlot}
+      actions={position === 'top' ? toolbarActions : undefined}
+      leading={position === 'top' ? searchSlot : undefined}
     />
   )
 
   return (
     <div>
-      {/* 分页条：上下各一条，形式完全一致（用户要求「上下都一样」）；搜索框在它左侧 */}
-      {pagination}
+      {/* 上方分页条：左边是工具条（刷新 / 添加股票 + 50px + 搜索框），右边是页码区 */}
+      {pagination('top')}
 
       {sorted.length === 0 ? (
         <div className="py-10 text-center text-[12px] text-muted-foreground">{emptyText}</div>
@@ -549,7 +561,8 @@ export function StockMarketTable({
         </div>
       )}
 
-      {pagination}
+      {/* 下方分页条：只有页码区（用户要求底部不要搜索框） */}
+      {pagination('bottom')}
     </div>
   )
 }
