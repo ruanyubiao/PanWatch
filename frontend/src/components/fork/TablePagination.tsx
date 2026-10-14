@@ -1,14 +1,15 @@
+import type { ReactNode } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@panwatch/base-ui/components/ui/select'
 
 /**
  * fork：分析页表格的分页条（上、下各一条，同一种形式）。
  *
- * 用户给的参考（截图 2）是一个「共 N 条 + ‹ 1 2 3 … › + 每页条数下拉」的横条，
- * 所以这里不再用上游那种「上一页 / 下一页」两个按钮的写法。
- *
- * 为什么要两组数字按钮都渲染：用户要求「上下都一样」——顶部一条、底部一条，
- * 同一组件同一份样式，翻页不用先把滚动条拖回顶部。
+ * 用户给的参考（截图）是一个「共 N 条 + ‹ 1 2 3 … › + 每页条数下拉」的横条。
+ * 后续按用户要求调成现在的排布：
+ *   - 左侧留给**搜索框**（``leading``，原来「共 N 条」占的那个位置）
+ *   - 「共 N 条 + 页码 + 每页条数」整块**靠右**（页码在每页条数下拉的前面）
+ * 顶部与底部用同一个组件，所以两行必然长得一样，翻页也不用先把滚动条拖回顶部。
  *
  * 每页条数给到 10000：数据是**一次性全量取回**的（见 StockMarketTable），
  * 所以「每页 10000 条」只是浏览器里切一刀，不会再打接口。
@@ -51,6 +52,8 @@ interface TablePaginationProps {
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
   disabled?: boolean
+  /** 左侧槽位（分析页放搜索框；原来这里是「共 N 条」） */
+  leading?: ReactNode
 }
 
 export function TablePagination({
@@ -60,6 +63,7 @@ export function TablePagination({
   onPageChange,
   onPageSizeChange,
   disabled = false,
+  leading,
 }: TablePaginationProps) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const arrowClass =
@@ -67,60 +71,63 @@ export function TablePagination({
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[11px] text-muted-foreground">
-      <span className="whitespace-nowrap">{PAGINATION_TEXTS_ZH.total(total)}</span>
+      {leading ? <div className="w-full min-w-[200px] sm:w-[300px]">{leading}</div> : null}
 
-      <div className="flex items-center gap-1">
-        <button
-          type="button"
-          aria-label={PAGINATION_TEXTS_ZH.prev}
-          className={arrowClass}
-          disabled={disabled || page <= 1}
-          onClick={() => onPageChange(page - 1)}
-        >
-          <ChevronLeft className="h-3.5 w-3.5" />
-        </button>
+      {/* 页码与每页条数整块靠右；页码在下拉前面 */}
+      <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
+        <span className="whitespace-nowrap">{PAGINATION_TEXTS_ZH.total(total)}</span>
 
-        {paginationItems(page, pageCount).map((item, index) =>
-          item === 'gap' ? (
-            <span key={`gap-${index}`} className="px-1 text-muted-foreground/60" aria-label={PAGINATION_TEXTS_ZH.more}>
-              …
-            </span>
-          ) : (
-            <button
-              key={item}
-              type="button"
-              aria-current={item === page ? 'page' : undefined}
-              className={`h-6 min-w-6 rounded border px-1.5 text-[11px] transition-colors ${
-                item === page
-                  ? 'border-primary bg-primary/10 text-primary'
-                  : 'border-transparent text-muted-foreground hover:bg-accent'
-              }`}
-              disabled={disabled}
-              onClick={() => onPageChange(item)}
-            >
-              {item}
-            </button>
-          ),
-        )}
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-label={PAGINATION_TEXTS_ZH.prev}
+            className={arrowClass}
+            disabled={disabled || page <= 1}
+            onClick={() => onPageChange(page - 1)}
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
 
-        <button
-          type="button"
-          aria-label={PAGINATION_TEXTS_ZH.next}
-          className={arrowClass}
-          disabled={disabled || page >= pageCount}
-          onClick={() => onPageChange(page + 1)}
-        >
-          <ChevronRight className="h-3.5 w-3.5" />
-        </button>
-      </div>
+          {paginationItems(page, pageCount).map((item, index) =>
+            item === 'gap' ? (
+              <span key={`gap-${index}`} className="px-1 text-muted-foreground/60" aria-label={PAGINATION_TEXTS_ZH.more}>
+                …
+              </span>
+            ) : (
+              <button
+                key={item}
+                type="button"
+                aria-current={item === page ? 'page' : undefined}
+                className={`h-6 min-w-6 rounded border px-1.5 text-[11px] transition-colors ${
+                  item === page
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-transparent text-muted-foreground hover:bg-accent'
+                }`}
+                disabled={disabled}
+                onClick={() => onPageChange(item)}
+              >
+                {item}
+              </button>
+            ),
+          )}
 
-      {/* 宽度给足：「10000 条/页」是最长的一项，下拉里也不能被截断 */}
-      <div className="ml-auto">
+          <button
+            type="button"
+            aria-label={PAGINATION_TEXTS_ZH.next}
+            className={arrowClass}
+            disabled={disabled || page >= pageCount}
+            onClick={() => onPageChange(page + 1)}
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* 宽度给足：「10000 条/页」是最长的一项，下拉里也不能被截断 */}
         <Select value={String(pageSize)} onValueChange={value => onPageSizeChange(Number(value))}>
-          <SelectTrigger className="h-7 w-[124px] text-[11px]" disabled={disabled}>
+          <SelectTrigger className="h-7 w-[126px] text-[11px]" disabled={disabled}>
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="min-w-[148px]">
+          <SelectContent className="min-w-[152px]">
             {PAGE_SIZE_OPTIONS.map(size => (
               <SelectItem key={size} value={String(size)} className="text-[11px]">
                 {PAGINATION_TEXTS_ZH.perPage(size)}
