@@ -57,6 +57,7 @@ import {
   STOCK_PAGE_SIZE,
 } from '@/components/fork/stock-grid'
 import { StockListToolbar } from '@/components/fork/StockListToolbar'
+import { StockSearchBox } from '@/components/fork/StockSearchBox'
 import { BatchAddStocksDialog } from '@/components/fork/BatchAddStocksDialog'
 
 import { parseAssistantPortfolioTarget } from '@/lib/assistant-navigation'
@@ -1564,7 +1565,10 @@ export default function StocksPage() {
     [rowSummary],
   )
 
-  /** 状态列：AI 建议徽章（建议池里有才有）+ 技术面徽章（库里 tech_*，零外网）。 */
+  /** 状态列：AI 建议徽章（建议池里有才有）+ 技术面徽章（库里 tech_*，零外网）。
+   *
+   *  ``hideSourceLine``：表格里「来源」是**独立一列**，徽章再自带一行来源就是同一份
+   *  信息出现两次（用户截图反馈的 bug）。弹窗里的来源不变。 */
   const renderMarketStatus = (row: MarketRow) => {
     const { suggestion } = getSuggestionForStock(row.code, 'CN')
     const kline = rowSummary(row)
@@ -1583,6 +1587,7 @@ export default function StocksPage() {
         kline={kline}
         market="CN"
         hasPosition={false}
+        hideSourceLine
       />
     )
   }
@@ -2563,10 +2568,12 @@ export default function StocksPage() {
       {/* Watchlist（fork：合并了「A 股全市场」范围） */}
       {viewTab === 'watchlist' && (
         <div data-tour="watchlist" className="card p-4">
-          {/* fork：pill 行只保留板块维度（上证/深证/科创/创业/ST）。
-              用户要求去掉「关注」—— 本页不服务自选；「全部」= A 股全市场（含北交所）。
-              没有主标题（上游那行 h3 是截图红框内被删掉的部分之一）。 */}
-          <div className="flex flex-wrap items-center gap-x-1 gap-y-1.5 mb-3">
+          {/* fork：板块 pill 行与搜索框**合并成同一行**（宽屏一行放下，窄屏自动换行）——
+              用户要求「窗口宽度足够时把这两行并起来」。
+              pill 只保留板块维度（上证/深证/科创/创业/ST），「关注」已去掉（本页不服务自选）；
+              「全部」= A 股全市场（含北交所）。搜索走 Everything 语法（lib/stock-search.ts），
+              匹配对象是「代码 + 名称」。没有主标题（上游那行 h3 是被删掉的截图红框部分）。 */}
+          <div className="mb-3 flex flex-wrap items-center gap-x-1 gap-y-2">
             <button
               onClick={() => setStockListFilter('all')}
               className={`text-[11px] px-2 py-0.5 rounded transition-colors ${
@@ -2591,6 +2598,11 @@ export default function StocksPage() {
                 {opt.label} ({boardCounts[opt.key]})
               </button>
             ))}
+            <StockSearchBox
+              value={stockQuery}
+              onChange={setStockQuery}
+              className="ml-auto w-full min-w-[220px] sm:w-[280px]"
+            />
           </div>
 
           {/* fork：全部 = A 股全市场（后端 /stocks/market-table，读本机 MySQL，分页）。
@@ -2600,11 +2612,11 @@ export default function StocksPage() {
             <StockMarketTable
               board={stockListFilter}
               query={stockQuery}
-              onQueryChange={setStockQuery}
               existingSymbols={watchSymbolSet}
               onCounts={setMarketCounts}
               onAdd={handleQuickAdd}
               onRemove={handleQuickRemove}
+              onOpenDetail={row => openStockDetail(row.code, 'CN', row.name, false)}
               renderStatus={renderMarketStatus}
               renderAgentStatus={renderMarketAgentStatus}
               renderSource={renderMarketSource}
