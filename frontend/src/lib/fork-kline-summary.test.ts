@@ -178,8 +178,8 @@ describe('用库里的 tech_* 复原徽章分数', () => {
 })
 
 describe('板块 pill 的定义（去掉「关注」后仍是 5 个）', () => {
-  it('顺序与 key 固定为 上证/深证/科创/创业/ST', () => {
-    expect(BOARD_OPTIONS.map(o => o.key)).toEqual(['sh', 'sz', 'kcb', 'cyb', 'st'])
-    expect(BOARD_OPTIONS.map(o => o.label)).toEqual(['上证', '深证', '科创', '创业', 'ST'])
+  it('顺序与 key：上证 / 深证 / 创业 / 科创 / ST（用户第二轮把创业排到了科创前面）', () => {
+    expect(BOARD_OPTIONS.map(o => o.key)).toEqual(['sh', 'sz', 'cyb', 'kcb', 'st'])
+    expect(BOARD_OPTIONS.map(o => o.label)).toEqual(['上证', '深证', '创业', '科创', 'ST'])
   })
 })
