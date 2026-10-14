@@ -85,10 +85,19 @@ const EXCHANGE_LABEL_ZH: Record<string, string> = {
   BJ: '北',
 }
 
+/**
+ * 市场列徽章的配色。
+ *
+ * 用户第四轮反馈：「深/沪 这几个字太暗了，看不清」。原因是这套色是按浅色底写的
+ * （``text-blue-600`` 在白底上够，落到 dark 主题近黑的 ``--card`` 上就糊了），
+ * 而 fork 页默认跑在 dark 主题下。所以每个交易所都补一组 dark 变体
+ * （``dark:text-*-300`` + 把底色透明度抬到 /15），并把字号从 9px 提到 10px、
+ * 加 font-medium —— 单字徽章太小会看不出是「沪」还是「深」。
+ */
 const EXCHANGE_CLASS: Record<string, string> = {
-  SH: 'bg-blue-500/10 text-blue-600',
-  SZ: 'bg-violet-500/10 text-violet-600',
-  BJ: 'bg-amber-500/10 text-amber-600',
+  SH: 'bg-blue-500/10 text-blue-700 dark:bg-blue-400/15 dark:text-blue-300',
+  SZ: 'bg-violet-500/10 text-violet-700 dark:bg-violet-400/15 dark:text-violet-300',
+  BJ: 'bg-amber-500/10 text-amber-700 dark:bg-amber-400/15 dark:text-amber-300',
 }
 
 /** 市场列：沪 / 深 / 北（库里 exchange 只有这三个值）。 */
@@ -378,7 +387,7 @@ export function StockMarketTable({
       case 'market':
         return (
           <span
-            className={`text-[9px] px-1 py-0.5 rounded ${EXCHANGE_CLASS[String(row.exchange || '').toUpperCase()] || 'bg-accent text-muted-foreground'}`}
+            className={`rounded px-1 py-0.5 text-[10px] font-medium ${EXCHANGE_CLASS[String(row.exchange || '').toUpperCase()] || 'bg-accent text-muted-foreground'}`}
           >
             {exchangeLabel(row.exchange)}
           </span>
