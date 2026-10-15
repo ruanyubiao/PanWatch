@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isLikelyAShareCode, looksLikeCode, normalizeSymbol, splitStockTokens } from '@/lib/stock-tokens'
+import { isLikelyAShareCode, looksLikeCode, normalizeSymbol, sameListingCode, splitStockTokens } from '@/lib/stock-tokens'
 
 /**
  * 批量添加的输入切分。
@@ -53,6 +53,17 @@ describe('normalizeSymbol', () => {
 
   it('保留纯代码不变', () => {
     expect(normalizeSymbol('300750')).toBe('300750')
+  })
+
+  it('去掉 sh/sz/bj 前缀，并和纯代码视为同一只', () => {
+    expect(normalizeSymbol('sh600519')).toBe('600519')
+    expect(normalizeSymbol('SZ000001')).toBe('000001')
+    expect(normalizeSymbol('SH600519.SH')).toBe('600519')
+    expect(sameListingCode('sh600519', '600519')).toBe(true)
+    expect(sameListingCode('sz000001', '000001.SZ')).toBe(true)
+    expect(sameListingCode('600519', '000001')).toBe(false)
+    expect(isLikelyAShareCode('sh600519')).toBe(true)
+    expect(isLikelyAShareCode('sz300750')).toBe(true)
   })
 })
 
