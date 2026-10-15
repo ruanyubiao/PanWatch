@@ -22,8 +22,14 @@ import {
  * 第四轮用户要求：
  *   - 组1 从 pill 行**也改成下拉菜单**（和另外三组统一），所以 pill 那套
  *     FilterChip / 分组标题 / 竖分隔线都删了 —— 这一行现在就是四个下拉 + 清空筛选。
- *     计数跟着选项走（「全部 (5574)」「上证 (1632)」…），触发器上显示的也是带计数的那个文案。
+ *     计数跟着选项走，触发器上显示的也是带计数的那个文案。
  *   - 「清空筛选」**紧跟在下拉菜单后面**（原来有 ml-auto 被推到行尾，看着像和筛选无关）。
+ *
+ * 第五轮：组1 的「全部」选项文案改成「全部市场 (5574)」（触发器与选项同文案），
+ * 触发器宽度**翻倍**（104 → 208，见 MARKET_TRIGGER_WIDTH）——原来是按 pill 时代的短文案留的，
+ * 现在文案变长且用户反馈太窄。Radix 的 SelectContent 是 min-w-[var(--radix-select-trigger-width)]，
+ * 所以面板宽度跟着触发器一起放大，不用单独调。
+ * 另外三组（状态 / 涨跌 / 市值）文案没变，宽度保持 104。
  *
  * 顺序照旧：全部 / 上证 / 深证 / **创业** / **科创** / ST —— 即 BOARD_OPTIONS 的顺序。
  * 「清空筛选」连**市场**一起复位（hasAnyFilterActive 因此把 board 也算进来，
@@ -38,7 +44,8 @@ import {
  */
 
 const FILTER_BAR_TEXTS_ZH = {
-  all: '全部',
+  /** 组1 的「不限市场」文案。第五轮从「全部」改成「全部市场」（更明确这是市场维度）。 */
+  all: '全部市场',
   marketAll: '全部市场',
   statusAll: '全部状态',
   changeAll: '全部涨跌',
@@ -60,10 +67,16 @@ export interface StockFilterBarProps {
   className?: string
 }
 
-/** 组1 下拉里每一行的文案：「全部 (5574)」「上证 (1632)」（计数与 pill 时代的写法一致）。 */
+/** 组1 下拉里每一行的文案：「全部市场 (5574)」「上证 (1632)」（计数与 pill 时代的写法一致）。 */
 function marketOptionLabel(label: string, count: number | undefined): string {
   return `${label} (${count ?? (label === FILTER_BAR_TEXTS_ZH.all ? '—' : 0)})`
 }
+
+/**
+ * 组1 触发器的宽度。第五轮用户反馈「太短」，按 104px **翻倍**到 208px；
+ * 其余三组仍是 104。Radix 的 SelectContent 取 min-w = 触发器宽度，面板随之变宽。
+ */
+const MARKET_TRIGGER_WIDTH = 'w-[208px]'
 
 export function StockFilterBar({
   board,
@@ -84,7 +97,7 @@ export function StockFilterBar({
     <div className={`flex flex-wrap items-center gap-2 ${className || ''}`}>
       {/* 组1 市场：单选下拉（选项 = 全部 / 上证 / 深证 / 创业 / 科创 / ST，各带计数） */}
       <Select value={board} onValueChange={value => onBoardChange(value as BoardKey)}>
-        <SelectTrigger aria-label={FILTER_BAR_TEXTS_ZH.marketAll} className="h-8 w-[104px] text-[12px]">
+        <SelectTrigger aria-label={FILTER_BAR_TEXTS_ZH.marketAll} className={`h-8 ${MARKET_TRIGGER_WIDTH} text-[12px]`}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
