@@ -34,6 +34,17 @@ describe('classifyBoard', () => {
   it('北交所等无 pill 的代码只计入「全部」', () => {
     expect(classifyBoard({ symbol: '920992', name: '中科美菱', market: 'CN' })).toBe('all')
   })
+
+  it('行情库那种带交易所前缀的 symbol 仍按 6 位代码归类', () => {
+    expect(classifyBoard({ symbol: 'sh600519', name: '贵州茅台', market: 'CN' })).toBe('sh')
+    expect(classifyBoard({ symbol: 'sz000001', name: '平安银行', market: 'CN' })).toBe('sz')
+    expect(classifyBoard({ symbol: 'sz300750', name: '宁德时代', market: 'CN' })).toBe('cyb')
+    expect(classifyBoard({ symbol: 'sh688111', name: '金山办公', market: 'CN' })).toBe('kcb')
+    expect(classifyBoard({ symbol: 'sz302132', name: '中航成飞', market: 'CN' })).toBe('sz')
+    expect(classifyBoard({ symbol: 'bj920992', name: '中科美菱', market: 'CN' })).toBe('all')
+    // 港股前缀不能剥掉再按 00 归深证
+    expect(classifyBoard({ symbol: 'HK00700', name: '腾讯控股' })).toBe('all')
+  })
 })
 
 describe('fork 的「关注」范围', () => {

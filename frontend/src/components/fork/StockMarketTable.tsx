@@ -282,6 +282,9 @@ interface StockMarketTableProps {
    * 组件这边不重算口径 —— 否则筛出来的集合与状态列的徽章可能不是同一批。
    */
   getRowAction?: (row: MarketRow) => string | null
+  /** 递增后重新向行情库取全量。筛选/翻页不改它，所以不会因此打接口。 */
+  reloadToken?: number
+  onLoadingChange?: (loading: boolean) => void
   /**
    * 表格**上方**那条工具条里、搜索框左边的按钮（页面把「刷新」「添加股票」放进来）。
    * 只有上一条分页条渲染它；下一条只保留「共 N 条 / 页码 / 每页条数」。
@@ -306,6 +309,8 @@ export function StockMarketTable({
   onCopyCode,
   onOpenDetail,
   getRowAction,
+  reloadToken = 0,
+  onLoadingChange,
   toolbarActions,
   searchSlot,
   renderStatus,
@@ -316,18 +321,21 @@ export function StockMarketTable({
   const [rows, setRows] = useState<MarketRow[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
-  const [busy, setBusy] = useState<string | null>(null)
+  const [busyCodes, setBusyCodes] = useState<Set<string>>(new Set())
   const [sort, setSort] = useState<SortState | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(STOCK_PAGE_SIZE)
   const countsRef = useRef(onCounts)
   countsRef.current = onCounts
+  const onLoadingChangeRef = useRef(onLoadingChange)
+  onLoadingChangeRef.current = onLoadingChange
 
-  // 全量只取一次：换板块 / 筛选 / 搜索 / 排序 / 翻页都不再打接口（用户要求的前端缓存）
+  // 全量只在进入页面和点「刷新」时取：换板块 / 筛选 / 搜索 / 排序 / 翻页都不再打接口
   useEffect(() => {
     const controller = new AbortController()
     setLoading(true)
     setError(false)
+    onLoadingChangeRef.current?.(true)
     fetchAPI<MarketTableResponse>(
       `/stocks/market-table?board=all&limit=${MARKET_FETCH_LIMIT}`,
       { signal: controller.signal },
@@ -342,10 +350,13 @@ export function StockMarketTable({
         if (!controller.signal.aborted) setError(true)
       })
       .finally(() => {
-        if (!controller.signal.aborted) setLoading(false)
+        if (!controller.signal.aborted) {
+          setLoading(false)
+          onLoadingChangeRef.current?.(false)
+        }
       })
     return () => controller.abort()
-  }, [])
+  }, [reloadToken])
 
   const activeFilters = filters ?? EMPTY_MARKET_FILTERS
   // 全量（5000 余行）过滤 → 排序 → 再切片：排序是「对所有数据」的排序，不是只排当前页
@@ -371,11 +382,20 @@ export function StockMarketTable({
 
   const handleFollow = useCallback(
     async (row: MarketRow) => {
-      setBusy(row.code)
+      setBusyCodes(prev => {
+        const next = new Set(prev)
+        next.add(row.code)
+        return next
+      })
       try {
         await onAdd(row)
       } finally {
-        setBusy(null)
+        setBusyCodes(prev => {
+          if (!prev.has(row.code)) return prev
+          const next = new Set(prev)
+          next.delete(row.code)
+          return next
+        })
       }
     },
     [onAdd],
@@ -538,7 +558,7 @@ export function StockMarketTable({
                 const followed = existingSymbols.has(row.code) || existingSymbols.has(row.symbol)
                 const state: MarketRowState = {
                   followed,
-                  busy: busy === row.code,
+                  busy: busyCodes.has(row.code),
                   onFollow: () => void handleFollow(row),
                   onUnfollow: () => onRemove(row),
                 }
