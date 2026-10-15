@@ -8,8 +8,8 @@
  * 本文件只负责「板块」这一组；ETF 不参与 fork 页（只服务股票）。
  *
  * 判定完全基于代码前缀与名称，不依赖后端新增字段。后端
- * ``src/modules/market/api/fork_catalog.py`` 是同一套规则的镜像，
- * 改这里必须同步改那边。
+ * ``src/modules/market/api/fork_market.py`` 的 ``_BOARD_CASE`` 是同一套规则
+ * （认 6 位数字代码，不认 sh/sz/bj 前缀）。改这里必须同步改那边。
  *
  * 归类是互斥的，优先级：ST > 科创 > 创业 > 上证 > 深证。
  * （ST 优先是刻意的：ST 是风险标记，用户点「ST」是想单独把这批票挑出来看。）
@@ -55,7 +55,9 @@ export function isEtf(stock: BoardClassifiable): boolean {
 
 /** 返回板块 key；'all' 表示不属于任何板块（北交所、非 A 股等）。 */
 export function classifyBoard(stock: BoardClassifiable): BoardKey {
-  const symbol = String(stock.symbol || '').trim()
+  // 行情库 symbol 带 sh/sz/bj 前缀；板块规则认的是 6 位数字代码（与后端 i.code 一致）。
+  // 不剥 HK：00700 本身就以 00 开头，剥掉 HK 会把港股误判成深证。
+  const symbol = String(stock.symbol || '').trim().replace(/^(sh|sz|bj)(?=\d)/i, '')
   const market = String(stock.market || '').toUpperCase()
 
   if (isStName(stock.name)) return 'st'

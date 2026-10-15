@@ -9,7 +9,6 @@ import {
   buildPortfolioStockKeys,
   loadPortfolioPageBackgroundData,
   loadPortfolioPageCoreData,
-  loadPortfolioPageQuoteData,
 } from '@/lib/portfolio-page-data'
 import { SuggestionBadge, type SuggestionInfo, type KlineSummary } from '@panwatch/biz-ui/components/suggestion-badge'
 import { KlineSummaryDialog } from '@panwatch/biz-ui/components/kline-summary-dialog'
@@ -40,12 +39,13 @@ import {
   onlyAShares,
   type BoardKey,
 } from '@/lib/board-classify'
+import { buildKlineSuggestion } from '@/lib/kline-scorer'
 import {
   buildSummaryFromMarketRow,
-  marketRowAction,
   type MarketRow,
   type MarketTableResponse,
 } from '@/lib/fork-kline-summary'
+import { normalizeSymbol, sameListingCode } from '@/lib/stock-tokens'
 import {
   EMPTY_MARKET_FILTERS,
   STATUS_FILTER_KEYS,
@@ -223,10 +223,17 @@ const buildQuoteItemsFrom = (stockList: Stock[], portfolio: PortfolioSummary | n
 const toPriceAlertSummaryMap = (rows: PriceAlertRuleSummary[]): Record<string, { total: number; enabled: number }> => {
   const map: Record<string, { total: number; enabled: number }> = {}
   for (const row of rows || []) {
-    const key = `${String(row.market || 'CN').toUpperCase()}:${String(row.stock_symbol || '').toUpperCase()}`
-    if (!map[key]) map[key] = { total: 0, enabled: 0 }
-    map[key].total += 1
-    if (row.enabled) map[key].enabled += 1
+    const market = String(row.market || 'CN').toUpperCase()
+    const raw = String(row.stock_symbol || '').toUpperCase()
+    const bare = normalizeSymbol(raw)
+    // 同一条提醒同时挂到「库里的写法」和「6 位代码」上，表格用 code 查得到。
+    for (const symbol of new Set([raw, bare])) {
+      if (!symbol) continue
+      const key = `${market}:${symbol}`
+      if (!map[key]) map[key] = { total: 0, enabled: 0 }
+      map[key].total += 1
+      if (row.enabled) map[key].enabled += 1
+    }
   }
   return map
 }
@@ -271,7 +278,6 @@ export default function StocksPage() {
 
   // Quotes for all stocks (used in stock list)
   const [quotes, setQuotes] = useState<Record<string, DisplayQuote>>({})
-  const [quotesLoading, setQuotesLoading] = useState(false)
   // Keyed by `${market}:${symbol}` to avoid cross-market symbol collisions
   const [klineSummaries, setKlineSummaries] = useState<Record<string, KlineSummary>>({})
 
@@ -310,10 +316,6 @@ export default function StocksPage() {
 
   // Market status
   const [marketStatus, setMarketStatus] = useState<MarketStatus[]>([])
-  const marketStatusRef = useRef<MarketStatus[]>([])
-  marketStatusRef.current = marketStatus
-  // Guard to prevent overlapping K线刷新任务导致实际并发超限
-  const klineRefreshInFlight = useRef<Promise<void> | null>(null)
   const initialLoadPromiseRef = useRef<Promise<void> | null>(null)
   const configLoadPromiseRef = useRef<Promise<void> | null>(null)
   const configLoadedRef = useRef(false)
@@ -377,8 +379,11 @@ export default function StocksPage() {
   // （用户要求：本页不再有「关注」），所以范围固定成 'market' —— 保留下面的
   // watch 分支只是为了让 merge upstream 时的 diff 尽量小，界面上够不到它。
   const stockScope = 'market' as 'watch' | 'market'
-  // fork：全市场各板块总数（由 StockMarketTable 拉取后回传，用于 pill 计数）
+  // fork：全市场各板块总数（由 StockMarketTable 拉取后回传，用于市场下拉的计数）
   const [marketCounts, setMarketCounts] = useState<MarketTableResponse['counts'] | null>(null)
+  // 递增后让行情表重新向本机 MySQL 取全量。「刷新」只动这个，不再打外网行情。
+  const [marketReloadToken, setMarketReloadToken] = useState(0)
+  const [tableLoading, setTableLoading] = useState(false)
   // fork：批量添加弹窗
   const [showBatchAdd, setShowBatchAdd] = useState(false)
   /* fork：搜索词由页面持有，StockMarketTable 受控（搜索框在分页条左侧，上下各一个）。 */
@@ -391,21 +396,6 @@ export default function StocksPage() {
     if (!tour?.active || !['stock', 'quote', 'analysis'].includes(tour.step || '')) return
     setStockListFilter('all')
   }, [tour?.active, tour?.step])
-
-  // fork：进页面就把各板块数取回来，pill 上直接显示真实数量
-  // （否则要点一下才有数）。StockMarketTable 之后会持续回传更新的计数。
-  // 数据来自本机 MySQL，不打外网。
-  useEffect(() => {
-    const controller = new AbortController()
-    fetchAPI<{ counts: MarketTableResponse['counts'] }>('/stocks/market-table?board=all&limit=1', {
-      signal: controller.signal,
-    })
-      .then(data => {
-        if (!controller.signal.aborted && data?.counts) setMarketCounts(data.counts)
-      })
-      .catch(() => {})
-    return () => controller.abort()
-  }, [])
 
   // Remove watchlist modal
   const [removeWatchStock, setRemoveWatchStock] = useState<Stock | null>(null)
@@ -576,53 +566,9 @@ export default function StocksPage() {
   }, [])
 
   useEffect(() => {
-    const controller = new AbortController()
-    const refresh = () => { if (!document.hidden) void refreshMarketStatus(controller.signal) }
-    const timer = window.setInterval(refresh, 60_000)
-    document.addEventListener('visibilitychange', refresh)
-    return () => {
-      controller.abort()
-      window.clearInterval(timer)
-      document.removeEventListener('visibilitychange', refresh)
-    }
-  }, [refreshMarketStatus])
-
-  const refreshQuotes = useCallback(async (automatic = false) => {
-    const statuses = marketStatusRef.current
-    const items = buildQuoteItems().filter(item => !automatic ||
-      !statuses.some(status => status.code === item.market) ||
-      statuses.some(status => status.code === item.market && status.is_trading))
-    if (items.length === 0) return
-
-    setQuotesLoading(true)
-    try {
-      const data = await requestQuotes(items)
-      if (data.length > 0) {
-        setQuotes(previous => ({ ...previous, ...toQuoteMap(data) }))
-      }
-    } finally {
-      setQuotesLoading(false)
-    }
-  }, [buildQuoteItems, requestQuotes])
-
-  useEffect(() => {
     if (!portfolioRaw) return
     setPortfolio(mergePortfolioQuotes(portfolioRaw, applyMarketStatuses(quotes, marketStatus)))
   }, [portfolioRaw, quotes, marketStatus])
-
-  // 刷新 K 线摘要（批量接口）；并防止重入
-  const refreshKlines = useCallback(async () => {
-    if (klineRefreshInFlight.current) return klineRefreshInFlight.current
-    const run = (async () => {
-      const items = buildQuoteItems()
-      if (items.length === 0) return
-      const map = await requestKlineSummaries(items)
-      // 增量合并：本轮单只失败时保留旧值，避免技术徽章闪断/消失
-      setKlineSummaries(prev => ({ ...prev, ...map }))
-    })()
-    klineRefreshInFlight.current = run
-    try { await run } finally { klineRefreshInFlight.current = null }
-  }, [buildQuoteItems, requestKlineSummaries])
 
   // 从建议池加载建议（包含历史建议和多来源建议）
   const loadPoolSuggestions = useCallback(async (itemsOverride?: QuoteRequestItem[]) => {
@@ -731,15 +677,9 @@ export default function StocksPage() {
       setLoading(false)
       setPortfolioLoading(false)
 
-      void loadPortfolioPageQuoteData({
-        buildQuoteItems: buildQuoteItemsFrom,
-        loadQuotes: requestQuotes,
-      }, coreData.stocks, coreData.portfolio, signal).then(data => {
-        if (signal.aborted) return
-        setQuotes(toQuoteMap(data.quotes))
-      }).catch(error => {
-        if (!signal.aborted) console.warn('Portfolio quotes unavailable:', error)
-      })
+      // fork：表格的现价和技术面来自本机 MySQL，这里不再打 /quotes/batch
+      // 和 /klines/summary/batch。那两条会把自选批量打到外网数据源上，
+      // 正是分析页要避开的限流路径。建议池和价格提醒仍走本机接口。
 
       // FX refresh also runs independently of the metadata shell and quotes.
       void fetchAPI<PortfolioSummary>('/portfolio/summary?include_quotes=false', { signal }).then(data => {
@@ -753,9 +693,8 @@ export default function StocksPage() {
         buildQuoteItems: buildQuoteItemsFrom,
         loadSuggestions: requestSuggestions,
         loadPriceAlerts: requestPriceAlerts,
-        loadKlines: requestKlineSummaries,
+        loadKlines: async () => ({}),
       }, coreData.stocks, coreData.portfolio, signal, {
-        klines: data => setKlineSummaries(prev => ({ ...prev, ...data })),
         suggestions: setPoolSuggestions,
         priceAlerts: data => setPriceAlertSummaryMap(toPriceAlertSummaryMap(data)),
       }).catch(error => {
@@ -770,7 +709,7 @@ export default function StocksPage() {
 
     initialLoadPromiseRef.current = run
     return run
-  }, [refreshMarketStatus, requestKlineSummaries, requestPriceAlerts, requestQuotes, requestSuggestions])
+  }, [refreshMarketStatus, requestPriceAlerts, requestSuggestions])
 
   // Load news for specific stock or all watchlist
   const loadNews = useCallback(async (stockName?: string) => {
@@ -856,21 +795,19 @@ export default function StocksPage() {
     return (agent.schedule || '').trim()
   }
 
-  // Refresh quotes only (decoupled from portfolio and scans)
+  // 刷新 = 重新读本机行情库 + 建议池 + 价格提醒。不打外网批量行情/K 线。
   const handleRefresh = useCallback(async () => {
     if (tourQuoteBusy.current) return
     tourQuoteBusy.current = true
     try {
       await tour?.observeQuote()
-      void refreshKlines()
-    await Promise.all([
-      refreshMarketStatus(),
-      refreshQuotes(),
-      loadPoolSuggestions(),
-      loadPriceAlertSummaries(),
-    ])
+      setMarketReloadToken(token => token + 1)
+      await Promise.all([
+        loadPoolSuggestions(),
+        loadPriceAlertSummaries(),
+      ])
     } finally { tourQuoteBusy.current = false }
-  }, [tour, loadPoolSuggestions, loadPriceAlertSummaries, refreshKlines, refreshMarketStatus, refreshQuotes])
+  }, [tour, loadPoolSuggestions, loadPriceAlertSummaries])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -1376,18 +1313,25 @@ export default function StocksPage() {
   }
 
   const getPriceAlertSummary = (symbol: string, market: string) => {
-    const key = `${String(market || 'CN').toUpperCase()}:${String(symbol || '').toUpperCase()}`
-    return priceAlertSummaryMap[key] || { total: 0, enabled: 0 }
+    const m = String(market || 'CN').toUpperCase()
+    const raw = String(symbol || '').toUpperCase()
+    const bare = normalizeSymbol(raw)
+    return priceAlertSummaryMap[`${m}:${raw}`]
+      || priceAlertSummaryMap[`${m}:${bare}`]
+      || { total: 0, enabled: 0 }
   }
 
   // 获取股票的建议信息（优先使用建议池，包含来源和时间信息）
   const getSuggestionForStock = (symbol: string, market: string): { suggestion: SuggestionInfo | null; kline: KlineSummary | null } => {
-    const key = `${market || 'CN'}:${symbol}`
+    const m = market || 'CN'
+    const bare = normalizeSymbol(symbol)
+    const key = [`${m}:${symbol}`, `${m}:${bare}`, `${m}:sh${bare}`, `${m}:sz${bare}`, `${m}:bj${bare}`]
+      .find(candidate => poolSuggestions[candidate]) || `${m}:${symbol}`
     // 优先使用建议池的建议（包含来源和时间信息）
     const poolSug =
       poolSuggestions[key] ||
       (() => {
-        const fallback = poolSuggestions[symbol]
+        const fallback = poolSuggestions[symbol] || poolSuggestions[bare]
         if (!fallback) return null
         const fm = String(fallback.stock_market || '').toUpperCase()
         return fm && fm !== String(market || 'CN').toUpperCase() ? null : fallback
@@ -1442,8 +1386,21 @@ export default function StocksPage() {
   /** 「关注」范围只含 A 股股票（ETF 与港美股都不参与本页）。 */
   const watchStocks = useMemo(() => onlyAShares(stocks), [stocks])
   /** 关注的代码集合，用于「全部」列表里显示「已关注」。 */
-  const watchSymbolSet = useMemo(
-    () => new Set(watchStocks.map(s => String(s.symbol))),
+  const watchSymbolSet = useMemo(() => {
+    const set = new Set<string>()
+    for (const stock of watchStocks) {
+      const raw = String(stock.symbol || '')
+      set.add(raw)
+      const bare = normalizeSymbol(raw)
+      if (bare) set.add(bare)
+    }
+    return set
+  }, [watchStocks])
+  const findWatchedStock = useCallback(
+    (row: { code: string; symbol?: string | null }) =>
+      watchStocks.find(
+        stock => sameListingCode(stock.symbol, row.code) || sameListingCode(stock.symbol, row.symbol),
+      ),
     [watchStocks],
   )
   /** 当前范围下各板块的计数：关注范围用自选算，全部范围用后端返回的全市场数。 */
@@ -1471,10 +1428,10 @@ export default function StocksPage() {
   /** fork：表格里点 X（已关注的标的）→ 与关注列表同一套「取消关注」确认流程。 */
   const handleQuickRemove = useCallback(
     (row: MarketRow) => {
-      const found = watchStocks.find(s => String(s.symbol) === row.code)
+      const found = findWatchedStock(row)
       if (found) setRemoveWatchStock(found)
     },
-    [watchStocks],
+    [findWatchedStock],
   )
 
   /**
@@ -1524,7 +1481,7 @@ export default function StocksPage() {
   const summaryCacheRef = useRef(new Map<string, KlineSummary | null>())
   const rowSummary = useCallback(
     (row: MarketRow): KlineSummary | null => {
-      const key = `${row.code}:${row.trade_date}`
+      const key = `${row.code}:${row.trade_date ?? ''}:${row.tech?.score ?? 'na'}:${row.close ?? ''}`
       const cache = summaryCacheRef.current
       if (!cache.has(key)) cache.set(key, buildSummaryFromMarketRow(row, klineTr))
       return cache.get(key) ?? null
@@ -1543,11 +1500,15 @@ export default function StocksPage() {
 
   /**
    * fork：一行 → 技术面动作（buy/avoid/watch），喂给表格的「状态」筛选。
-   * 走的就是徽章那条路径（marketRowAction），所以「筛出来的」与「看到的」是同一批。
+   * 走的就是徽章那条路径（rowSummary → buildKlineSuggestion），所以「筛出来的」与「看到的」是同一批。
    */
   const marketRowActionOf = useCallback(
-    (row: MarketRow) => marketRowAction(row, klineTr),
-    [klineTr],
+    (row: MarketRow) => {
+      const summary = rowSummary(row)
+      if (!summary) return null
+      return buildKlineSuggestion(summary as never, false, klineTr).action
+    },
+    [klineTr, rowSummary],
   )
 
   /**
@@ -1612,7 +1573,7 @@ export default function StocksPage() {
 
   /** Agent 状态列：与卡片同一套文案（未配置 Agent / 已配置 N 个）。 */
   const renderMarketAgentStatus = (row: MarketRow) => {
-    const found = watchStocks.find(s => String(s.symbol) === row.code)
+    const found = findWatchedStock(row)
     const running = found ? runningAgents[found.id] : null
     if (running) {
       return (
@@ -1672,7 +1633,7 @@ export default function StocksPage() {
 
   /** 操作列：原来那张卡片右下角的整套按钮，一项不少。 */
   const renderMarketActions = (row: MarketRow, state: MarketRowState) => {
-    const found = watchStocks.find(s => String(s.symbol) === row.code)
+    const found = findWatchedStock(row)
     const alert = getPriceAlertSummary(row.code, 'CN')
     return (
       <>
@@ -1783,53 +1744,8 @@ export default function StocksPage() {
     })
   }
 
-  // 骨架屏：初始加载时显示
-  if (loading) {
-    return (
-      <div>
-        {/* Header Skeleton */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <Skeleton className="h-6 w-16 mb-2" />
-            <Skeleton className="h-4 w-32" />
-          </div>
-          <div className="hidden md:flex items-center gap-3">
-            <Skeleton className="h-9 w-24" />
-            <Skeleton className="h-9 w-24" />
-            <Skeleton className="h-9 w-24" />
-          </div>
-        </div>
-        {/* Summary Cards Skeleton */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          {[...Array(4)].map((_, i) => (
-            <div key={i} className="card p-4">
-              <Skeleton className="h-4 w-16 mb-2" />
-              <Skeleton className="h-6 w-24" />
-            </div>
-          ))}
-        </div>
-        {/* Account List Skeleton */}
-        <div className="space-y-4">
-          {[...Array(2)].map((_, i) => (
-            <div key={i} className="card">
-              <div className="px-4 py-3 border-b border-border/50">
-                <Skeleton className="h-5 w-32" />
-              </div>
-              <div className="divide-y divide-border/50">
-                {[...Array(3)].map((_, j) => (
-                  <div key={j} className="px-4 py-3 flex items-center gap-4">
-                    <Skeleton className="h-4 w-16" />
-                    <Skeleton className="h-4 w-24" />
-                    <Skeleton className="h-4 w-16 ml-auto" />
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    )
-  }
+  // fork：不再用持仓页的整页骨架挡住分析表。行情表自己有加载态，
+  // 而且要和自选列表并行取数，不能等 /stocks 与组合汇总回来才开始。
 
   /**
    * fork：表格工具条上的两个按钮 —— 原来在页头，用户要求缩小并挪到搜索框前面。
@@ -1843,9 +1759,9 @@ export default function StocksPage() {
         size="sm"
         className="h-7 px-2 text-[12px]"
         onClick={handleRefresh}
-        disabled={quotesLoading || tour?.busy}
+        disabled={loading || tableLoading || tour?.busy}
       >
-        <RefreshCw className={`h-3.5 w-3.5 ${quotesLoading ? 'animate-spin' : ''}`} />
+        <RefreshCw className={`h-3.5 w-3.5 ${tableLoading ? 'animate-spin' : ''}`} />
         {stockT('stocksPage.messages.refreshed')}
       </Button>
       <Button
@@ -2548,6 +2464,8 @@ export default function StocksPage() {
               onCopyCode={handleCopyRowCode}
               onOpenDetail={row => openStockDetail(row.code, 'CN', row.name, false)}
               getRowAction={marketRowActionOf}
+              reloadToken={marketReloadToken}
+              onLoadingChange={setTableLoading}
               toolbarActions={tableToolbarActions}
               searchSlot={<StockSearchBox value={stockQuery} onChange={setStockQuery} />}
               renderStatus={renderMarketStatus}
