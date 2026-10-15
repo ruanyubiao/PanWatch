@@ -118,6 +118,8 @@ export function passesMarketFilters(
   if (!stockMatchesSearch(row, query)) return false
   if (!matchChange(row.change_pct, filters.change)) return false
   if (!matchCap(row.total_market_cap, filters.cap)) return false
+  // 状态未选 = 不限。先判断再调用 actionOf，否则每次搜索都会对全市场逐行重算技术面。
+  if (filters.status.length === 0) return true
   return matchStatus(actionOf ? actionOf(row) : null, filters.status)
 }
 
