@@ -93,6 +93,15 @@ def test_adj_factor_缺省按_1_处理而不是除零():
     assert item["ma"]["ma5"] == 1280.0
 
 
+def test_adj_factor_为零或负数时按_1_避免除零或价格翻号():
+    zero = fork_market.map_row(_db_row(adj_factor=Decimal("0")))
+    negative = fork_market.map_row(_db_row(adj_factor=Decimal("-2")))
+    assert zero["adj_factor"] == 1.0
+    assert zero["ma"]["ma5"] == 1280.0
+    assert negative["adj_factor"] == 1.0
+    assert negative["ma"]["ma5"] == 1280.0
+
+
 def test_市值取当日值_当日为空时回落到股票表():
     assert fork_market.map_row(_db_row())["total_market_cap"] == 1607604938886.0
     fallback = fork_market.map_row(_db_row(total_market_cap=None))
@@ -170,19 +179,23 @@ def canned(monkeypatch):
     calls: list[tuple[str, dict]] = []
     rows = [_db_row(), _db_row(code="000001", symbol="sz000001", exchange="SZ", name="平安银行", board="sz")]
 
-    def fake_query(sql, params=None):
-        calls.append((sql, params or {}))
-        if "COUNT(*) AS total" in sql:
-            return [{"total": 2}]
-        if "c_all" in sql:
-            return [{
-                "asof": dt.date(2026, 10, 14),
-                "c_all": 5574, "c_sh": 1632, "c_sz": 1420,
-                "c_kcb": 605, "c_cyb": 1370, "c_st": 201,
-            }]
-        return rows
+    def fake_queries(statements):
+        out = []
+        for sql, params in statements:
+            calls.append((sql, params or {}))
+            if "COUNT(*) AS total" in sql:
+                out.append([{"total": 2}])
+            elif "c_all" in sql:
+                out.append([{
+                    "asof": dt.date(2026, 10, 14),
+                    "c_all": 5574, "c_sh": 1632, "c_sz": 1420,
+                    "c_kcb": 605, "c_cyb": 1370, "c_st": 201,
+                }])
+            else:
+                out.append(rows)
+        return out
 
-    monkeypatch.setattr(fork_market, "_query", fake_query)
+    monkeypatch.setattr(fork_market, "_queries", fake_queries)
     return calls
 
 
@@ -190,14 +203,31 @@ def test_端点返回计数_总数_交易日与行(canned):
     data = fork_market.market_table(board="all", q="", offset=0, limit=100)
 
     assert data["asof"] == "2026-10-14"
-    assert data["total"] == 2
+    # 未筛选时总数与板块计数里的「全部」是同一次聚合，不再另查 COUNT
+    assert data["total"] == 5574
     assert data["offset"] == 0 and data["limit"] == 100
     assert data["counts"] == {
         "all": 5574, "sh": 1632, "sz": 1420, "kcb": 605, "cyb": 1370, "st": 201,
     }
     assert [item["code"] for item in data["items"]] == ["600519", "000001"]
-    # 三次查询：计数、总数、页数据
+    # 未筛选：总数直接用 c_all，只查计数和页数据
+    assert len(canned) == 2
+    assert "COUNT(*) AS total" not in canned[0][0]
+    assert "COUNT(*) AS total" not in canned[1][0]
+
+
+def test_筛选时才单独计数且与分页同口径(canned):
+    data = fork_market.market_table(board="kcb", q=" 茅台 ", offset=20, limit=10)
+    assert data["total"] == 2
     assert len(canned) == 3
+    total_sql, total_params = canned[1]
+    page_sql, page_params = canned[2]
+    assert "COUNT(*) AS total" in total_sql
+    assert "LOCATE(%(needle)s, code)" in total_sql
+    assert total_params == {"needle": "茅台", "board": "kcb"}
+    assert page_params["needle"] == "茅台"
+    assert page_params["board"] == "kcb"
+    assert page_params["limit"] == 10 and page_params["offset"] == 20
 
 
 def test_端点_板块非法时退化成全部(canned):
@@ -207,10 +237,10 @@ def test_端点_板块非法时退化成全部(canned):
 
 
 def test_缺凭据时给_503_加明确原因(monkeypatch):
-    def boom(sql, params=None):
+    def boom(statements):
         raise fork_market.ForkDbUnavailable("未配置只读行情库")
 
-    monkeypatch.setattr(fork_market, "_query", boom)
+    monkeypatch.setattr(fork_market, "_queries", boom)
     with pytest.raises(HTTPException) as excinfo:
         fork_market.market_table(board="all", q="", offset=0, limit=10)
     assert excinfo.value.status_code == 503
@@ -221,6 +251,14 @@ def test_db_config_缺环境变量时抛_ForkDbUnavailable(monkeypatch):
     monkeypatch.delenv("STOCK_DB_RO_USER", raising=False)
     monkeypatch.delenv("STOCK_DB_RO_PASSWORD", raising=False)
     with pytest.raises(fork_market.ForkDbUnavailable):
+        fork_market._db_config()
+
+
+def test_db_config_端口非法时抛_ForkDbUnavailable(monkeypatch):
+    monkeypatch.setenv("STOCK_DB_RO_USER", "stock_ro")
+    monkeypatch.setenv("STOCK_DB_RO_PASSWORD", "x")
+    monkeypatch.setenv("STOCK_DB_PORT", "abc")
+    with pytest.raises(fork_market.ForkDbUnavailable, match="STOCK_DB_PORT"):
         fork_market._db_config()
 
 

@@ -116,9 +116,14 @@ def _db_config() -> dict[str, Any]:
             "未配置只读行情库：需要环境变量 STOCK_DB_RO_USER / STOCK_DB_RO_PASSWORD"
             "（来源 /opt/stock/.env，由 systemd 的 EnvironmentFile 注入）"
         )
+    raw_port = os.getenv("STOCK_DB_PORT") or "3306"
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise ForkDbUnavailable(f"STOCK_DB_PORT 不是合法端口：{raw_port}") from exc
     return {
         "host": os.getenv("STOCK_DB_HOST") or "127.0.0.1",
-        "port": int(os.getenv("STOCK_DB_PORT") or 3306),
+        "port": port,
         "user": user,
         "password": password,
         "database": os.getenv("STOCK_DB_NAME") or "stock",
@@ -136,26 +141,47 @@ def _connect() -> Any:
             "缺少 MySQL 驱动 pymysql，请执行 deploy/01-install-deps.sh（uv pip install pymysql）"
         ) from exc
     try:
-        return pymysql.connect(cursorclass=DictCursor, **_db_config())
+        return pymysql.connect(
+            cursorclass=DictCursor,
+            connect_timeout=5,
+            read_timeout=60,
+            write_timeout=30,
+            **_db_config(),
+        )
     except ForkDbUnavailable:
         raise
     except Exception as exc:  # noqa: BLE001 - 连不上时给明确原因而不是栈
         raise ForkDbUnavailable(f"连接行情库失败：{exc}") from exc
 
 
-def _query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """执行一条只读查询，返回 list[dict]。
+def _queries(statements: list[tuple[str, dict[str, Any] | None]]) -> list[list[dict[str, Any]]]:
+    """同一条连接上顺序执行多条只读查询。
 
-    注意：SQL 文本里**不出现字面 ``%`` 号**（板块判定用 LEFT()/LOCATE()，不用 LIKE 通配符），
+    行情表一次请求原来要连三次库（计数、总数、分页）。全市场扫描不便宜，
+    合并到一条连接上，避免把连接数和握手开销放大三倍。
+
+    SQL 文本里**不出现字面 ``%`` 号**（板块判定用 LEFT()/LOCATE()，不用 LIKE 通配符），
     因为 pymysql 在 ``args is not None`` 时会做 ``query % args``，字面 % 会被当格式符打爆。
     """
     conn = _connect()
     try:
+        results: list[list[dict[str, Any]]] = []
         with conn.cursor() as cursor:
-            cursor.execute(sql, params or {})
-            return list(cursor.fetchall() or [])
+            for sql, params in statements:
+                cursor.execute(sql, params or {})
+                results.append(list(cursor.fetchall() or []))
+        return results
+    except ForkDbUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 查库失败时给明确原因而不是栈
+        raise ForkDbUnavailable(f"查询行情库失败：{exc}") from exc
     finally:
         conn.close()
+
+
+def _query(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """执行一条只读查询，返回 list[dict]。"""
+    return _queries([(sql, params)])[0]
 
 
 # ---------------------------------------------------------------- 纯函数（可单测）
@@ -209,7 +235,9 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
     ``tech_*`` 整组为 NULL（新股、历史不足 120 根，实测最新交易日 97/5574）时
     返回 ``None``，前端显示「数据不足」而不是喂 0（0 分会被当成「观望」这个结论）。
     """
-    fq = _f(row.get("adj_factor")) or 1.0
+    raw_factor = _f(row.get("adj_factor"))
+    # 0 会除零；负数会把均线/支撑翻到价格的另一侧。两者都按「没有复权因子」处理。
+    fq = raw_factor if raw_factor and raw_factor > 0 else 1.0
 
     def adjusted(value: Any) -> float | None:
         raw = _f(value)
@@ -273,17 +301,26 @@ def market_table(
     """A 股全市场行情表（分页），行情与技术面全部来自本机 MySQL，不打外网。"""
     board_key = board if board in BOARD_KEYS else "all"
 
+    # 前端全市场一次取回（board=all 且无关键词）时，总数就是计数查询里的 c_all，
+    # 不必再扫一遍 uni。带板块或关键词时才单独 COUNT，保证和分页同一套 WHERE。
+    filtered = board_key != "all" or bool((q or "").strip())
+    statements: list[tuple[str, dict[str, Any] | None]] = [(_COUNTS_SQL, None)]
+    if filtered:
+        statements.append(build_total_sql(board_key, q))
+    page_sql, page_params = build_page_sql(board_key, q)
+    statements.append((
+        page_sql + " LIMIT %(limit)s OFFSET %(offset)s",
+        {**page_params, "limit": limit, "offset": offset},
+    ))
+
     try:
-        count_rows = _query(_COUNTS_SQL)
-        total_sql, total_params = build_total_sql(board_key, q)
-        total_rows = _query(total_sql, total_params)
-        page_sql, params = build_page_sql(board_key, q)
-        params["limit"] = limit
-        params["offset"] = offset
-        rows = _query(page_sql + " LIMIT %(limit)s OFFSET %(offset)s", params)
+        results = _queries(statements)
     except ForkDbUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    count_rows = results[0]
+    total_rows = results[1] if filtered else []
+    rows = results[-1]
     counts_row = count_rows[0] if count_rows else {}
     counts = {
         "all": int(counts_row.get("c_all") or 0),
@@ -294,7 +331,7 @@ def market_table(
         "st": int(counts_row.get("c_st") or 0),
     }
     asof = counts_row.get("asof")
-    total = int(total_rows[0].get("total") or 0) if total_rows else 0
+    total = int(total_rows[0].get("total") or 0) if total_rows else counts["all"]
 
     return {
         "asof": str(asof) if asof is not None else None,

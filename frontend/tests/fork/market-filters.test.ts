@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   CAP_FILTER_OPTIONS_ZH,
   CHANGE_FILTER_OPTIONS_ZH,
@@ -184,6 +184,12 @@ describe('fork: 组合过滤', () => {
     ).toEqual(['600519', '000001'])
     // 没传 actionOf 时状态筛选不会把所有行都滤掉（空数组 = 不限）
     expect(filterMarketRows(rows, 'all', '', { status: [], change: 'all', cap: [] }).length).toBe(3)
+  })
+
+  it('状态未选时不调用 actionOf，避免搜索时对全市场重算技术面', () => {
+    const actionOf = vi.fn(() => 'buy')
+    expect(filterMarketRows(rows, 'all', '茅台', EMPTY_MARKET_FILTERS, actionOf).map(r => r.code)).toEqual(['600519'])
+    expect(actionOf).not.toHaveBeenCalled()
   })
 })
 
