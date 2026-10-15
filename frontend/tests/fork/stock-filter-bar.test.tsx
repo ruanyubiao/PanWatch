@@ -50,19 +50,34 @@ const openSelect = async (user: ReturnType<typeof userEvent.setup>, label: strin
 }
 
 describe('fork: 分析页筛选行', () => {
-  it('市场是单选下拉：选项 全部 / 上证 / 深证 / 创业 / 科创 / ST，各带计数', async () => {
+  it('市场是单选下拉：选项 全部市场 / 上证 / 深证 / 创业 / 科创 / ST，各带计数', async () => {
     const user = userEvent.setup()
     renderBar()
     await openSelect(user, '全部市场')
     const options = await screen.findAllByRole('option')
     expect(options.map(o => o.textContent)).toEqual([
-      '全部 (5574)',
+      '全部市场 (5574)',
       '上证 (1632)',
       '深证 (1421)',
       '创业 (1369)',
       '科创 (605)',
       'ST (201)',
     ])
+  })
+
+  it('市场下拉的触发器宽度是另外三组的两倍（104 → 208）', () => {
+    renderBar()
+    const market = screen.getByLabelText('全部市场')
+    expect(market.className).toContain('w-[208px]')
+    // 另外三组仍是 104，别跟着一起变宽
+    expect(screen.getByLabelText('全部涨跌').className).toContain('w-[104px]')
+    expect(screen.getByLabelText('全部状态').className).toContain('w-[104px]')
+    expect(screen.getByLabelText('全部市值').className).toContain('w-[104px]')
+  })
+
+  it('市场下拉里「全部市场」就是不限（board=all），触发器也显示这个文案', () => {
+    renderBar({ board: 'all' })
+    expect(screen.getByLabelText('全部市场').textContent).toContain('全部市场 (5574)')
   })
 
   it('市场下拉的触发器显示当前板块（带计数）', () => {
