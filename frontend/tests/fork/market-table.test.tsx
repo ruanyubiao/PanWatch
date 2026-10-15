@@ -521,6 +521,35 @@ describe('fork: 分析页全市场表格', () => {
     expect(screen.getByText('数据不足')).toBeTruthy()
   })
 
+  it('reloadToken 变化时重新取全量，筛选本身不取', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    const view = (reloadToken: number) => (
+      <StockMarketTable
+        board="all"
+        query=""
+        reloadToken={reloadToken}
+        existingSymbols={new Set<string>()}
+        onAdd={vi.fn()}
+        onRemove={vi.fn()}
+        onOpenDetail={vi.fn()}
+        renderStatus={() => null}
+        renderAgentStatus={() => null}
+        renderSource={() => null}
+        renderActions={() => null}
+      />
+    )
+    const { rerender } = render(view(0))
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    expect(urlsOf()).toHaveLength(1)
+
+    rerender(view(0))
+    expect(urlsOf()).toHaveLength(1)
+
+    rerender(view(1))
+    await waitFor(() => expect(urlsOf()).toHaveLength(2))
+    expect(urlsOf().every(url => url.includes('/stocks/market-table'))).toBe(true)
+  })
+
   it('已关注的行给出 X（取消关注），未关注给出 +（关注）', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response())
     const { onAdd, onRemove } = renderTable({ existingSymbols: new Set(['000001']) })
