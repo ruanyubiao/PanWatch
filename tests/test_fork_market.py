@@ -355,24 +355,31 @@ def test_数据时间取_sync_log_里最后一条成功的行情同步(monkeypat
         data["data_synced_at"].startswith("2026-10-19T17:00:30-")
 
 
-def test_sync_log_不可用时退回_stock_daily_updated_at(monkeypatch):
-    """老库没有 sync_log（或只读账户没授权）时退回 MAX(updated_at)，不能空着。"""
+def test_sync_log_不可用时退回_stock_daily_max_trade_date(monkeypatch):
+    """老库没有 sync_log（或只读账户没授权）时退回 ``MAX(trade_date)``。
+
+    必须是**有索引**的列：``MAX(updated_at)`` 在 1600 万行上无索引，实测 150s 不返回，
+    会把请求卡到 read_timeout。兜底只给交易日，``data_synced_at`` 留空（不拿交易日
+    伪造 00:00:00 的时刻）。
+    """
     calls: list[str] = []
 
     def fake_query(sql, params=None):
         calls.append(sql)
         if "sync_log" in sql:
             raise fork_market.ForkDbUnavailable("Table 'stock.sync_log' doesn't exist")
-        return [{"finished_at": dt.datetime(2026, 10, 16, 17, 0, 25),
-                 "trade_date": dt.date(2026, 10, 16)}]
+        return [{"trade_date": dt.date(2026, 10, 16)}]
 
     monkeypatch.setattr(fork_market, "_query", fake_query)
     data = fork_market.data_sync_info()
 
     assert any("sync_log" in sql for sql in calls)
-    assert any("stock_daily" in sql for sql in calls)
-    assert data["data_synced_at"].startswith("2026-10-16T17:00:25")
+    fallback = [sql for sql in calls if "stock_daily" in sql]
+    assert fallback, "兜底语句没发出去"
+    assert "MAX(trade_date)" in fallback[0]
+    assert "updated_at" not in fallback[0], "兜底不能再用无索引的 updated_at"
     assert data["data_trade_date"] == "2026-10-16"
+    assert data["data_synced_at"] is None
 
 
 def test_数据库整个不可用时数据时间留空但版本仍然返回(monkeypatch):
