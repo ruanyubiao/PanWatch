@@ -43,6 +43,12 @@ tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@v0.5.0
 # 可选的工具检索插件；PanWatch 默认启用 shadow 模式。
 -e ./packages/pan-agent-tool-research
 
+# A 股行情读库(仅当配置了 STOCK_DB_RO_* 才启用)。代码里是惰性 import,
+# 缺包时接口回 503 而不是崩栈。MySQL 8.4 默认 caching_sha2_password,
+# pymysql 走这套认证需要 cryptography 做 RSA 加解密(它不声明 extra)。
+pymysql>=1.1
+cryptography>=41
+
 # OpenTelemetry 导出为「可选依赖组」,不在主依赖内(默认关闭,未装即 no-op)。
 # 需要把 trace 导出到 Jaeger/Tempo/Langfuse 时:pip install -r requirements-otel.txt
 # 详见 requirements-otel.txt 与 README「OTel 导出」。
