@@ -1,0 +1,77 @@
+name: fork tests
+
+# 本仓 fork 定型线的全量回归：推送即跑，不依赖本地/服务器资源。
+# 上游只在 tag 发布（release.yml）与少数 PR 路径（javascript-runtime.yml）
+# 才跑全量 pytest，这里复用同一套依赖安装配方，把触发条件挂到定型线上。
+on:
+  push:
+    branches:
+      - analysis-20261019
+  pull_request:
+    branches:
+      - analysis-20261019
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: fork-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: backend pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-runtime.txt
+      - name: Install PDF system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
+            libcairo2 libcairo-gobject2 libgdk-pixbuf-2.0-0 \
+            libffi-dev libfontconfig1 fonts-noto-cjk
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run backend tests
+        run: python -m pytest tests/ -q
+      - name: Run marketdata package tests
+        run: python -m pytest packages/marketdata/tests -q
+
+  frontend:
+    name: frontend vitest + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Run unit tests
+        run: pnpm test --run
+      - name: Check UI primitives
+        run: pnpm check:ui
+      - name: Check market colours
+        run: pnpm check:market-colors
+      - name: Typecheck and build
+        run: pnpm build
