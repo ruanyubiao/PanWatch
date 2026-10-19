@@ -391,13 +391,12 @@ export default function StocksPage() {
   const [stockQuery, setStockQuery] = useState('')
   /* fork：除板块以外的三组筛选（状态/涨跌/市值），见 lib/market-filters.ts */
   const [marketFilters, setMarketFilters] = useState<MarketTableFilters>(EMPTY_MARKET_FILTERS)
-  /* fork：筛选行右端那三项元信息 —— 代码版本/提交时间取 /stocks/market-meta，
-     「同步」= 全量数据载入时刻（StockMarketTable 回传，点刷新会跟着变） */
+  /* fork：筛选行右端那三项元信息 —— 数据时间/版本/提交时间全部来自
+     /stocks/market-meta（数据时间＝行情库最后一次同步，不是页面载入时刻） */
   const [buildMeta, setBuildMeta] = useState<BuildMeta | null>(null)
-  const [marketSyncedAt, setMarketSyncedAt] = useState<number | null>(null)
-  const [marketAsof, setMarketAsof] = useState<string | null>(null)
-  /* fork：代码版本 / 提交时间只取一次（部署产物是固定的，页面内不会变）。
-     拿不到就算了 —— 这一行是给人对版本用的，失败不该影响表格。 */
+  /* fork：数据时间/提交时间只取一次（部署产物与同步记录是库里的状态，
+     进入页面时取一次足够；要看最新就重新载入页面）。拿不到就算了 ——
+     这一行是给人对版本用，失败不该影响表格。 */
   useEffect(() => {
     let alive = true
     fetchAPI<BuildMeta>('/stocks/market-meta')
@@ -2467,7 +2466,7 @@ export default function StocksPage() {
             onFiltersChange={setMarketFilters}
             statusOptions={statusFilterOptions}
             trailing={
-              <BuildMetaStrip build={buildMeta} syncAt={marketSyncedAt} asof={marketAsof} />
+              <BuildMetaStrip build={buildMeta} />
             }
           />
 
@@ -2488,10 +2487,6 @@ export default function StocksPage() {
               getRowAction={marketRowActionOf}
               reloadToken={marketReloadToken}
               onLoadingChange={setTableLoading}
-              onDataSync={info => {
-                setMarketSyncedAt(info.at)
-                setMarketAsof(info.asof)
-              }}
               toolbarActions={tableToolbarActions}
               searchSlot={<StockSearchBox value={stockQuery} onChange={setStockQuery} />}
               renderStatus={renderMarketStatus}

@@ -286,11 +286,6 @@ interface StockMarketTableProps {
   reloadToken?: number
   onLoadingChange?: (loading: boolean) => void
   /**
-   * 全量数据**载入完成的时刻**回传（页面筛选行右端显示「同步 HH:mm …」用）。
-   * ``asof`` 是库内最新交易日 —— 行情不是实时价，这一项让用户看出数据是哪天的。
-   */
-  onDataSync?: (info: { asof: string | null; at: number }) => void
-  /**
    * 表格**上方**那条工具条里、搜索框左边的按钮（页面把「刷新」「添加股票」放进来）。
    * 只有上一条分页条渲染它；下一条只保留「共 N 条 / 页码 / 每页条数」。
    */
@@ -316,7 +311,6 @@ export function StockMarketTable({
   getRowAction,
   reloadToken = 0,
   onLoadingChange,
-  onDataSync,
   toolbarActions,
   searchSlot,
   renderStatus,
@@ -335,8 +329,6 @@ export function StockMarketTable({
   countsRef.current = onCounts
   const onLoadingChangeRef = useRef(onLoadingChange)
   onLoadingChangeRef.current = onLoadingChange
-  const onDataSyncRef = useRef(onDataSync)
-  onDataSyncRef.current = onDataSync
 
   // 全量只在进入页面和点「刷新」时取：换板块 / 筛选 / 搜索 / 排序 / 翻页都不再打接口
   useEffect(() => {
@@ -353,8 +345,6 @@ export function StockMarketTable({
         const items = value.items || []
         setRows(items)
         countsRef.current?.(boardCountsOf(items))
-        // 数据真正到手的时刻（筛选行右端的「同步」用的就是这个）
-        onDataSyncRef.current?.({ asof: value.asof ?? null, at: Date.now() })
       })
       .catch(() => {
         if (!controller.signal.aborted) setError(true)

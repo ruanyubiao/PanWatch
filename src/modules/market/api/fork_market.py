@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
 import os
@@ -419,7 +420,90 @@ def build_info() -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------- 数据同步时间
+
+# 分析页那行右端第一项「数据时间」：**股票数据最后一次同步的时刻**，来自管道自己
+# 写的 ``sync_log``（日终 /opt/stock 管道每跑一个作业落一行）。取 ``stock_daily``
+# 最后一条成功记录 —— 行情表就是由它灌进来的，别的作业（stock_info / stock_status）
+# 早几十秒，按它们算会显示成「数据时间比行情还早」这种看不懂的东西。
+#
+# 兜底：sync_log 不可用（老库没这张表 / 只读账户没授权）时退回
+# ``MAX(updated_at)``，那是这批行情行最后被写库的时刻，语义最接近。
+_LAST_SYNC_SQL = """
+SELECT finished_at, trade_date
+FROM sync_log
+WHERE job = %(job)s AND status = 'success' AND finished_at IS NOT NULL
+ORDER BY finished_at DESC, id DESC
+LIMIT 1
+"""
+
+_LAST_SYNC_FALLBACK_SQL = """
+SELECT MAX(updated_at) AS finished_at, MAX(trade_date) AS trade_date
+FROM stock_daily
+"""
+
+
+def _local_offset_suffix() -> str:
+    """本机时区偏移（如 ``+08:00``）。库里存的是无时区的 DATETIME（MySQL SYSTEM=本机时区），
+    前端要「本地时间」，所以序列化时把偏移带上，浏览器才不会按 UTC 猜。"""
+    offset = _dt.datetime.now().astimezone().utcoffset() or _dt.timedelta(0)
+    total = int(offset.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    total = abs(total)
+    return f"{sign}{total // 3600:02d}:{total % 3600 // 60:02d}"
+
+
+def _iso_local(value: Any) -> str | None:
+    """datetime → 带本机偏移的 ISO 串；已经是字符串的按原样返回（带 T 就补偏移）。"""
+    if value is None:
+        return None
+    if isinstance(value, _dt.datetime):
+        return value.strftime("%Y-%m-%dT%H:%M:%S") + _local_offset_suffix()
+    text = str(value).strip()
+    return text or None
+
+
+def _date_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return value.strftime("%Y-%m-%d")
+    text = str(value).strip()
+    return text[:10] or None
+
+
+def data_sync_info() -> dict[str, Any]:
+    """行情库最后一次同步：``data_synced_at``（ISO，本机时区）+ ``data_trade_date``。
+
+    任何异常都吞掉并返回两个 None —— 这行元信息是给人对版本/对数据用的，
+    不能因为它把页面打挂，也不能顺带把版本信息一起弄丢。
+    """
+    row: dict[str, Any] = {}
+    try:
+        rows = _query(_LAST_SYNC_SQL, {"job": "stock_daily"})
+        row = rows[0] if rows else {}
+    except Exception as exc:  # noqa: BLE001 - 见 docstring
+        logger.debug("读 sync_log 失败，退回 stock_daily.updated_at：%s", exc)
+        row = {}
+    if row.get("finished_at") is None:
+        try:
+            rows = _query(_LAST_SYNC_FALLBACK_SQL)
+            row = rows[0] if rows else {}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("读行情库同步时间失败：%s", exc)
+            row = {}
+    return {
+        "data_synced_at": _iso_local(row.get("finished_at")),
+        "data_trade_date": _date_text(row.get("trade_date")),
+    }
+
+
 @router.get("/market-meta")
 def market_meta() -> dict[str, Any]:
-    """分析页那行元信息：代码最新版本 + 提交时间（数据时间取 market-table 的 asof）。"""
-    return build_info()
+    """分析页那行元信息：数据时间 + 代码版本 + 提交时间。
+
+    「数据时间」= 行情库最后一次同步的时刻（``sync_log`` 里 ``stock_daily`` 的
+    最后一条成功记录），不是页面载入时间 —— 用户要的是**股票数据是哪次同步的**。
+    查库失败时这两项留空（版本信息仍然要能显示，不该被数据库拖下水）。
+    """
+    return {**build_info(), **data_sync_info()}
