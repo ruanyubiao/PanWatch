@@ -318,7 +318,80 @@ def test_构建信息_文件缺失或损坏时退回环境变量(tmp_path, monke
     assert data["commit_time"] == "2026-10-19T10:00:00+08:00"
 
 
-def test_market_meta_端点返回四个键():
+def test_market_meta_端点返回版本与数据时间两组键():
     data = fork_market.market_meta()
-    assert set(data) == {"sha", "branch", "commit_time", "published_at"}
+    assert set(data) == {
+        "sha",
+        "branch",
+        "commit_time",
+        "published_at",
+        "data_synced_at",
+        "data_trade_date",
+    }
     assert all(value is None or isinstance(value, str) for value in data.values())
+
+
+def test_数据时间取_sync_log_里最后一条成功的行情同步(monkeypatch):
+    """「数据时间」= 股票数据最后一次同步，取 stock_daily 作业那条成功记录。
+
+    形如 ``2026-10-19T17:00:30+08:00``（带本机偏移，前端才能按本地时间显示），
+    而不是页面上次载入的时刻。
+    """
+    seen: list[tuple[str, dict]] = []
+
+    def fake_query(sql, params=None):
+        seen.append((sql, params or {}))
+        assert "sync_log" in sql
+        return [{"finished_at": dt.datetime(2026, 10, 19, 17, 0, 30),
+                 "trade_date": dt.date(2026, 10, 19)}]
+
+    monkeypatch.setattr(fork_market, "_query", fake_query)
+    data = fork_market.data_sync_info()
+
+    assert seen[0][1] == {"job": "stock_daily"}
+    assert "status = 'success'" in seen[0][0]
+    assert data["data_trade_date"] == "2026-10-19"
+    assert data["data_synced_at"].startswith("2026-10-19T17:00:30+") or \
+        data["data_synced_at"].startswith("2026-10-19T17:00:30-")
+
+
+def test_sync_log_不可用时退回_stock_daily_updated_at(monkeypatch):
+    """老库没有 sync_log（或只读账户没授权）时退回 MAX(updated_at)，不能空着。"""
+    calls: list[str] = []
+
+    def fake_query(sql, params=None):
+        calls.append(sql)
+        if "sync_log" in sql:
+            raise fork_market.ForkDbUnavailable("Table 'stock.sync_log' doesn't exist")
+        return [{"finished_at": dt.datetime(2026, 10, 16, 17, 0, 25),
+                 "trade_date": dt.date(2026, 10, 16)}]
+
+    monkeypatch.setattr(fork_market, "_query", fake_query)
+    data = fork_market.data_sync_info()
+
+    assert any("sync_log" in sql for sql in calls)
+    assert any("stock_daily" in sql for sql in calls)
+    assert data["data_synced_at"].startswith("2026-10-16T17:00:25")
+    assert data["data_trade_date"] == "2026-10-16"
+
+
+def test_数据库整个不可用时数据时间留空但版本仍然返回(monkeypatch):
+    """查库挂了只让这两项变空 —— 版本信息要照常给，页面不能因此没版本号。"""
+    monkeypatch.setattr(
+        fork_market,
+        "_query",
+        lambda sql, params=None: (_ for _ in ()).throw(
+            fork_market.ForkDbUnavailable("连接行情库失败：refused")
+        ),
+    )
+    monkeypatch.setenv("APP_GIT_SHA", "deadbee1")
+    fork_market.build_info.cache_clear()
+    try:
+        data = fork_market.market_meta()
+    finally:
+        fork_market.build_info.cache_clear()
+
+    assert data["sha"] == "deadbee1"
+    assert data["data_synced_at"] is None
+    assert data["data_trade_date"] is None
+
