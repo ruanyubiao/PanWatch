@@ -488,7 +488,7 @@ def data_sync_info() -> dict[str, Any]:
         rows = _query(_LAST_SYNC_SQL, {"job": "stock_daily"})
         row = rows[0] if rows else {}
     except Exception as exc:  # noqa: BLE001 - 见 docstring
-        logger.debug("读 sync_log 失败，退回 stock_daily.updated_at：%s", exc)
+        logger.debug("读 sync_log 失败，退回 stock_daily.trade_date：%s", exc)
         row = {}
     if row.get("finished_at") is None:
         try:
