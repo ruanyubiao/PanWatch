@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { BOARD_OPTIONS, type BoardKey } from '@/lib/board-classify'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@panwatch/base-ui/components/ui/select'
 import { MultiSelectFilter } from '@/components/fork/MultiSelectFilter'
@@ -41,6 +42,11 @@ import {
  *
  * 组件是**受控**的：状态由页面持有，筛选结果与分页都在 StockMarketTable 里算
  * （数据是全市场一次取回的，所以这里不需要发任何请求）。
+ *
+ * 第六轮：市值那组的下拉面板放不下「1000亿 + 总市值 500 亿 ~ 1000 亿」，
+ * 档位被压成「1000…」—— 面板宽度改由 MultiSelectFilter 的 menuClassName 给（见下），
+ * 并在筛选行右端留一个 ``trailing`` 槽位显示「代码版本 / 提交时间 / 数据同步时间」。
+ * 这一行从「只有筛选」变成「筛选靠左、元信息靠右」，所以 trailing 用 ``ml-auto`` 推过去。
  */
 
 const FILTER_BAR_TEXTS_ZH = {
@@ -64,6 +70,8 @@ export interface StockFilterBarProps {
   onFiltersChange: (filters: MarketTableFilters) => void
   /** 组2 的候选动作文案（页面从 bizUi 的 kline.actions.* 取，与徽章同一套叫法） */
   statusOptions: { key: string; label: string }[]
+  /** 行尾右对齐的附注（页面注入「代码版本 / 提交时间 / 数据同步时间」） */
+  trailing?: ReactNode
   className?: string
 }
 
@@ -85,6 +93,7 @@ export function StockFilterBar({
   filters,
   onFiltersChange,
   statusOptions,
+  trailing,
   className,
 }: StockFilterBarProps) {
   /** 「清空筛选」= 市场 + 其余三组一起回到「不限」（用户要求连市场一起复位）。 */
@@ -152,6 +161,7 @@ export function StockFilterBar({
         value={filters.cap}
         onChange={next => onFiltersChange({ ...filters, cap: next as CapFilter[] })}
         className="w-[104px]"
+        menuClassName="w-[288px]"
       />
 
       {/* 清空筛选（含市场）——紧跟在下拉菜单后面，只在真有筛选生效时出现 */}
@@ -165,6 +175,9 @@ export function StockFilterBar({
           {FILTER_BAR_TEXTS_ZH.clear}
         </button>
       )}
+
+      {/* 行尾右对齐的元信息（代码版本 / 提交时间 / 数据同步时间），由页面注入 */}
+      {trailing}
     </div>
   )
 }
