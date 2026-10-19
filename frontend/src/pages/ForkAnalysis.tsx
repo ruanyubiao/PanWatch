@@ -52,6 +52,7 @@ import {
   type MarketTableFilters,
 } from '@/lib/market-filters'
 import { StockFilterBar } from '@/components/fork/StockFilterBar'
+import { BuildMetaStrip, type BuildMeta } from '@/components/fork/BuildMetaStrip'
 import {
   StockMarketTable,
   type MarketRowState,
@@ -390,6 +391,24 @@ export default function StocksPage() {
   const [stockQuery, setStockQuery] = useState('')
   /* fork：除板块以外的三组筛选（状态/涨跌/市值），见 lib/market-filters.ts */
   const [marketFilters, setMarketFilters] = useState<MarketTableFilters>(EMPTY_MARKET_FILTERS)
+  /* fork：筛选行右端那三项元信息 —— 代码版本/提交时间取 /stocks/market-meta，
+     「同步」= 全量数据载入时刻（StockMarketTable 回传，点刷新会跟着变） */
+  const [buildMeta, setBuildMeta] = useState<BuildMeta | null>(null)
+  const [marketSyncedAt, setMarketSyncedAt] = useState<number | null>(null)
+  const [marketAsof, setMarketAsof] = useState<string | null>(null)
+  /* fork：代码版本 / 提交时间只取一次（部署产物是固定的，页面内不会变）。
+     拿不到就算了 —— 这一行是给人对版本用的，失败不该影响表格。 */
+  useEffect(() => {
+    let alive = true
+    fetchAPI<BuildMeta>('/stocks/market-meta')
+      .then(value => {
+        if (alive) setBuildMeta(value || null)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [])
   /* fork：关注范围的前端分页（与全部范围同样的 100 上限） */
   const [watchScopeOffset, setWatchScopeOffset] = useState(0)
   useEffect(() => {
@@ -2447,6 +2466,9 @@ export default function StocksPage() {
             filters={marketFilters}
             onFiltersChange={setMarketFilters}
             statusOptions={statusFilterOptions}
+            trailing={
+              <BuildMetaStrip build={buildMeta} syncAt={marketSyncedAt} asof={marketAsof} />
+            }
           />
 
           {/* fork：全部 = A 股全市场（后端 /stocks/market-table，读本机 MySQL，分页）。
@@ -2466,6 +2488,10 @@ export default function StocksPage() {
               getRowAction={marketRowActionOf}
               reloadToken={marketReloadToken}
               onLoadingChange={setTableLoading}
+              onDataSync={info => {
+                setMarketSyncedAt(info.at)
+                setMarketAsof(info.asof)
+              }}
               toolbarActions={tableToolbarActions}
               searchSlot={<StockSearchBox value={stockQuery} onChange={setStockQuery} />}
               renderStatus={renderMarketStatus}

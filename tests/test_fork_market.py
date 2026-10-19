@@ -272,3 +272,53 @@ def test_db_config_默认主机与库名(monkeypatch):
     assert config["host"] == "127.0.0.1"
     assert config["port"] == 3306
     assert config["database"] == "stock"
+
+
+# ---------------------------------------------------------------------- 构建信息
+
+def test_构建信息_优先读部署时写下的文件(tmp_path, monkeypatch):
+    """云端没有 .git，版本只能来自 BUILD_INFO.json（10-publish.sh 写的）。"""
+    info = tmp_path / "BUILD_INFO.json"
+    info.write_text(
+        '{"sha":"abc12345","branch":"analysis-20261019","'
+        'commit_time":"2026-10-19T18:56:00+08:00","published_at":"2026-10-19T19:30:00+08:00"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(fork_market, "_BUILD_INFO_FILE", info)
+    for key in ("APP_GIT_SHA", "APP_GIT_BRANCH", "APP_GIT_COMMIT_TIME"):
+        monkeypatch.delenv(key, raising=False)
+    fork_market.build_info.cache_clear()
+    try:
+        data = fork_market.build_info()
+    finally:
+        fork_market.build_info.cache_clear()
+
+    assert data["sha"] == "abc12345"
+    assert data["branch"] == "analysis-20261019"
+    assert data["commit_time"] == "2026-10-19T18:56:00+08:00"
+    assert data["published_at"] == "2026-10-19T19:30:00+08:00"
+
+
+def test_构建信息_文件缺失或损坏时退回环境变量(tmp_path, monkeypatch):
+    """文件坏了不能把接口打挂 —— 退回环境变量，字段仍然是四个键。"""
+    broken = tmp_path / "BUILD_INFO.json"
+    broken.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(fork_market, "_BUILD_INFO_FILE", broken)
+    monkeypatch.setenv("APP_GIT_SHA", "deadbee1")
+    monkeypatch.setenv("APP_GIT_BRANCH", "dev")
+    monkeypatch.setenv("APP_GIT_COMMIT_TIME", "2026-10-19T10:00:00+08:00")
+    fork_market.build_info.cache_clear()
+    try:
+        data = fork_market.build_info()
+    finally:
+        fork_market.build_info.cache_clear()
+
+    assert data["sha"] == "deadbee1"
+    assert data["branch"] == "dev"
+    assert data["commit_time"] == "2026-10-19T10:00:00+08:00"
+
+
+def test_market_meta_端点返回四个键():
+    data = fork_market.market_meta()
+    assert set(data) == {"sha", "branch", "commit_time", "published_at"}
+    assert all(value is None or isinstance(value, str) for value in data.values())
