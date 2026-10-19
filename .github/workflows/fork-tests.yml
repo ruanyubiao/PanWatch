@@ -5,8 +5,9 @@ name: fork tests
 # 才跑全量 pytest，这里复用同一套依赖安装配方，把触发条件挂到定型线上。
 #
 # 可观测性约定：匿名访问者能看到 annotation、看不到 job log，因此
-#   1) 每个用 Python 跑的步骤先打 ::notice::step <name>，出事时能看出卡在哪一步；
-#   2) 「Publish failure output」用 if: always()，被取消/被回收也要留下最后 10 行。
+#   1) 依赖安装/测试步骤都把输出 tee 到 *.log，失败时按修改时间倒序取最新两份；
+#   2) 「Publish failure output」用 if: failure() || cancelled()，被取消也留下最后 10 行，
+#      成功时不发任何 annotation（否则绿榜上会挂一堆假 error）。
 # runner 钉 ubuntu-24.04：ubuntu-latest 从 2026-10-19 起迁 Ubuntu 26，
 # apt 包名（libgdk-pixbuf-2.0-0 等）在新镜像上未验证，钉死才有可比性。
 on:
@@ -49,34 +50,32 @@ jobs:
         run: |
           set -o pipefail
           . /etc/os-release
-          echo "::notice::step install-apt ($PRETTY_NAME, $(python -V 2>&1))"
+          echo "runner: $PRETTY_NAME / $(python -V 2>&1)"
           sudo apt-get update -qq 2>&1 | tee -a install-apt.log
           sudo apt-get install -y --no-install-recommends \
             libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
             libcairo2 libcairo-gobject2 libgdk-pixbuf-2.0-0 \
             libffi-dev libfontconfig1 fonts-noto-cjk 2>&1 | tee -a install-apt.log
-          echo "::notice::step install-apt ok"
       - name: Install dependencies
         timeout-minutes: 20
         run: |
           set -o pipefail
-          echo "::notice::step install-pip"
+          echo "step install-pip"
           python -m pip install -r requirements.txt 2>&1 | tee install-pip.log
-          echo "::notice::step install-pip ok"
       - name: Run backend tests
         timeout-minutes: 20
         run: |
           set -o pipefail
-          echo "::notice::step pytest"
+          echo "step pytest"
           python -m pytest tests/ -q 2>&1 | tee pytest.log
       - name: Run marketdata package tests
         timeout-minutes: 10
         run: |
           set -o pipefail
-          echo "::notice::step pytest-marketdata"
+          echo "step pytest-marketdata"
           python -m pytest packages/marketdata/tests -q 2>&1 | tee pytest-marketdata.log
       - name: Publish failure output
-        if: always()
+        if: failure() || cancelled()
         run: |
           echo "::error::logs captured: $(ls *.log 2>/dev/null | tr '\n' ' ')"
           for f in $(ls -t *.log 2>/dev/null | head -2); do
@@ -129,7 +128,7 @@ jobs:
           set -o pipefail
           pnpm build 2>&1 | tee build.log
       - name: Publish failure output
-        if: always()
+        if: failure() || cancelled()
         run: |
           echo "::error::logs captured: $(ls *.log 2>/dev/null | tr '\n' ' ')"
           for f in $(ls -t *.log 2>/dev/null | head -2); do
