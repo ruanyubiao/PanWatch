@@ -12,11 +12,12 @@ name: fork tests
 # apt 包名（libgdk-pixbuf-2.0-0 等）在新镜像上未验证，钉死才有可比性。
 on:
   push:
+    # 定型线每次 rebase 都会换成 analysis-YYYYMMDD-HHMM，用通配才不用每次改这里
     branches:
-      - analysis-20261019
+      - 'analysis-*'
   pull_request:
     branches:
-      - analysis-20261019
+      - 'analysis-*'
       - main
   workflow_dispatch:
 
