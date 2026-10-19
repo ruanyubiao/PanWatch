@@ -15,6 +15,14 @@ import { cn } from '@panwatch/base-ui'
  *   - 一项都不选 = 「不限」，触发器上显示 ``allLabel``（如「全部状态」）
  *   - 勾若干项 = 并集（命中任一即通过）
  *   - 菜单第一行是 ``allLabel``，点它等于清空这一组
+ *
+ * 第六轮（用户截图反馈「下拉菜单不够宽，字没显示全」）：面板原来固定 ``w-52``（208px），
+ * 市值那组的行是「勾选 + 档位（1000亿）+ 区间说明（总市值 500 亿 ~ 1000 亿）」，
+ * 区间说明 ``shrink-0`` 把宽度全吃掉，左侧档位被压成「1000…」。
+ * 修法两条一起上：
+ *   1. **档位不参与压缩**（``shrink-0 whitespace-nowrap``）—— 要截断只允许截区间说明；
+ *   2. 面板宽度可由调用方给（``menuClassName``），市值那组给 ``w-[288px]``。
+ * 只调宽度不够稳（换个语言/字号又挤），所以两条都留着。
  */
 
 const MULTI_SELECT_TEXTS_ZH = {
@@ -42,6 +50,8 @@ interface MultiSelectFilterProps {
   value: string[]
   onChange: (next: string[]) => void
   className?: string
+  /** 菜单面板宽度（默认 w-52；市值那组的区间说明较长，调用方给 w-[288px]） */
+  menuClassName?: string
 }
 
 export function MultiSelectFilter({
@@ -51,6 +61,7 @@ export function MultiSelectFilter({
   value,
   onChange,
   className,
+  menuClassName = 'w-52',
 }: MultiSelectFilterProps) {
   const selectedLabels = options.filter(option => value.includes(option.key)).map(option => option.label)
   const summary =
@@ -82,7 +93,7 @@ export function MultiSelectFilter({
           <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
         </button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-52 p-1" role="listbox">
+      <PopoverContent align="start" className={cn('p-1', menuClassName)} role="listbox">
         <button
           type="button"
           role="option"
@@ -91,7 +102,7 @@ export function MultiSelectFilter({
           className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-accent/50"
         >
           <Check className={cn('h-3.5 w-3.5 shrink-0 text-primary', value.length === 0 ? '' : 'opacity-0')} />
-          <span className="truncate">{allLabel}</span>
+          <span className="whitespace-nowrap">{allLabel}</span>
         </button>
         {options.map(option => {
           const checked = value.includes(option.key)
@@ -106,9 +117,10 @@ export function MultiSelectFilter({
               className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-accent/50"
             >
               <Check className={cn('h-3.5 w-3.5 shrink-0 text-primary', checked ? '' : 'opacity-0')} />
-              <span className="truncate">{option.label}</span>
+              {/* 档位/状态名不参与压缩：要挤就挤右边的区间说明，否则会出现「1000…」 */}
+              <span className="shrink-0 whitespace-nowrap">{option.label}</span>
               {option.hint && (
-                <span className="ml-auto shrink-0 text-[10px] text-muted-foreground/60">{option.hint}</span>
+                <span className="ml-auto min-w-0 truncate text-[10px] text-muted-foreground/60">{option.hint}</span>
               )}
             </button>
           )

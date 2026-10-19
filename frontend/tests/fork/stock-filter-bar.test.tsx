@@ -167,4 +167,26 @@ describe('fork: 分析页筛选行', () => {
     renderBar({ filters: { status: ['buy'], change: 'all', cap: [] } })
     expect(screen.getByRole('button', { name: '清空筛选' })).toBeTruthy()
   })
+
+  it('市值下拉的面板够宽，档位不被压成「1000…」（第六轮）', async () => {
+    const user = userEvent.setup()
+    renderBar()
+    await user.click(screen.getByLabelText('全部市值'))
+    const menu = await screen.findByRole('listbox')
+    // 面板宽度由 menuClassName 给（默认 w-52 装不下「1000亿 + 总市值 500 亿 ~ 1000 亿」）
+    expect(menu.className).toContain('w-[288px]')
+    const options = await screen.findAllByRole('option')
+    const cap = options.find(o => o.textContent?.includes('1000亿')) as HTMLElement
+    // 档位那一格**不参与压缩**：要挤只能挤右边的区间说明
+    const label = cap.querySelector('span.whitespace-nowrap') as HTMLElement
+    expect(label.textContent).toBe('1000亿')
+    expect(label.className).toContain('shrink-0')
+    expect(label.className).not.toContain('truncate')
+  })
+
+  it('trailing 槽位渲染在筛选行末尾（版本/提交/同步那行元信息）', () => {
+    renderBar({ trailing: <span data-testid="meta">v3827fc2</span> })
+    const bar = screen.getByLabelText('全部市场').parentElement as HTMLElement
+    expect(bar.lastElementChild).toBe(screen.getByTestId('meta'))
+  })
 })

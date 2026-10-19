@@ -26,9 +26,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import subprocess
 from decimal import Decimal
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -341,3 +345,81 @@ def market_table(
         "counts": counts,
         "items": [map_row(row) for row in rows],
     }
+
+
+# ---------------------------------------------------------------------- 构建信息
+
+# 分析页筛选行右端要显示「代码最新版本 / 提交时间」（用户要求），所以得把
+# 「这份代码是哪次提交」暴露给前端。云端是**源码部署**：``deploy/10-publish.sh``
+# 把仓库内容铺到 ``/opt/PanWatch/app`` 时排除了 ``.git``，所以服务器上问不到 git。
+# 三级回退，任一级给出答案即可（都拿不到就返回空字段，前端整块隐藏 ——
+# 一行元信息不值得让页面挂掉）：
+#   1) 部署脚本写下的 ``BUILD_INFO.json``（服务器上唯一可靠来源）
+#   2) 环境变量 ``APP_GIT_SHA`` / ``APP_GIT_BRANCH`` / ``APP_GIT_COMMIT_TIME``
+#   3) 本机工作副本有 ``.git`` 时直接问 git（开发与本地验证实例走这条）
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_BUILD_INFO_FILE = _REPO_ROOT / "BUILD_INFO.json"
+
+
+def _build_from_file() -> dict[str, Any]:
+    try:
+        data = json.loads(_BUILD_INFO_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _build_from_git() -> dict[str, Any]:
+    def git(*args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(_REPO_ROOT), *args],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return result.stdout.strip() if result.returncode == 0 else ""
+
+    sha = git("rev-parse", "--short=8", "HEAD")
+    if not sha:
+        return {}
+    return {
+        "sha": sha,
+        "branch": git("rev-parse", "--abbrev-ref", "HEAD"),
+        "commit_time": git("log", "-1", "--format=%cI"),
+    }
+
+
+@lru_cache(maxsize=1)
+def build_info() -> dict[str, Any]:
+    """这份代码的版本信息：sha / branch / commit_time / published_at。"""
+    data: dict[str, Any] = dict(_build_from_git())
+    # 部署时写下的文件比本地 .git 更权威（服务器上根本没有 .git）
+    data.update(_build_from_file())
+    for key, env in (
+        ("sha", "APP_GIT_SHA"),
+        ("branch", "APP_GIT_BRANCH"),
+        ("commit_time", "APP_GIT_COMMIT_TIME"),
+    ):
+        value = os.getenv(env)
+        if value:
+            data[key] = value
+
+    def text(key: str) -> str:
+        return str(data.get(key) or "").strip()
+
+    return {
+        "sha": text("sha"),
+        "branch": text("branch"),
+        "commit_time": text("commit_time") or None,
+        "published_at": text("published_at") or None,
+    }
+
+
+@router.get("/market-meta")
+def market_meta() -> dict[str, Any]:
+    """分析页那行元信息：代码最新版本 + 提交时间（数据时间取 market-table 的 asof）。"""
+    return build_info()
