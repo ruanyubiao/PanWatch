@@ -54,9 +54,17 @@ MAX_LIMIT = 20000
 # 板块判定（与前端 frontend/src/lib/board-classify.ts 同一套规则，顺序即优先级）：
 #   ST > 科创 > 创业 > 上证 > 深证，其余（北交所 920xxx 等）只计入「全部」。
 # 用 code（6 位纯数字）而不是 symbol —— 库里的 symbol 带 sh/sz/bj 前缀。
-_BOARD_CASE = """
+#
+# 拆成两段（条件选股复用，见 fork_screen/repository.py）：
+#   _MARKET_BOARD_CASE —— **纯代码前缀**规则，不含 ST。条件选股的市场范围按
+#       这个口径判定（ST 是独立开关，不是市场），否则「选了上证但不含 ST」会把
+#       ST 股整个漏掉。
+#   _BOARD_CASE —— 在它外面包一层 ST 判定，表格的板块列/计数仍用这个
+#       （ST 优先是刻意的：点「ST」是想单独把这批票挑出来看）。
+_IS_ST_CASE = "LOCATE('ST', UPPER(REPLACE(i.name, ' ', ''))) > 0"
+
+_MARKET_BOARD_CASE = """
     CASE
-      WHEN LOCATE('ST', UPPER(REPLACE(i.name, ' ', ''))) > 0 THEN 'st'
       WHEN LEFT(i.code, 3) IN ('688', '689') THEN 'kcb'
       WHEN LEFT(i.code, 3) IN ('300', '301') THEN 'cyb'
       WHEN LEFT(i.code, 2) = '60' THEN 'sh'
@@ -64,12 +72,20 @@ _BOARD_CASE = """
       ELSE 'other'
     END"""
 
+_BOARD_CASE = f"""
+    CASE
+      WHEN {_IS_ST_CASE} THEN 'st'
+      ELSE {_MARKET_BOARD_CASE}
+    END"""
+
 # base = 在市的 A 股，带板块标签；uni = 再贴上「最新交易日」那一行行情。
 # 板块计数与列表都从 uni 出，两者口径因此必然一致（不会出现「全部 5574，翻页只有 5573」）。
 _WITH_UNI = f"""
 WITH base AS (
     SELECT i.code, i.symbol, i.exchange, i.name, i.total_market_cap AS info_market_cap,
-           {_BOARD_CASE} AS board
+           {_BOARD_CASE} AS board,
+           {_MARKET_BOARD_CASE} AS market_board,
+           CASE WHEN {_IS_ST_CASE} THEN 1 ELSE 0 END AS is_st
     FROM stock_info i
     WHERE i.status = 'listed'
 ),
