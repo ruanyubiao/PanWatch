@@ -25,12 +25,26 @@ export function splitStockTokens(input: string): string[] {
   return out
 }
 
-/** 去掉交易所后缀（600519.SH / 600519.SS / 000001.SZ → 600519 / 000001）。 */
+/**
+ * 归一成交易所代码。
+ *
+ * 自选和行情库里同一只票会出现两种写法：`600519` / `600519.SH`，以及带市场前缀的
+ * `sh600519`（行情库 symbol）。只剥后缀的话，`sh600519` 对不上 `600519`，
+ * 关注按钮、取消关注、批量添加会各认各的。
+ */
 export function normalizeSymbol(token: string): string {
   return String(token || '')
     .trim()
     .toUpperCase()
+    .replace(/^(SH|SZ|BJ|HK)(?=\d)/, '')
     .replace(/\.(SH|SS|SZ|BJ|HK|US)$/, '')
+}
+
+/** 两个代码是不是同一只上市证券（忽略 sh/sz/bj 前缀和 .SH/.SZ 后缀）。 */
+export function sameListingCode(a?: string | null, b?: string | null): boolean {
+  const left = normalizeSymbol(a || '')
+  const right = normalizeSymbol(b || '')
+  return left.length > 0 && left === right
 }
 
 /** token 是否长得像纯代码（用于「代码精确命中」优先判断）。 */
