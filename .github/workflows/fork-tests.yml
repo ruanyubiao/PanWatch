@@ -3,6 +3,10 @@ name: fork tests
 # 本仓 fork 定型线的全量回归：推送即跑，不依赖本地/服务器资源。
 # 上游只在 tag 发布（release.yml）与少数 PR 路径（javascript-runtime.yml）
 # 才跑全量 pytest，这里复用同一套依赖安装配方，把触发条件挂到定型线上。
+#
+# 每一步都 tee 到 *.log 并 set -o pipefail（保留真实退出码），失败时由
+# 「Publish failure output」把关键行提升为 annotation —— 匿名访问者
+# 看得到 annotation，但看不到 job log，这一步是为了让红榜能自解释。
 on:
   push:
     branches:
@@ -20,6 +24,10 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   backend:
     name: backend pytest
@@ -36,17 +44,39 @@ jobs:
             requirements-runtime.txt
       - name: Install PDF system dependencies
         run: |
-          sudo apt-get update
+          set -o pipefail
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
             libcairo2 libcairo-gobject2 libgdk-pixbuf-2.0-0 \
-            libffi-dev libfontconfig1 fonts-noto-cjk
+            libffi-dev libfontconfig1 fonts-noto-cjk 2>&1 | tee install-apt.log
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
+        run: |
+          set -o pipefail
+          python -m pip install -r requirements.txt 2>&1 | tee install-pip.log
       - name: Run backend tests
-        run: python -m pytest tests/ -q
+        run: |
+          set -o pipefail
+          python -m pytest tests/ -q 2>&1 | tee pytest.log
       - name: Run marketdata package tests
-        run: python -m pytest packages/marketdata/tests -q
+        run: |
+          set -o pipefail
+          python -m pytest packages/marketdata/tests -q 2>&1 | tee pytest-marketdata.log
+      - name: Publish failure output
+        if: failure()
+        run: |
+          for f in install-pip.log pytest.log pytest-marketdata.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            grep -E '^(FAILED|ERROR|E  +)' "$f" | head -8 || true
+            echo "::endgroup::"
+          done
+          for f in install-pip.log pytest.log pytest-marketdata.log; do
+            [ -f "$f" ] || continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error file=$f::$line"
+            done < <(tail -n 12 "$f")
+          done
 
   frontend:
     name: frontend vitest + build
@@ -66,12 +96,37 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
+        run: |
+          set -o pipefail
+          pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee install-pnpm.log
       - name: Run unit tests
-        run: pnpm test --run
+        run: |
+          set -o pipefail
+          pnpm test --run 2>&1 | tee vitest.log
       - name: Check UI primitives
-        run: pnpm check:ui
+        run: |
+          set -o pipefail
+          pnpm check:ui 2>&1 | tee check-ui.log
       - name: Check market colours
-        run: pnpm check:market-colors
+        run: |
+          set -o pipefail
+          pnpm check:market-colors 2>&1 | tee check-colors.log
       - name: Typecheck and build
-        run: pnpm build
+        run: |
+          set -o pipefail
+          pnpm build 2>&1 | tee build.log
+      - name: Publish failure output
+        if: failure()
+        run: |
+          for f in install-pnpm.log vitest.log check-ui.log check-colors.log build.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$f"
+            head -20 "$f" || true
+            echo "::endgroup::"
+          done
+          for f in install-pnpm.log vitest.log check-ui.log check-colors.log build.log; do
+            [ -f "$f" ] || continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error file=$f::$line"
+            done < <(tail -n 12 "$f")
+          done
