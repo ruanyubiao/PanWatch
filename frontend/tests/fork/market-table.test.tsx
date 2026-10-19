@@ -560,4 +560,108 @@ describe('fork: 分析页全市场表格', () => {
     await userEvent.click(screen.getByText('操作-000001'))
     expect(onRemove).toHaveBeenCalledTimes(1)
   })
+
+  /* ------------------------------------------------------------------
+   * 条件选股（需求规格 §12.5 T1–T3）：表格的 sourceRows 外部数据源
+   * ------------------------------------------------------------------ */
+
+  it('T1 传入 sourceRows 时显示选股结果，且不再额外请求', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    const picked = [row({ code: '600036', symbol: 'sh600036', name: '招商银行' })]
+    const view = (sourceRows: MarketRow[] | null) => (
+      <StockMarketTable
+        board="all"
+        query=""
+        sourceRows={sourceRows}
+        existingSymbols={new Set<string>()}
+        onAdd={vi.fn()}
+        onRemove={vi.fn()}
+        onOpenDetail={vi.fn()}
+        renderStatus={() => null}
+        renderAgentStatus={() => null}
+        renderSource={() => null}
+        renderActions={() => null}
+      />
+    )
+    const { rerender } = render(view(picked))
+
+    // 表格仍然会取一次全量（退出选股时要用这份缓存），但选股结果不触发任何请求
+    await waitFor(() => expect(screen.getByText('招商银行')).toBeTruthy())
+    expect(screen.queryByText('贵州茅台')).toBeNull()
+    expect(urlsOf()).toHaveLength(1)
+    expect(urlsOf()[0]).toContain('/stocks/market-table')
+
+    rerender(view([row({ code: '000002', symbol: 'sz000002', name: '万科A' })]))
+    await waitFor(() => expect(screen.getByText('万科A')).toBeTruthy())
+    expect(screen.queryByText('招商银行')).toBeNull()
+    expect(urlsOf()).toHaveLength(1)
+  })
+
+  it('T2 sourceRows=[] 时显示选股专用空态文案', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable({ sourceRows: [], emptyTextOverride: '没有股票满足当前条件' })
+
+    await waitFor(() => expect(screen.getByText('没有股票满足当前条件')).toBeTruthy())
+    expect(screen.queryByText('暂无数据')).toBeNull()
+    expect(screen.queryByRole('table')).toBeNull()
+  })
+
+  it('T3 sourceRows 变回 null 后恢复全量数据，且不重新请求', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    const view = (sourceRows: MarketRow[] | null) => (
+      <StockMarketTable
+        board="all"
+        query=""
+        sourceRows={sourceRows}
+        existingSymbols={new Set<string>()}
+        onAdd={vi.fn()}
+        onRemove={vi.fn()}
+        onOpenDetail={vi.fn()}
+        renderStatus={() => null}
+        renderAgentStatus={() => null}
+        renderSource={() => null}
+        renderActions={() => null}
+      />
+    )
+    const picked = [row({ code: '600036', symbol: 'sh600036', name: '招商银行' })]
+    const { rerender } = render(view(picked))
+    await waitFor(() => expect(screen.getByText('招商银行')).toBeTruthy())
+
+    rerender(view(null))
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    expect(screen.getByText('平安银行')).toBeTruthy()
+    expect(screen.queryByText('招商银行')).toBeNull()
+    expect(urlsOf()).toHaveLength(1)
+  })
+
+  it('选股结果的板块计数按结果集算，退出后回到全量口径', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    const onCounts = vi.fn()
+    const view = (sourceRows: MarketRow[] | null) => (
+      <StockMarketTable
+        board="all"
+        query=""
+        sourceRows={sourceRows}
+        existingSymbols={new Set<string>()}
+        onCounts={onCounts}
+        onAdd={vi.fn()}
+        onRemove={vi.fn()}
+        onOpenDetail={vi.fn()}
+        renderStatus={() => null}
+        renderAgentStatus={() => null}
+        renderSource={() => null}
+        renderActions={() => null}
+      />
+    )
+    const { rerender } = render(view([row({ code: '600036', symbol: 'sh600036', name: '招商银行' })]))
+    await waitFor(() =>
+      expect(onCounts).toHaveBeenLastCalledWith({ all: 1, sh: 1, sz: 0, kcb: 0, cyb: 0, st: 0 }),
+    )
+
+    rerender(view(null))
+    await waitFor(() =>
+      expect(onCounts).toHaveBeenLastCalledWith({ all: 3, sh: 1, sz: 1, kcb: 0, cyb: 0, st: 0 }),
+    )
+    expect(urlsOf()).toHaveLength(1)
+  })
 })

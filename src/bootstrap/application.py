@@ -30,6 +30,7 @@ from src.modules.automation.api import agents, suggestions, templates
 from src.modules.market.api import (
     discovery,
     fork_market,
+    fork_screen,
     klines,
     market,
     news,
@@ -78,6 +79,11 @@ app.include_router(
 # 全市场列表一个外网请求都不发；路径 /api/stocks/market-table。
 app.include_router(
     fork_market.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
+)
+# fork: 条件选股（分析页「条件选股」按钮的后端）。同样只读本机 MySQL，
+# 路径 /api/stocks/screen；业务逻辑在 src/modules/market/fork_screen/。
+app.include_router(
+    fork_screen.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
 )
 app.include_router(
     quotes.router, prefix="/api/quotes", tags=["quotes"], dependencies=protected

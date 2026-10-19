@@ -1,7 +1,7 @@
 import { useConfirm } from '@panwatch/base-ui/components/ui/confirm-dialog'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronLeft, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3, Brain, Loader2 } from 'lucide-react'
+import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wallet, PiggyBank, ArrowUpRight, ArrowDownRight, Building2, ChevronDown, ChevronLeft, ChevronRight, Cpu, Bell, Clock, Newspaper, ExternalLink, BarChart3, Brain, Loader2, Filter } from 'lucide-react'
 import { fetchAPI, stocksApi, type AIService, type NotifyChannel } from '@panwatch/api'
 import { klinesApi } from '@panwatch/api/klines'
 import { formatDateTime } from '@/lib/utils'
@@ -66,6 +66,14 @@ import {
 import { StockListToolbar } from '@/components/fork/StockListToolbar'
 import { StockSearchBox } from '@/components/fork/StockSearchBox'
 import { BatchAddStocksDialog } from '@/components/fork/BatchAddStocksDialog'
+import { ScreenStocksDialog } from '@/components/fork/ScreenStocksDialog'
+import { ScreenResultBanner } from '@/components/fork/ScreenResultBanner'
+import { screenStocks } from '@/lib/screen-api'
+import {
+  SCREEN_TEXTS_ZH,
+  type ScreenRequest,
+  type ScreenResponse,
+} from '@/lib/screen-rule'
 
 import { parseAssistantPortfolioTarget } from '@/lib/assistant-navigation'
 import { useGuidedTour } from '@/components/onboarding/GuidedTour'
@@ -387,6 +395,18 @@ export default function StocksPage() {
   const [tableLoading, setTableLoading] = useState(false)
   // fork：批量添加弹窗
   const [showBatchAdd, setShowBatchAdd] = useState(false)
+  /* fork：条件选股（需求规格 §5）。三件状态：
+       screenOpen      弹窗开关
+       screenResult    已生效的选股结果（含当次请求，供「修改条件」「重新选股」复用）
+       marketAsof      表格最近一次加载的数据截止日（弹窗 footer 显示「数据截至」）
+     「退出选股」只把 screenResult 置空 —— 表格自己留着全量数据，不重新请求。 */
+  const [screenOpen, setScreenOpen] = useState(false)
+  const [screenResult, setScreenResult] = useState<{
+    request: ScreenRequest
+    response: ScreenResponse
+  } | null>(null)
+  const [screenRerunning, setScreenRerunning] = useState(false)
+  const [marketAsof, setMarketAsof] = useState<string | null>(null)
   /* fork：搜索词由页面持有，StockMarketTable 受控（搜索框在分页条左侧，上下各一个）。 */
   const [stockQuery, setStockQuery] = useState('')
   /* fork：除板块以外的三组筛选（状态/涨跌/市值），见 lib/market-filters.ts */
@@ -813,19 +833,39 @@ export default function StocksPage() {
     return (agent.schedule || '').trim()
   }
 
+  /* fork：条件选股 —— 用同一份请求重跑（横幅的「重新选股」与工具条的「刷新」共用）。
+     失败时只 toast，**保留旧结果**（把表格清空成空列表是最坏的选择：用户会以为
+     条件真的没有命中，而不是「这次没跑成功」）。 */
+  const rerunScreen = useCallback(async () => {
+    if (!screenResult || screenRerunning) return
+    setScreenRerunning(true)
+    try {
+      const response = await screenStocks(screenResult.request)
+      setScreenResult({ request: screenResult.request, response })
+      toast(SCREEN_TEXTS_ZH.success(response.total), 'success')
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc)
+      toast(SCREEN_TEXTS_ZH.rerunFailed(message), 'error')
+    } finally {
+      setScreenRerunning(false)
+    }
+  }, [screenResult, screenRerunning, toast])
+
   // 刷新 = 重新读本机行情库 + 建议池 + 价格提醒。不打外网批量行情/K 线。
+  // 选股结果生效时，「刷新」等同于「重新选股」（用户要求）。
   const handleRefresh = useCallback(async () => {
     if (tourQuoteBusy.current) return
     tourQuoteBusy.current = true
     try {
       await tour?.observeQuote()
-      setMarketReloadToken(token => token + 1)
+      if (screenResult) await rerunScreen()
+      else setMarketReloadToken(token => token + 1)
       await Promise.all([
         loadPoolSuggestions(),
         loadPriceAlertSummaries(),
       ])
     } finally { tourQuoteBusy.current = false }
-  }, [tour, loadPoolSuggestions, loadPriceAlertSummaries])
+  }, [tour, loadPoolSuggestions, loadPriceAlertSummaries, screenResult, rerunScreen])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -1790,6 +1830,21 @@ export default function StocksPage() {
       >
         <Plus className="h-3.5 w-3.5" /> 添加股票
       </Button>
+      {/* fork：条件选股入口（需求规格 §5.1），在「添加股票」后面。
+          结果生效时显示激活态 —— 否则用户看不出「现在看到的不是全市场」。 */}
+      <Button
+        data-tour="screen-stocks"
+        size="sm"
+        variant="secondary"
+        className={`h-7 px-2 text-[12px] ${
+          screenResult ? 'border border-primary/60 bg-primary/10 text-primary' : ''
+        }`}
+        aria-pressed={Boolean(screenResult)}
+        onClick={() => setScreenOpen(true)}
+      >
+        <Filter className="h-3.5 w-3.5" />
+        {screenResult ? SCREEN_TEXTS_ZH.buttonActive : SCREEN_TEXTS_ZH.button}
+      </Button>
     </div>
   )
 
@@ -1905,12 +1960,22 @@ export default function StocksPage() {
           本页只有「关注列表 + A 股全市场浏览」，范围切换放在列表自己的 pill 行里；
           「持仓」相关区块（账户、组合汇总）因此永不渲染，代码保留以降低 merge 成本。 */}
 
-      {/* fork 新弹窗：批量添加股票（替代下方上游单只弹窗） */}
+      {/* fork：批量添加股票（替代下方上游单只弹窗） */}
       <BatchAddStocksDialog
         open={showBatchAdd}
         onOpenChange={setShowBatchAdd}
         existingSymbols={watchSymbolSet}
         onAdded={load}
+      />
+
+      {/* fork：条件选股弹窗。「修改条件」时把上次的请求原样带回（不持久化，
+          只活在页面内存里 —— 需求规格 §14-Q9）。 */}
+      <ScreenStocksDialog
+        open={screenOpen}
+        onOpenChange={setScreenOpen}
+        initialRequest={screenResult?.request ?? null}
+        asof={marketAsof}
+        onResult={(response, request) => setScreenResult({ request, response })}
       />
 
       {/* 上游「添加股票 / ETF」弹窗：fork 版已不可达（没有任何按钮会
@@ -2470,6 +2535,19 @@ export default function StocksPage() {
             }
           />
 
+          {/* fork：选股结果横幅（需求规格 §5.5）—— 「退出选股」只清空 sourceRows，
+              表格的全量数据一直留着，所以不重新请求。 */}
+          {screenResult ? (
+            <ScreenResultBanner
+              response={screenResult.response}
+              request={screenResult.request}
+              rerunning={screenRerunning}
+              onEdit={() => setScreenOpen(true)}
+              onRerun={() => void rerunScreen()}
+              onExit={() => setScreenResult(null)}
+            />
+          ) : null}
+
           {/* fork：全部 = A 股全市场（后端 /stocks/market-table，读本机 MySQL，分页）。
               行情/市值/技术面全部来自库，**一个外网请求都不发** —— 这是
               「查外网次数太多被屏蔽」的解法。范围固定为全市场，「关注」范围已移除。 */}
@@ -2487,6 +2565,9 @@ export default function StocksPage() {
               getRowAction={marketRowActionOf}
               reloadToken={marketReloadToken}
               onLoadingChange={setTableLoading}
+              sourceRows={screenResult?.response.items ?? null}
+              emptyTextOverride={SCREEN_TEXTS_ZH.noMatch}
+              onAsof={setMarketAsof}
               toolbarActions={tableToolbarActions}
               searchSlot={<StockSearchBox value={stockQuery} onChange={setStockQuery} />}
               renderStatus={renderMarketStatus}
