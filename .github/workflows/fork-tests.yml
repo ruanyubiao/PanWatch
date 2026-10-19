@@ -4,9 +4,11 @@ name: fork tests
 # 上游只在 tag 发布（release.yml）与少数 PR 路径（javascript-runtime.yml）
 # 才跑全量 pytest，这里复用同一套依赖安装配方，把触发条件挂到定型线上。
 #
-# 每一步都 tee 到 *.log 并 set -o pipefail（保留真实退出码），失败时由
-# 「Publish failure output」把关键行提升为 annotation —— 匿名访问者
-# 看得到 annotation，但看不到 job log，这一步是为了让红榜能自解释。
+# 每一步都 tee 到 *.log 并 set -o pipefail（保留真实退出码）；失败时
+# 「Publish failure output」按写入时间倒序把关键行提升为 annotation ——
+# 匿名访问者看得到 annotation、看不到 job log，所以红榜必须自解释。
+# runner 钉 ubuntu-24.04：ubuntu-latest 从 2026-10-19 起迁 Ubuntu 26，
+# apt 包名（libgdk-pixbuf-2.0-0 等）在新镜像上未验证，钉死才有可比性。
 on:
   push:
     branches:
@@ -31,7 +33,7 @@ defaults:
 jobs:
   backend:
     name: backend pytest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -42,14 +44,19 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-runtime.txt
+      - name: Report runner image
+        run: |
+          . /etc/os-release
+          python -V
+          echo "::notice::runner=$ImageVersion python=$(python -V 2>&1)"
       - name: Install PDF system dependencies
         run: |
           set -o pipefail
-          sudo apt-get update -qq
+          sudo apt-get update -qq 2>&1 | tee -a install-apt.log
           sudo apt-get install -y --no-install-recommends \
             libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
             libcairo2 libcairo-gobject2 libgdk-pixbuf-2.0-0 \
-            libffi-dev libfontconfig1 fonts-noto-cjk 2>&1 | tee install-apt.log
+            libffi-dev libfontconfig1 fonts-noto-cjk 2>&1 | tee -a install-apt.log
       - name: Install dependencies
         run: |
           set -o pipefail
@@ -65,22 +72,20 @@ jobs:
       - name: Publish failure output
         if: failure()
         run: |
-          for f in install-pip.log pytest.log pytest-marketdata.log; do
-            [ -f "$f" ] || continue
-            echo "::group::$f"
-            grep -E '^(FAILED|ERROR|E  +)' "$f" | head -8 || true
+          echo "::error::logs captured: $(ls *.log 2>/dev/null | tr '\n' ' ')"
+          for f in $(ls -t *.log 2>/dev/null | head -2); do
+            echo "::group::$f (tail)"
+            tail -n 40 "$f" || true
             echo "::endgroup::"
-          done
-          for f in install-pip.log pytest.log pytest-marketdata.log; do
-            [ -f "$f" ] || continue
+            grep -E '^(FAILED|ERROR)' "$f" | head -8 || true
             while IFS= read -r line; do
               [ -n "$line" ] && echo "::error file=$f::$line"
-            done < <(tail -n 12 "$f")
+            done < <(tail -n 10 "$f")
           done
 
   frontend:
     name: frontend vitest + build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     defaults:
       run:
@@ -99,10 +104,12 @@ jobs:
         run: |
           set -o pipefail
           pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tee install-pnpm.log
+      # pnpm 9 会把未知的 --run 当自己的参数（Unknown option: 'run'），
+      # 传参给 vitest 必须走 pnpm exec。
       - name: Run unit tests
         run: |
           set -o pipefail
-          pnpm test --run 2>&1 | tee vitest.log
+          pnpm exec vitest run 2>&1 | tee vitest.log
       - name: Check UI primitives
         run: |
           set -o pipefail
@@ -118,15 +125,13 @@ jobs:
       - name: Publish failure output
         if: failure()
         run: |
-          for f in install-pnpm.log vitest.log check-ui.log check-colors.log build.log; do
-            [ -f "$f" ] || continue
-            echo "::group::$f"
-            head -20 "$f" || true
+          echo "::error::logs captured: $(ls *.log 2>/dev/null | tr '\n' ' ')"
+          for f in $(ls -t *.log 2>/dev/null | head -2); do
+            echo "::group::$f (tail)"
+            tail -n 40 "$f" || true
             echo "::endgroup::"
-          done
-          for f in install-pnpm.log vitest.log check-ui.log check-colors.log build.log; do
-            [ -f "$f" ] || continue
+            grep -E '(FAIL|✗|×|Error:|ERR_)' "$f" | head -8 || true
             while IFS= read -r line; do
               [ -n "$line" ] && echo "::error file=$f::$line"
-            done < <(tail -n 12 "$f")
+            done < <(tail -n 10 "$f")
           done
