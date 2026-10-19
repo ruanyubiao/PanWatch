@@ -49,6 +49,18 @@ echo "=== 3. 前端产物 → app/static ==="
 tar czf - -C "$LOCAL/frontend/dist" . \
   | ssh $SSHOPTS $REMOTE "tar xzf - -C $APP/static"
 
+# === 3.5 写构建信息（分析页筛选行右端的「代码版本 / 提交时间」） ===
+# 服务器上没有 .git（上一步的 exclude 里有），后端 fork_market.build_info() 三级回退里
+# 第一级就是读这个文件。缺了它那行只剩「同步」时间，不会报错。
+GIT_SHA=$(git -C "$LOCAL" rev-parse --short=8 HEAD)
+GIT_BRANCH=$(git -C "$LOCAL" rev-parse --abbrev-ref HEAD)
+GIT_COMMIT_TIME=$(git -C "$LOCAL" log -1 --format=%cI)
+PUBLISHED_AT=$(date -Iseconds)
+echo "=== 3.5 构建信息：${GIT_BRANCH} @ ${GIT_SHA} (${GIT_COMMIT_TIME}) ==="
+printf '{"sha":"%s","branch":"%s","commit_time":"%s","published_at":"%s"}\n' \
+  "$GIT_SHA" "$GIT_BRANCH" "$GIT_COMMIT_TIME" "$PUBLISHED_AT" \
+  | ssh $SSHOPTS $REMOTE "cat > $APP/BUILD_INFO.json && cat $APP/BUILD_INFO.json"
+
 echo "=== 4. 远端核对 ==="
 ssh $SSHOPTS $REMOTE "du -sh $APP $APP/static; echo '--- app ---'; ls $APP; echo '--- static ---'; ls $APP/static | head"
 echo "PUBLISH_OK"
