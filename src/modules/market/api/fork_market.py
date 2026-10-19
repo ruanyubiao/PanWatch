@@ -428,7 +428,12 @@ def build_info() -> dict[str, Any]:
 # 早几十秒，按它们算会显示成「数据时间比行情还早」这种看不懂的东西。
 #
 # 兜底：sync_log 不可用（老库没这张表 / 只读账户没授权）时退回
-# ``MAX(updated_at)``，那是这批行情行最后被写库的时刻，语义最接近。
+# ``MAX(trade_date)`` —— 有索引，毫秒级返回。
+# **不要**退回 ``MAX(updated_at)``：那是「这批行情行最后被写库的时刻」，语义最接近，
+# 但 ``updated_at`` 没有索引、表 1600 万行，实测 150s 都不返回，请求会卡到
+# pymysql 的 read_timeout=60 再被 except 吞掉（页面不挂，但明显卡一下）。
+# 代价是兜底时只有交易日、没有具体时刻，``data_synced_at`` 留空 —— 宁可少一项，
+# 也不拿交易日伪造一个 00:00:00 的时刻。
 _LAST_SYNC_SQL = """
 SELECT finished_at, trade_date
 FROM sync_log
@@ -438,7 +443,7 @@ LIMIT 1
 """
 
 _LAST_SYNC_FALLBACK_SQL = """
-SELECT MAX(updated_at) AS finished_at, MAX(trade_date) AS trade_date
+SELECT MAX(trade_date) AS trade_date
 FROM stock_daily
 """
 
