@@ -286,6 +286,15 @@ interface StockMarketTableProps {
   reloadToken?: number
   onLoadingChange?: (loading: boolean) => void
   /**
+   * 条件选股的结果（fork）。非 null 时**替代**内部全量数据参与筛选、排序、分页；
+   * 传回 null 就恢复全市场（内部全量一直留着，所以「退出选股」不重新请求）。
+   */
+  sourceRows?: MarketRow[] | null
+  /** 选股结果为空时的空态文案（「没有股票满足当前条件」） */
+  emptyTextOverride?: string
+  /** 把接口返回的 asof 回传给页面（弹窗 footer 要显示「数据截至」） */
+  onAsof?: (asof: string | null) => void
+  /**
    * 表格**上方**那条工具条里、搜索框左边的按钮（页面把「刷新」「添加股票」放进来）。
    * 只有上一条分页条渲染它；下一条只保留「共 N 条 / 页码 / 每页条数」。
    */
@@ -311,6 +320,9 @@ export function StockMarketTable({
   getRowAction,
   reloadToken = 0,
   onLoadingChange,
+  sourceRows = null,
+  emptyTextOverride,
+  onAsof,
   toolbarActions,
   searchSlot,
   renderStatus,
@@ -329,6 +341,8 @@ export function StockMarketTable({
   countsRef.current = onCounts
   const onLoadingChangeRef = useRef(onLoadingChange)
   onLoadingChangeRef.current = onLoadingChange
+  const onAsofRef = useRef(onAsof)
+  onAsofRef.current = onAsof
 
   // 全量只在进入页面和点「刷新」时取：换板块 / 筛选 / 搜索 / 排序 / 翻页都不再打接口
   useEffect(() => {
@@ -345,6 +359,7 @@ export function StockMarketTable({
         const items = value.items || []
         setRows(items)
         countsRef.current?.(boardCountsOf(items))
+        onAsofRef.current?.(value.asof ?? null)
       })
       .catch(() => {
         if (!controller.signal.aborted) setError(true)
@@ -359,10 +374,12 @@ export function StockMarketTable({
   }, [reloadToken])
 
   const activeFilters = filters ?? EMPTY_MARKET_FILTERS
+  // 选股结果（fork）：非 null 时替代内部全量参与后续所有计算
+  const displayRows = sourceRows ?? rows
   // 全量（5000 余行）过滤 → 排序 → 再切片：排序是「对所有数据」的排序，不是只排当前页
   const filtered = useMemo(
-    () => filterMarketRows(rows, board, query, activeFilters, getRowAction),
-    [rows, board, query, activeFilters, getRowAction],
+    () => filterMarketRows(displayRows, board, query, activeFilters, getRowAction),
+    [displayRows, board, query, activeFilters, getRowAction],
   )
   const sorted = useMemo(
     () => (sort ? [...filtered].sort((a, b) => compareRows(a, b, sort)) : filtered),
@@ -378,7 +395,17 @@ export function StockMarketTable({
   // 换板块 / 改筛选 / 改搜索 / 换每页条数 → 回第一页（否则会停在一个不存在的页码上）
   useEffect(() => {
     setPage(1)
-  }, [board, query, pageSize, activeFilters])
+  }, [board, query, pageSize, activeFilters, sourceRows])
+
+  // 板块计数跟着「当前数据源」走：选股结果生效时数的是结果集，
+  // 退出选股（sourceRows 变回 null）再数回全量 —— 界面上的计数与列表口径因此一致。
+  useEffect(() => {
+    if (sourceRows) countsRef.current?.(boardCountsOf(sourceRows))
+  }, [sourceRows])
+
+  useEffect(() => {
+    if (sourceRows === null && rows.length > 0) countsRef.current?.(boardCountsOf(rows))
+  }, [rows, sourceRows])
 
   const handleFollow = useCallback(
     async (row: MarketRow) => {
@@ -472,9 +499,13 @@ export function StockMarketTable({
 
   const emptyText = loading
     ? MARKET_TABLE_TEXTS_ZH.loading
-    : rows.length === 0
-      ? MARKET_TABLE_TEXTS_ZH.empty
-      : MARKET_TABLE_TEXTS_ZH.noMatch
+    : displayRows.length === 0
+      ? sourceRows != null
+        ? (emptyTextOverride ?? MARKET_TABLE_TEXTS_ZH.empty)
+        : MARKET_TABLE_TEXTS_ZH.empty
+      : sourceRows != null
+        ? (emptyTextOverride ?? MARKET_TABLE_TEXTS_ZH.noMatch)
+        : MARKET_TABLE_TEXTS_ZH.noMatch
 
   /**
    * 分页条：上、下各一条。
