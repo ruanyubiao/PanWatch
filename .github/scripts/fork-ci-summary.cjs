@@ -1,20 +1,22 @@
 /**
- * fork 专用：把 CI 实测结果写进 PR 描述，以及（在需要时）用 CI 的 GITHUB_TOKEN 建 PR。
+ * fork 专用：把 CI 实测结果写进 PR 描述。
  *
  * 为什么由 CI 做这件事：写这份代码的工作站只有对 GitHub 的 SSH 推送权限，没有任何
  * API 凭据（没有 gh CLI、没有 PAT），所以「把结果贴到 PR 描述」只能由 workflow 自己完成。
  *
- * 两个消费者：
- *   - fork-tests 的 pr-summary job（pull_request 事件，每次同步刷新一次）；
- *   - fork-tests 的 open-pr job（push 事件 + 提交信息里带 [open-pr] 标记，建 PR 并顺手写入）。
+ * 消费者是 fork-tests 的 pr-summary job（pull_request 事件，每次同步刷新一次）。
+ * 描述为空时（新建 PR 由人工在网页上点，GitHub 只会填提交列表）先放上模板正文，再接结果区块。
  *
  * 区块用 HTML 注释包起来：重复运行是替换，不会重复追加，也不会动人工写在区块外的内容。
+ *
+ * 注意：CI 不能建 PR —— 仓库设置里「Allow GitHub Actions to create and approve pull
+ * requests」默认关闭，实测报 `GitHub Actions is not permitted to create or approve pull
+ * requests`。这一项只能由仓库所有者在 Settings → Actions → General 打开；打开后若要自动化建 PR，
+ * 恢复 open-pr job（在 push 事件上用 GITHUB_TOKEN 调 pulls.create）即可。
  */
 
 const START = '<!-- fork-ci-summary:start -->'
 const END = '<!-- fork-ci-summary:end -->'
-
-const PR_TITLE = 'fork: 分析页与条件选股（定型线 2026-10-19）'
 
 const PR_BODY = `本 PR 是 fork 内部的分支评审载体：\`analysis-*\` → \`main\`，不向上游提交。
 
@@ -80,11 +82,12 @@ const withSection = (body, env) => {
   return trimmed ? `${trimmed}\n\n${section}` : section
 }
 
-/** 把结果区块写进指定 PR 的描述（区块外的内容原样保留）。返回更新后的 PR。 */
+/** 把结果区块写进指定 PR 的描述（区块外的内容原样保留；描述为空时先放模板正文）。返回更新后的 PR。 */
 const upsertSummaryForNumber = async (github, core, { owner, repo, number, env }) => {
   const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number })
   const body = pr.body || ''
-  const next = withSection(body, env)
+  const base = body.trim() ? body : PR_BODY
+  const next = withSection(base, env)
   if (next === body) {
     core.info(`PR #${number} description already up to date`)
     return pr
@@ -94,33 +97,11 @@ const upsertSummaryForNumber = async (github, core, { owner, repo, number, env }
   return updated
 }
 
-/** 取该分支已有的 open PR，没有就新建（head 为同仓分支，base 为默认分支）。 */
-const openOrGetPr = async (github, core, { owner, repo, head, base }) => {
-  const { data: existing } = await github.rest.pulls.list({ owner, repo, state: 'open', head: `${owner}:${head}`, per_page: 10 })
-  if (existing.length > 0) {
-    core.info(`open PR already exists: #${existing[0].number}`)
-    return existing[0]
-  }
-  const { data: created } = await github.rest.pulls.create({
-    owner,
-    repo,
-    head,
-    base,
-    title: PR_TITLE,
-    body: PR_BODY,
-    draft: false,
-  })
-  core.info(`created PR #${created.number}: ${created.html_url}`)
-  return created
-}
-
 module.exports = {
   START,
   END,
-  PR_TITLE,
   PR_BODY,
   summarySection,
   withSection,
   upsertSummaryForNumber,
-  openOrGetPr,
 }

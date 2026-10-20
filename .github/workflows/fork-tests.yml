@@ -8,9 +8,12 @@ name: fork tests
 #   1) 依赖安装/测试步骤都把输出 tee 到 *.log，失败时按修改时间倒序取最新两份；
 #   2) 「Publish failure output」用 if: failure() || cancelled()，被取消也留下最后 10 行，
 #      成功时不发任何 annotation（否则绿榜上会挂一堆假 error）。
-#   3) PR 描述里的结果由 pr-summary / open-pr job 用 GITHUB_TOKEN 写入 ——
+#   3) PR 描述里的结果由 pr-summary job 用 GITHUB_TOKEN 写入 ——
 #      开发这一支的工作站只有 SSH 推送权限、没有任何 GitHub API 凭据，写不了 PR 描述。
 #      逻辑放在 .github/scripts/fork-ci-summary.cjs（可用 node 直接单测）。
+#      PR 本身要人工在网页上点一次：仓库没开「Allow GitHub Actions to create and approve
+#      pull requests」，CI 建 PR 会被拒（实测 GitHub Actions is not permitted to create or
+#      approve pull requests）。
 # runner 钉 ubuntu-24.04：ubuntu-latest 从 2026-10-19 起迁 Ubuntu 26，
 # apt 包名（libgdk-pixbuf-2.0-0 等）在新镜像上未验证，钉死才有可比性。
 on:
@@ -206,41 +209,3 @@ jobs:
               number: context.payload.pull_request.number,
               env: process.env,
             })
-
-  # 本机没有 GitHub API 凭据，所以「建 PR」也只能由 CI 自己来：
-  # 提交信息里带 [open-pr] 标记时（push 事件），用 GITHUB_TOKEN 建/取该分支的 PR，
-  # 并立刻把本次 push 的实测结果写进描述（不写标记就不会自动建 PR，避免每次替换分支都冒出一个）。
-  open-pr:
-    name: open pull request
-    needs: [backend, frontend]
-    if: >-
-      always() && github.event_name == 'push'
-      && contains(github.event.head_commit.message, '[open-pr]')
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/scripts
-      - name: Create the pull request and record CI results
-        uses: actions/github-script@v7
-        env:
-          HEAD_REF: ${{ github.ref_name }}
-          BASE_REF: ${{ github.event.repository.default_branch }}
-          BACKEND_RESULT: ${{ needs.backend.result }}
-          FRONTEND_RESULT: ${{ needs.frontend.result }}
-          BACKEND_PYTEST: ${{ needs.backend.outputs.pytest }}
-          BACKEND_MARKETDATA: ${{ needs.backend.outputs.marketdata }}
-          FRONTEND_VITEST: ${{ needs.frontend.outputs.vitest }}
-          FRONTEND_BUILD: ${{ needs.frontend.outputs.build }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          HEAD_SHA: ${{ github.sha }}
-          BASE_SHA: ''
-        with:
-          script: |
-            const { openOrGetPr, upsertSummaryForNumber } = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/fork-ci-summary.cjs`)
-            const { owner, repo } = context.repo
-            const pr = await openOrGetPr(github, core, { owner, repo, head: process.env.HEAD_REF, base: process.env.BASE_REF })
-            await upsertSummaryForNumber(github, core, { owner, repo, number: pr.number, env: process.env })
