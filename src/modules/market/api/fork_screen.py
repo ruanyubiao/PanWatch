@@ -26,8 +26,10 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..api import fork_market
+from ..fork_screen import presets
 from ..fork_screen.evaluator import (
     ScreenEvalError,
     ScreenRuleInvalid,
@@ -150,3 +152,84 @@ def screen(payload: ScreenRequest) -> dict[str, Any]:
         body["stats"]["elapsed_ms"],
     )
     return body
+
+
+# --------------------------------------------------------------------------
+# 已保存条件（用户反馈 2026-10-20 第 1 / 2 条）
+#
+# 存在磁盘上、一个条件一个文件，文件名 = 用户输入的名字（见 presets.py）。
+# 保存的是一个**完整的选股请求**，所以「编辑」时能把窗口 / 市场 / 市值 / 条件树
+# 一并带回来，而不是只回填条件树。
+# --------------------------------------------------------------------------
+
+
+class PresetSaveBody(BaseModel):
+    """保存条件的请求体。``extra="forbid"`` 与 ``ScreenRequest`` 保持一致。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=presets.NAME_MAX_LEN)
+    request: ScreenRequest
+    #: 同名时是否覆盖：前端先问一句，用户点了「覆盖」才带 true 重发
+    overwrite: bool = False
+
+
+def _check_request(payload: ScreenRequest) -> None:
+    """保存前把请求按选股同一套规则校验一遍：坏的规则不该被存下来。"""
+    param_issues = validate_params(payload)
+    if param_issues:
+        raise _bad(
+            status=400,
+            code="screen_invalid_params",
+            message="；".join(issue.describe() for issue in param_issues),
+        )
+    rule_issues = validate_rule(payload)
+    if rule_issues:
+        raise _bad(
+            status=400,
+            code="screen_invalid_rule",
+            message="；".join(issue.describe() for issue in rule_issues),
+        )
+
+
+@router.get("/screen/presets")
+def list_screen_presets() -> dict[str, Any]:
+    """全部已保存条件（新的在前）。没有目录时返回空列表，不是错误。"""
+    return {"items": presets.list_all()}
+
+
+@router.post("/screen/presets")
+def save_screen_preset(payload: PresetSaveBody) -> dict[str, Any]:
+    """保存（或覆盖）一个条件。名字非法 400，同名未确认覆盖 409。"""
+    _check_request(payload.request)
+    try:
+        record = presets.save(
+            payload.name,
+            payload.request.model_dump(mode="json"),
+            overwrite=payload.overwrite,
+        )
+    except presets.PresetNameInvalid as exc:
+        raise _bad(status=400, code="screen_preset_name_invalid", message=str(exc)) from exc
+    except presets.PresetExists as exc:
+        raise _bad(status=409, code="screen_preset_exists", message=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("保存选股条件失败：%s", exc)
+        raise _bad(
+            status=500, code="screen_preset_write_failed", message="保存条件失败，请检查服务器磁盘"
+        ) from exc
+    return {"item": record}
+
+
+@router.delete("/screen/presets/{name}")
+def delete_screen_preset(name: str) -> dict[str, Any]:
+    """删除一个已保存条件。名字非法或不存在都按 404（不去猜用户的意图）。"""
+    try:
+        presets.delete(name)
+    except presets.PresetError as exc:
+        raise _bad(status=404, code="screen_preset_not_found", message=str(exc)) from exc
+    except OSError as exc:
+        logger.exception("删除选股条件失败：%s", exc)
+        raise _bad(
+            status=500, code="screen_preset_write_failed", message="删除条件失败，请检查服务器磁盘"
+        ) from exc
+    return {"deleted": name}

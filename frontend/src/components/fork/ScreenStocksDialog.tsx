@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Filter, Loader2 } from 'lucide-react'
+import { Filter, Loader2, Trash2 } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Switch } from '@panwatch/base-ui/components/ui/switch'
 import {
@@ -49,6 +49,7 @@ import {
 } from '@/components/fork/ScreenStepButtons'
 import { ScreenConditionGroup, type ScreenTreeHandlers } from '@/components/fork/ScreenConditionGroup'
 import { screenStocks } from '@/lib/screen-api'
+import { SCREEN_PRESET_TEXTS_ZH } from '@/lib/screen-presets'
 
 /**
  * fork 专用：条件选股弹窗（需求规格 §5.2 / §5.3 / §5.4 / §6）。
@@ -244,12 +245,21 @@ export function ScreenStocksDialog({
   initialRequest,
   asof,
   onResult,
+  presetName = null,
+  onDeletePreset,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   initialRequest?: ScreenRequest | null
   asof?: string | null
   onResult: (response: ScreenResponse, request: ScreenRequest) => void
+  /**
+   * 从「已保存条件」的「编辑」打开时传名字。传了就多两样东西：
+   * 顶部一行「正在编辑已保存条件」，以及「取消」前面一个「删除」按钮
+   * （用户反馈 2026-10-20 第 2 / 5 条）。普通打开不传，删除按钮不出现。
+   */
+  presetName?: string | null
+  onDeletePreset?: (name: string) => void
 }) {
   const { toast } = useToast()
   const askConfirm = useConfirm()
@@ -409,7 +419,9 @@ export function ScreenStocksDialog({
       >
         <DialogHeader>
           <DialogTitle>{T.title}</DialogTitle>
-          <DialogDescription>{T.description}</DialogDescription>
+          <DialogDescription>
+            {presetName ? SCREEN_PRESET_TEXTS_ZH.editingPreset(presetName) : T.description}
+          </DialogDescription>
         </DialogHeader>
 
         <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
@@ -584,6 +596,20 @@ export function ScreenStocksDialog({
               : T.footerMetaNoAsOf(bars, conditions, depth)}
           </div>
           <div className="flex items-center gap-1.5">
+            {/* 从「已保存条件」的「编辑」打开时才有：删除按钮排在「取消」前面 */}
+            {presetName && onDeletePreset ? (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="h-7 px-2 text-[12px]"
+                onClick={() => onDeletePreset(presetName)}
+                data-fork-screen-delete-preset
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {SCREEN_PRESET_TEXTS_ZH.delete}
+              </Button>
+            ) : null}
             <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-[12px]" onClick={handleCancel}>
               {T.cancel}
             </Button>
