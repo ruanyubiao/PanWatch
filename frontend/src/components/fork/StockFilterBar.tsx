@@ -96,7 +96,10 @@ export function StockFilterBar({
     <div className={`flex flex-wrap items-center gap-2 ${className || ''}`}>
       {/* 组1 市场：单选下拉（选项 = 全部 / 上证 / 深证 / 创业 / 科创 / ST，各带计数） */}
       <Select value={board} onValueChange={value => onBoardChange(value as BoardKey)}>
-        <SelectTrigger aria-label={FILTER_BAR_TEXTS_ZH.marketAll} className={`h-8 ${MARKET_TRIGGER_WIDTH} text-[12px]`}>
+        <SelectTrigger
+          aria-label={FILTER_BAR_TEXTS_ZH.marketAll}
+          className={`h-8 ${MARKET_TRIGGER_WIDTH} px-2 text-[12px]`}
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
