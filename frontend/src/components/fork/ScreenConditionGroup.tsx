@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Plus, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, Trash2 } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import {
   MAX_DEPTH,
@@ -116,6 +116,10 @@ export function ScreenConditionGroup({
           tradingDays={tradingDays}
           onPick={(name, params) => handlers.addCondition(node.id, name, params)}
           trigger={
+            /*
+             * 文案本身就带「+」（T.addCondition = '+ 条件'），再放一个 Plus 图标
+             * 就成了「+ + 条件」（用户反馈）。所以这里只用文字，不再加图标。
+             */
             <Button
               type="button"
               variant="ghost"
@@ -123,7 +127,7 @@ export function ScreenConditionGroup({
               className="h-6 px-1.5 text-[11px] text-muted-foreground hover:text-primary"
               data-fork-screen-add-condition={node.id}
             >
-              <Plus className="h-3 w-3" /> {T.addCondition}
+              {T.addCondition}
             </Button>
           }
         />
@@ -138,7 +142,7 @@ export function ScreenConditionGroup({
           onClick={() => handlers.addGroup(node.id)}
           data-fork-screen-add-group={node.id}
         >
-          <Plus className="h-3 w-3" /> {T.addGroup}
+          {T.addGroup}
         </Button>
 
         {isRoot ? null : (
