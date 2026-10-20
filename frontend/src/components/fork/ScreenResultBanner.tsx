@@ -1,5 +1,6 @@
-import { Filter, RefreshCw, X } from 'lucide-react'
+import { Filter, RefreshCw, Save, X } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
+import { SCREEN_PRESET_TEXTS_ZH } from '@/lib/screen-presets'
 import {
   SCREEN_TEXTS_ZH,
   formatRule,
@@ -28,6 +29,8 @@ export function ScreenResultBanner({
   onEdit,
   onRerun,
   onExit,
+  onSave,
+  savedName = null,
 }: {
   response: ScreenResponse
   request: ScreenRequest
@@ -35,6 +38,13 @@ export function ScreenResultBanner({
   onEdit: () => void
   onRerun: () => void
   onExit: () => void
+  /**
+   * 「保存条件」：排在「修改条件」**前面**（用户反馈 2026-10-20 第 1 条）。
+   * 只有拿到结果之后才谈得上保存 —— 保存的是这一轮真正跑过的请求。
+   */
+  onSave?: () => void
+  /** 当前结果对应的已保存条件名（保存/编辑过后显示在按钮旁，纯提示） */
+  savedName?: string | null
 }) {
   const seconds = (response.stats.elapsed_ms / 1000).toFixed(1)
   const line2 = `${summarizeBase(request)} ｜ ${formatRule(request.rule)}`
@@ -57,6 +67,23 @@ export function ScreenResultBanner({
           )}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
+          {savedName ? (
+            <span className="text-[11px] text-muted-foreground" data-fork-screen-banner-saved>
+              {SCREEN_PRESET_TEXTS_ZH.summary(savedName)}
+            </span>
+          ) : null}
+          {onSave ? (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="h-7 px-2 text-[12px]"
+              onClick={onSave}
+              data-fork-screen-save
+            >
+              <Save className="h-3.5 w-3.5" /> {SCREEN_PRESET_TEXTS_ZH.save}
+            </Button>
+          ) : null}
           <Button
             type="button"
             variant="secondary"
