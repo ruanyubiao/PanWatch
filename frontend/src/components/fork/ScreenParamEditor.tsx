@@ -287,8 +287,8 @@ export function ScreenParamEditor({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      {/* w-80：三列输入（N / 下限 / 上限）要放得下，窄了会把文字挤成两行 */}
-      <PopoverContent align="end" className="w-80 p-3" data-fork-screen-param-popover>
+      {/* w-[22rem]：三列参数（N / 下限 / 上限）各自带加减按钮，320px 会把标题挤成两行 */}
+      <PopoverContent align="end" className="w-[22rem] p-3" data-fork-screen-param-popover>
         <ScreenParamForm
           key={key}
           name={name}
