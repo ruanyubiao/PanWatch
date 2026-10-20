@@ -48,10 +48,11 @@ import {
 import { normalizeSymbol, sameListingCode } from '@/lib/stock-tokens'
 import {
   EMPTY_MARKET_FILTERS,
-  STATUS_FILTER_KEYS,
+  INDICATOR_FILTER_KEYS,
   type MarketTableFilters,
 } from '@/lib/market-filters'
 import { StockFilterBar } from '@/components/fork/StockFilterBar'
+import { TOOLBAR_GAP_PX } from '@/components/fork/TablePagination'
 import { BuildMetaStrip, type BuildMeta } from '@/components/fork/BuildMetaStrip'
 import {
   StockMarketTable,
@@ -268,6 +269,17 @@ const COPY_CODE_TEXTS_ZH = {
   done: (text: string) => `已复制 ${text}`,
   blocked: '当前浏览器不允许剪贴板写入（请用 https 或手动选择文本）',
   failed: '复制失败，请手动选择文本',
+}
+
+/**
+ * fork：「状态」列（交易日状态）的兜底文案。
+ *
+ * 正常标签一般由后端 ``map_row`` 给出（``status_label``），这里只在老响应没有
+ * 该字段时兜底 —— 没有状态记录就是正常交易。
+ */
+const TRADE_STATUS_TEXTS_ZH = {
+  normal: '正常',
+  group: (label: string, group: string) => `${label}（${group}）`,
 }
 
 /** fork：条件选股入口与列表页里直接写死的文案（变量名以 _ZH 结尾，check:i18n 放行）。 */
@@ -1658,11 +1670,13 @@ export default function StocksPage() {
   )
 
   /**
-   * fork：「状态」筛选组的候选动作文案 —— 与状态列那颗技术面徽章取同一个 i18n 键
+   * fork：「指标」筛选组的候选动作文案 —— 与指标列那颗技术面徽章取同一个 i18n 键
    * （bizUi 的 kline.actions.*），所以筛选项的文字与徽章上的文字不可能不一致。
+   * （2026-10-20 第 4 条：这一组原名「状态」，改名「指标」，否则和新增的交易日
+   * 状态列混在一起分不清。）
    */
-  const statusFilterOptions = useMemo(
-    () => STATUS_FILTER_KEYS.map(key => ({ key, label: klineTr(`actions.${key}`) })),
+  const indicatorFilterOptions = useMemo(
+    () => INDICATOR_FILTER_KEYS.map(key => ({ key, label: klineTr(`actions.${key}`) })),
     [klineTr],
   )
 
@@ -1712,11 +1726,14 @@ export default function StocksPage() {
     [rowSummary],
   )
 
-  /** 状态列：AI 建议徽章（建议池里有才有）+ 技术面徽章（库里 tech_*，零外网）。
+  /** 指标列：AI 建议徽章（建议池里有才有）+ 技术面徽章（库里 tech_*，零外网）。
    *
    *  ``hideSourceLine``：表格里「来源」是**独立一列**，徽章再自带一行来源就是同一份
-   *  信息出现两次（用户截图反馈的 bug）。弹窗里的来源不变。 */
-  const renderMarketStatus = (row: MarketRow) => {
+   *  信息出现两次（用户截图反馈的 bug）。弹窗里的来源不变。
+   *
+   *  2026-10-20 第 4 条：这一列原名「状态」，改名「指标」；「状态」这个词留给下面
+   *  那颗交易日状态标签（停牌 / 正常 / ST）。 */
+  const renderMarketIndicator = (row: MarketRow) => {
     const { suggestion } = getSuggestionForStock(row.code, 'CN')
     const kline = rowSummary(row)
     if (!suggestion && !kline) {
@@ -1736,6 +1753,36 @@ export default function StocksPage() {
         hasPosition={false}
         hideSourceLine
       />
+    )
+  }
+
+  /**
+   * 状态列：交易日状态（2026-10-20 第 5 条新增，紧跟在「总市值」后面，固定列宽）。
+   *
+   * 数据来自行情库的 ``stock_status_daily``（短标签由后端 ``map_row`` 给：
+   * 正常 / 停牌 / ST / *ST / 退市 / 新股），不是技术面结论 —— 技术面结论在「指标」列。
+   * 「正常」不上色（一屏全是彩色标签反而看不出异常），异常类才给颜色：
+   * 停牌琥珀、风险警示红、退市红、新股蓝。
+   */
+  const renderMarketTradeStatus = (row: MarketRow) => {
+    const code = String(row.status_code || 'NORMAL').toUpperCase()
+    const label = row.status_label || TRADE_STATUS_TEXTS_ZH.normal
+    const tone =
+      code === 'SUSPENDED'
+        ? 'text-amber-600 bg-amber-500/10'
+        : code === 'ST' || code === 'STAR_ST' || code === 'DELISTING' || code === 'DELIST_PENDING'
+          ? 'text-destructive bg-destructive/10'
+          : code === 'NEW_LISTING'
+            ? 'text-primary bg-primary/10'
+            : 'text-muted-foreground bg-accent/40'
+    return (
+      <span
+        data-fork-trade-status={code}
+        title={row.status_group ? TRADE_STATUS_TEXTS_ZH.group(label, row.status_group) : label}
+        className={`inline-flex items-center whitespace-nowrap rounded px-1 py-0.5 text-[10px] font-medium ${tone}`}
+      >
+        {label}
+      </span>
     )
   }
 
@@ -1916,16 +1963,17 @@ export default function StocksPage() {
   // 而且要和自选列表并行取数，不能等 /stocks 与组合汇总回来才开始。
 
   /**
-   * fork：表格工具条左侧的按钮组。
+   * fork：工具条**第一行**（2026-10-20 第 1 条要求拆成两行）。
    *
-   * 用户反馈 2026-10-20 第 2 条要求「条件选股」挪到**第一行最左边**（原来那格是
-   * 「全部市场」下拉，而筛选控件整体挪到了搜索框后面），紧随其后是「已保存条件」
-   * 下拉与「编辑」；「刷新」「添加股票」顺延。整组放在上一条分页条里
-   * （见 StockMarketTable 的 toolbarActions），与搜索框之间留 50px。
+   *   第一行左：条件选股 → 已保存条件下拉 → 编辑
+   *   第一行右：数据时间 / 代码版本 / 提交时间（``tableToolbarMeta``）
+   *   第二行：刷新 → 添加股票 → 搜索框 → 五组筛选 → 页码
+   *
+   * 这样选股那三个控件不会再被「刷新 / 添加股票 / 搜索 / 筛选」挤得换行位置乱跳。
    */
   const tableToolbarActions = (
     <div className="flex items-center gap-1.5">
-      {/* fork：条件选股入口（需求规格 §5.1），现在排在工具条最左边。
+      {/* fork：条件选股入口（需求规格 §5.1），排在工具条最左边。
           结果生效时显示激活态 —— 否则用户看不出「现在看到的不是全市场」。 */}
       <Button
         data-tour="screen-stocks"
@@ -1947,25 +1995,39 @@ export default function StocksPage() {
         onChange={setPresetName}
         onEdit={name => openScreenDialog(name)}
       />
-      <Button
-        data-tour="refresh-quotes"
-        variant="secondary"
-        size="sm"
-        className="h-7 px-2 text-[12px]"
-        onClick={handleRefresh}
-        disabled={loading || tableLoading || tour?.busy}
-      >
-        <RefreshCw className={`h-3.5 w-3.5 ${tableLoading ? 'animate-spin' : ''}`} />
-        {stockT('stocksPage.messages.refreshed')}
-      </Button>
-      <Button
-        data-tour="add-stock"
-        size="sm"
-        className="h-7 px-2 text-[12px]"
-        onClick={() => setShowBatchAdd(true)}
-      >
-        <Plus className="h-3.5 w-3.5" /> {FORK_ANALYSIS_TEXTS_ZH.addStock}
-      </Button>
+    </div>
+  )
+
+  /** 第一行右侧：数据同步时间 / 代码版本 / 代码提交时间（原先是筛选行的 trailing）。 */
+  const tableToolbarMeta = <BuildMetaStrip build={buildMeta} />
+
+  /** 第二行左端：「刷新」「添加股票」+ 50px + 搜索框（原来和条件选股挤在同一行）。 */
+  const tableToolbarLeading = (
+    <div className="flex items-center" style={{ columnGap: TOOLBAR_GAP_PX }}>
+      <div className="flex items-center gap-1.5">
+        <Button
+          data-tour="refresh-quotes"
+          variant="secondary"
+          size="sm"
+          className="h-7 px-2 text-[12px]"
+          onClick={handleRefresh}
+          disabled={loading || tableLoading || tour?.busy}
+        >
+          <RefreshCw className={`h-3.5 w-3.5 ${tableLoading ? 'animate-spin' : ''}`} />
+          {stockT('stocksPage.messages.refreshed')}
+        </Button>
+        <Button
+          data-tour="add-stock"
+          size="sm"
+          className="h-7 px-2 text-[12px]"
+          onClick={() => setShowBatchAdd(true)}
+        >
+          <Plus className="h-3.5 w-3.5" /> {FORK_ANALYSIS_TEXTS_ZH.addStock}
+        </Button>
+      </div>
+      <div className="w-[260px] shrink-0">
+        <StockSearchBox value={stockQuery} onChange={setStockQuery} />
+      </div>
     </div>
   )
 
@@ -2680,7 +2742,8 @@ export default function StocksPage() {
               emptyTextOverride={SCREEN_TEXTS_ZH.noMatch}
               onAsof={setMarketAsof}
               toolbarActions={tableToolbarActions}
-              searchSlot={<StockSearchBox value={stockQuery} onChange={setStockQuery} />}
+              toolbarMeta={tableToolbarMeta}
+              searchSlot={tableToolbarLeading}
               filtersSlot={
                 <StockFilterBar
                   board={stockListFilter}
@@ -2688,8 +2751,7 @@ export default function StocksPage() {
                   counts={boardCounts}
                   filters={marketFilters}
                   onFiltersChange={setMarketFilters}
-                  statusOptions={statusFilterOptions}
-                  trailing={<BuildMetaStrip build={buildMeta} />}
+                  indicatorOptions={indicatorFilterOptions}
                 />
               }
               belowToolbar={
@@ -2706,7 +2768,8 @@ export default function StocksPage() {
                   />
                 ) : null
               }
-              renderStatus={renderMarketStatus}
+              renderIndicator={renderMarketIndicator}
+              renderTradeStatus={renderMarketTradeStatus}
               renderAgentStatus={renderMarketAgentStatus}
               renderSource={renderMarketSource}
               renderActions={renderMarketActions}
