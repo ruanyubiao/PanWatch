@@ -329,6 +329,15 @@ describe('条件选股 / 注册表', () => {
       '均线多头排列(5/10/20/60)',
     )
   })
+
+  it('连续阳线的说明要点名两个参数（倒数第几个交易日 + 连续天数）', () => {
+    const text = CONDITION_DEFS_ZH.consecutive_bullish.description
+    expect(text).toContain('倒数第几个交易日')
+    expect(text).toContain('连续天数')
+    expect(text).toContain('默认 1')
+    expect(text).toContain('默认 4')
+    expect(text).toContain('收盘价')
+  })
 })
 
 // 类型别名在文件顶部（RuleNode = GroupNode['children'][number]）

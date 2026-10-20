@@ -302,12 +302,17 @@ describe('条件选股弹窗', () => {
     expect(start.value).toBe('1')
     expect(days.value).toBe('4')
 
+    // 输入时就把「从倒数第几日、连续几日」念一遍
+    const hint = () => document.querySelector('[data-fork-screen-consecutive-hint]')?.textContent
+    expect(hint()).toBe('自倒数第 1 个交易日起连续 4 个交易日都收阳（收盘价 > 开盘价）')
+
     // 越界由控件自己夹回（不是填进去再弹红字）
     await userEvent.clear(start)
     await userEvent.type(start, '99')
     expect(start.value).toBe('30')
     await userEvent.clear(start)
     await userEvent.type(start, '5')
+    expect(hint()).toBe('自倒数第 5 个交易日起连续 4 个交易日都收阳（收盘价 > 开盘价）')
 
     await userEvent.click(screen.getByRole('button', { name: '确定' }))
     await waitFor(() =>
