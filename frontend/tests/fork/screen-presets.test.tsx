@@ -187,9 +187,14 @@ describe('条件弹窗：已保存条件模式', () => {
     return { onResult }
   }
 
-  it('N9 普通打开没有「删除」；从已保存条件打开才有，且在「取消」前面', () => {
+  it('N9 删除按钮一直在：没保存过时禁用；从已保存条件打开时可用，且排在「保存」前面', () => {
     renderDialog()
-    expect(document.querySelector('[data-fork-screen-delete-preset]')).toBeNull()
+    // 第 5 条：删除按钮不再是「只有编辑模式才出现」，而是常在 + 禁用
+    const disabled = document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement
+    expect(disabled).toBeTruthy()
+    expect(disabled.disabled).toBe(true)
+    // 「取消」文字按钮已去掉（右上角有 X）
+    expect(screen.queryByRole('button', { name: '取消' })).toBeNull()
     cleanup()
 
     const onDeletePreset = vi.fn()
@@ -199,14 +204,40 @@ describe('条件弹窗：已保存条件模式', () => {
       onDeletePreset,
     })
 
-    const remove = document.querySelector('[data-fork-screen-delete-preset]') as HTMLElement
-    const cancel = screen.getByRole('button', { name: '取消' })
+    const remove = document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement
+    const save = document.querySelector('[data-fork-screen-save-preset]') as HTMLButtonElement
     expect(remove).toBeTruthy()
     expect(remove.textContent).toContain('删除')
-    // 文档顺序：删除 → 取消（用户要求排在取消前面）
-    expect(remove.compareDocumentPosition(cancel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(remove.disabled).toBe(false)
+    // 已保存 → 保存按钮变成「覆盖保存」
+    expect(save.textContent).toContain('覆盖保存')
+    // 文档顺序：删除 → 保存
+    expect(remove.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // 顶部说明点名正在编辑哪个条件
     expect(screen.getByText(SCREEN_PRESET_TEXTS_ZH.editingPreset('四连阳'))).toBeTruthy()
+  })
+
+  it('N9b 弹窗「保存」交出去的是当前草稿：没名字 → name=null；已保存 → 覆盖原名', async () => {
+    const onSavePreset = vi.fn()
+    renderDialog({ onSavePreset })
+
+    await userEvent.click(document.querySelector('[data-fork-screen-save-preset]') as HTMLElement)
+    expect(onSavePreset).toHaveBeenCalledTimes(1)
+    const [request, name] = onSavePreset.mock.calls[0]
+    expect(name).toBeNull()
+    // 整份请求都交出去了（窗口 / 市值 / 条件树），落到文件里才能原样回填
+    expect(request).toMatchObject({
+      trading_days: 30,
+      markets: ['sh', 'sz', 'cyb', 'kcb'],
+      market_cap: { min_yi: 1, max_yi: 100000 },
+    })
+    cleanup()
+
+    const overlay = vi.fn()
+    renderDialog({ initialRequest: baseRequest(), presetName: '四连阳', onSavePreset: overlay })
+    await userEvent.click(document.querySelector('[data-fork-screen-save-preset]') as HTMLElement)
+    expect(overlay.mock.calls[0][1]).toBe('四连阳')
+    expect(overlay.mock.calls[0][0]).toMatchObject({ trading_days: 30, market_cap: { min_yi: 100 } })
   })
 
   it('N10 已保存条件的完整请求被回填（窗口 / 市值 / 条件树）', () => {

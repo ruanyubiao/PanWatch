@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Filter, Loader2, Trash2 } from 'lucide-react'
+import { Filter, Loader2, Save, Trash2 } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Switch } from '@panwatch/base-ui/components/ui/switch'
 import {
@@ -247,6 +247,7 @@ export function ScreenStocksDialog({
   onResult,
   presetName = null,
   onDeletePreset,
+  onSavePreset,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -254,12 +255,19 @@ export function ScreenStocksDialog({
   asof?: string | null
   onResult: (response: ScreenResponse, request: ScreenRequest) => void
   /**
-   * 从「已保存条件」的「编辑」打开时传名字。传了就多两样东西：
-   * 顶部一行「正在编辑已保存条件」，以及「取消」前面一个「删除」按钮
-   * （用户反馈 2026-10-20 第 2 / 5 条）。普通打开不传，删除按钮不出现。
+   * 从「已保存条件」的「编辑」打开时传名字。传了的话：顶部一行「正在编辑已保存条件」，
+   * 底部「保存」变成「覆盖保存」、「删除」可用。
    */
   presetName?: string | null
   onDeletePreset?: (name: string) => void
+  /**
+   * 底部「保存」：把**当前草稿**交出去（用户第 5 条要求保存按钮放进弹窗）。
+   *
+   * ``name`` 有值 = 覆盖这个已保存条件（页面直接写文件，不再问名字）；
+   * ``null`` = 还没保存过 → 页面弹「输入文件名」的小窗。
+   * 保存的是草稿而不是上一轮的结果，所以不需要先跑一次选股。
+   */
+  onSavePreset?: (request: ScreenRequest, name: string | null) => void
 }) {
   const { toast } = useToast()
   const askConfirm = useConfirm()
@@ -393,6 +401,26 @@ export function ScreenStocksDialog({
   const handleCancel = () => {
     if (submitting && abortRef.current) abortRef.current.abort()
     onOpenChange(false)
+  }
+
+  /**
+   * 底部「保存」（第 5 条）：保存的是**当前草稿**，不要求先跑一次选股。
+   *
+   * 草稿不合法时**不落盘**（同一套校验、同样标红字段），否则会存下一个跑不通的
+   * 条件；合法就交给页面 —— 有名字（从已保存条件打开）直接覆盖，没名字弹输入框。
+   */
+  const handleSave = () => {
+    setSubmitted(true)
+    setIssues(liveIssues)
+    if (liveIssues.length > 0) {
+      const first = liveIssues[0]
+      const selector = first.nodeId ? `[data-node-id="${first.nodeId}"]` : `[data-screen-field="${first.path}"]`
+      window.setTimeout(() => {
+        document.querySelector<HTMLElement>(selector)?.focus?.()
+      }, 0)
+      return
+    }
+    onSavePreset?.(toApiRequest(request), presetName)
   }
 
   const formDisabled = submitting
@@ -590,7 +618,10 @@ export function ScreenStocksDialog({
         ) : null}
 
         {/* 最后一行按钮与上面的预览/报错之间留出间距并加分隔线 ——
-            用户反馈「条件选股的最后按钮行和上面 UI 贴在一起了」 */}
+            用户反馈「条件选股的最后按钮行和上面 UI 贴在一起了」。
+            第 5 条（2026-10-20 晚）：删除按钮**一直在**（没保存过时禁用），
+            它后面是「保存」（已保存过则变成「覆盖保存」），最后才是「开始选股」；
+            「取消」文字按钮去掉 —— 右上角有 X。 */}
         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
           <div className="text-[10px] text-muted-foreground" data-fork-screen-meta>
             {asof
@@ -598,22 +629,32 @@ export function ScreenStocksDialog({
               : T.footerMetaNoAsOf(bars, conditions, depth)}
           </div>
           <div className="flex items-center gap-1.5">
-            {/* 从「已保存条件」的「编辑」打开时才有：删除按钮排在「取消」前面 */}
-            {presetName && onDeletePreset ? (
-              <Button
-                type="button"
-                variant="destructive"
-                size="sm"
-                className="h-7 px-2 text-[12px]"
-                onClick={() => onDeletePreset(presetName)}
-                data-fork-screen-delete-preset
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                {SCREEN_PRESET_TEXTS_ZH.delete}
-              </Button>
-            ) : null}
-            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-[12px]" onClick={handleCancel}>
-              {T.cancel}
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              className="h-7 px-2 text-[12px] disabled:opacity-40"
+              disabled={!presetName || submitting || !onDeletePreset}
+              title={presetName ? undefined : SCREEN_PRESET_TEXTS_ZH.deleteDisabled}
+              onClick={() => {
+                if (presetName && onDeletePreset) onDeletePreset(presetName)
+              }}
+              data-fork-screen-delete-preset
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {SCREEN_PRESET_TEXTS_ZH.delete}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              className="h-7 px-2 text-[12px]"
+              disabled={submitting || !onSavePreset}
+              onClick={() => void handleSave()}
+              data-fork-screen-save-preset
+            >
+              <Save className="h-3.5 w-3.5" />
+              {presetName ? SCREEN_PRESET_TEXTS_ZH.dialogSaveOverwrite : SCREEN_PRESET_TEXTS_ZH.dialogSave}
             </Button>
             <Button
               type="button"

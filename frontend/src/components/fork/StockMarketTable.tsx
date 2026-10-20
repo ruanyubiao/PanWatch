@@ -8,7 +8,12 @@ import { TablePagination } from '@/components/fork/TablePagination'
 import { filterMarketRows, EMPTY_MARKET_FILTERS, type MarketTableFilters } from '@/lib/market-filters'
 import { originalStockName } from '@/lib/stock-name'
 import type { BoardKey } from '@/lib/board-classify'
-import type { MarketRow, MarketTableResponse } from '@/lib/fork-kline-summary'
+import {
+  parseMarketTablePayload,
+  type MarketBoardCounts,
+  type MarketRow,
+  type MarketTablePayload,
+} from '@/lib/fork-kline-summary'
 
 /**
  * fork 专用：A 股全市场行情**表格**（分析页的主列表）。
@@ -228,9 +233,11 @@ const COLUMNS: ColumnDef[] = [
   { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', minWidth: 104 },
   // 状态列（交易日状态）：固定 68px —— 「停牌」「正常」「*ST」「待摘牌」都在 3 个字以内，
   // 68 = 3 个字（约 36px）+ 左右内边距，再宽就是白占地方。紧跟在总市值后面（用户指定）。
-  { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 68 },
-  // 指标列固定 200px + 左内边距 40px —— 总市值是右对齐的，两块贴一起会糊成一片
-  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 200, padLeft: 40 },
+  // 左内边距 40px 在**这一列**（用户第 9 条：原来加在「指标」列前面的间距挪到状态列，
+  // 指标列不再留白）—— 总市值是右对齐的，紧贴一个状态标签会糊成一片。
+  { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 68, padLeft: 40 },
+  // 指标列固定 200px，**没有**左内边距（第 9 条把那段间距给了状态列）
+  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 200 },
   { key: 'agent', label: MARKET_TABLE_TEXTS_ZH.colAgent, width: 120 },
   { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 200 },
   { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 220 },
@@ -251,8 +258,8 @@ export function sortHintOf(sort: SortState | null, key: SortKey): string {
 }
 
 /** 各板块计数（从全量数据里数，保证与列表口径必然一致）。 */
-export function boardCountsOf(rows: MarketRow[]): MarketTableResponse['counts'] {
-  const counts: MarketTableResponse['counts'] = { all: rows.length, sh: 0, sz: 0, kcb: 0, cyb: 0, st: 0 }
+export function boardCountsOf(rows: MarketRow[]): MarketBoardCounts {
+  const counts: MarketBoardCounts = { all: rows.length, sh: 0, sz: 0, kcb: 0, cyb: 0, st: 0 }
   for (const row of rows) {
     if (row.board === 'sh') counts.sh += 1
     else if (row.board === 'sz') counts.sz += 1
@@ -278,7 +285,7 @@ interface StockMarketTableProps {
   filters?: MarketTableFilters
   /** 已在自选里的代码集合（决定操作列是 + 还是 X） */
   existingSymbols: Set<string>
-  onCounts?: (counts: MarketTableResponse['counts']) => void
+  onCounts?: (counts: MarketBoardCounts) => void
   onAdd: (row: MarketRow) => Promise<void> | void
   onRemove: (row: MarketRow) => void
   /** 点代码（文字按钮）→ 复制「代码 + 名称」 */
@@ -382,12 +389,14 @@ export function StockMarketTable({
     setLoading(true)
     setError(false)
     onLoadingChangeRef.current?.(true)
-    fetchAPI<MarketTableResponse>(
+    fetchAPI<MarketTablePayload>(
       `/stocks/market-table?board=all&limit=${MARKET_FETCH_LIMIT}`,
       { signal: controller.signal },
     )
-      .then(value => {
+      .then(payload => {
         if (controller.signal.aborted) return
+        // 接口字段是 1–2 个字母的短名（瘦身），在这里一次性翻译回可读的 MarketRow
+        const value = parseMarketTablePayload(payload)
         const items = value.items || []
         setRows(items)
         countsRef.current?.(boardCountsOf(items))

@@ -205,11 +205,23 @@ export const SCREEN_TEXTS_ZH = {
   summaryMaBear: (periods: string) => `均线空头排列(${periods})`,
   summaryAboveMa: (period: number) => `收盘价站上 MA${period}`,
   summaryPct: (n: number, min: number, max: number) => `第 ${n} 日涨跌幅 ∈ (${min}%, ${max}%)`,
-  summaryConsecutive: (start: number, days: number) =>
-    // start 缺失（老草稿）按「最近 days 天」显示
-    !start || start <= 1 ? `连续 ${days} 日阳线` : `自倒数第 ${start} 日起连续 ${days} 日阳线`,
-  summaryRising: (start: number, days: number) =>
-    !start || start <= 1 ? `连续 ${days} 日上涨` : `自倒数第 ${start} 日起连续 ${days} 日上涨`,
+  /**
+   * 连续类条件的摘要（用户第 3 / 4 条指定的写法）：
+   *
+   *   ``倒数第7～4天连续4日上涨``
+   *
+   * 起点是**最早**那天、终点是**最近**那天：``start=4`` + ``days=4`` 覆盖倒数第
+   * 4、5、6、7 天，写出来就是「倒数第7～4天」。只连续 1 天时不写区间。
+   * 老草稿里缺 start / days 时用条件自己的默认值兜底 —— 绝不再出现「连续 undefined 日」。
+   */
+  summaryConsecutive: (start: number | undefined, days: number | undefined) => {
+    const part = consecutiveParts(start, days, 4)
+    return `${part.span}连续${part.days}日阳线`
+  },
+  summaryRising: (start: number | undefined, days: number | undefined) => {
+    const part = consecutiveParts(start, days, 3)
+    return `${part.span}连续${part.days}日上涨`
+  },
   consecutiveRisingHint: (start: number, days: number) =>
     `自倒数第 ${start} 个交易日起连续 ${days} 个交易日都上涨（收盘价 > 前收）`,
   summaryPeriodsJoin: '/',
@@ -294,7 +306,7 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
       '要「当天真正上涨」请用另一条「连续上涨（涨幅 > 0）」',
     defaults: { start: 1, days: 4 },
     summary: p => T.summaryConsecutive(p.start, p.days),
-    requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + p.days),
+    requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + consecutiveDays(p, 4)),
     validate: (p, tradingDays) => {
       const limit = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
       const issues: string[] = []
@@ -323,7 +335,7 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
     defaults: { start: 1, days: 3 },
     summary: p => T.summaryRising(p.start, p.days),
     // +1：前收缺失时要往回多取一根做回退
-    requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + p.days + 1),
+    requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + consecutiveDays(p, 3) + 1),
     validate: (p, tradingDays) => {
       const limit = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
       const issues: string[] = []
@@ -359,6 +371,40 @@ export const MAX_CHANGE_PCT = 1000
 function consecutiveStart(params: { start?: number }): number {
   const start = Number(params.start)
   return Number.isFinite(start) && start >= 1 ? Math.trunc(start) : 1
+}
+
+/** 连续类条件的天数；缺失时用条件自己的默认值（防止 NaN 传进 requiredBars）。 */
+function consecutiveDays(params: { days?: number }, fallback: number): number {
+  const days = Number(params.days)
+  return Number.isFinite(days) && days >= 1 ? Math.trunc(days) : fallback
+}
+
+/**
+ * 连续类条件的「倒数第 a～b 天」＋天数（摘要与提示共用）。
+ *
+ * 语义与后端一致（``ctx.calendar[0]`` = asof，求值区间是
+ * ``calendar[start-1 .. start-1+days)``）：``start`` 是**最近**那天、往回数 ``days``
+ * 天。所以覆盖到的**最早**那天是 ``start + days - 1``，写出来是
+ * ``倒数第(start+days-1)～start 天`` —— 用户第 3 / 4 条要的正是这个写法
+ * （``start=4, days=4`` → 「倒数第7～4天」）。
+ *
+ * 两个参数都可能缺失（老草稿只带 days，或者存在服务器上的老条件文件里参数被
+ * 丢空了）：缺失一律回落到默认值，**绝不拼出 undefined**。
+ */
+export function consecutiveParts(
+  start: number | undefined,
+  days: number | undefined,
+  defaultDays: number,
+): { span: string; days: number } {
+  const rawStart = Number(start)
+  const first = Number.isFinite(rawStart) && rawStart >= 1 ? Math.trunc(rawStart) : 1
+  const rawDays = Number(days)
+  const count = Number.isFinite(rawDays) && rawDays >= 1 ? Math.trunc(rawDays) : defaultDays
+  const oldest = first + count - 1
+  return {
+    span: oldest === first ? `倒数第${first}天` : `倒数第${oldest}～${first}天`,
+    days: count,
+  }
 }
 
 function inPctRange(value: number): boolean {
@@ -695,15 +741,41 @@ function normalizeParams<K extends ConditionName>(name: K, params: ConditionPara
     const p = params as ConditionParamsMap['close_above_ma']
     return { period: Number(p.period) as MaPeriod } as ConditionParamsMap[K]
   }
-  if (name === 'consecutive_bullish') {
+  if (name === 'consecutive_bullish' || name === 'consecutive_rising') {
     const p = params as ConditionParamsMap['consecutive_bullish']
-    // start 缺失时按 1 处理：老草稿 / 老请求只带 days
+    // start 缺失时按 1 处理：老草稿 / 老请求只带 days。
+    // **两条连续条件必须走同一个分支** —— 上一版只写了 consecutive_bullish，
+    // 「连续上涨」的 start/days 因此被整段丢掉（params 变成 {}），于是
+    // 摘要显示「连续 undefined 日上涨」、提交时后端报两条「需为 1 至 30 的整数」。
     const start = Number(p.start)
-    return { start: Number.isFinite(start) && start > 0 ? start : 1, days: Number(p.days) } as ConditionParamsMap[K]
+    return {
+      start: Number.isFinite(start) && start > 0 ? start : 1,
+      days: Number(p.days),
+    } as ConditionParamsMap[K]
   }
   if (name === 'change_pct') {
     const p = params as ConditionParamsMap['change_pct']
     return { n: Number(p.n), min: Number(p.min), max: Number(p.max) } as ConditionParamsMap[K]
   }
   return {} as ConditionParamsMap[K]
+}
+
+/**
+ * 把缺失的参数补回条件自己的默认值（**不覆盖已有值**）。
+ *
+ * 用途：读「已保存条件」时修复老文件 —— 上一版前端在保存「连续上涨」时把
+ * ``start`` / ``days`` 整段丢了（见 ``normalizeParams`` 的注释），服务器上可能还留着
+ * 这类 ``params: {}`` 的条件。补默认值之后它们能正常回填、正常展示、正常提交。
+ */
+export function fillDefaultParams(rule: GroupNode): GroupNode {
+  return {
+    ...rule,
+    children: rule.children.map(child => {
+      if (child.type === 'group') return fillDefaultParams(child)
+      const defaults = CONDITION_DEFS_ZH[child.name]?.defaults as Record<string, unknown> | undefined
+      if (!defaults) return child
+      const current = (child.params ?? {}) as Record<string, unknown>
+      return { ...child, params: { ...defaults, ...current } } as RuleNode
+    }),
+  }
 }

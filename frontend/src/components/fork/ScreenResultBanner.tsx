@@ -1,4 +1,4 @@
-import { Filter, RefreshCw, Save, X } from 'lucide-react'
+import { Filter, X } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { SCREEN_PRESET_TEXTS_ZH } from '@/lib/screen-presets'
 import {
@@ -12,9 +12,16 @@ import {
 /**
  * fork 专用：分析页的「选股结果」横幅（需求规格 §5.5）。
  *
- * 放在筛选行和表格之间。它只说三件事：**筛出多少只**、**数据是什么时候的 /
- * 算了多少只 / 几只数据不足 / 花了多久**、以及**用了什么条件**（第二行截断，
- * 悬停看全文）。三个按钮分别对应「改条件」「用同一请求再跑」「回到全市场」。
+ * 它只说三件事：**筛出多少只**、**数据是什么时候的 / 算了多少只 / 几只数据不足 /
+ * 花了多久**、以及**用了什么条件**（第二行截断，悬停看全文）。
+ *
+ * 按钮只剩两个（用户第 6 条 2026-10-20 晚）：
+ *   - 「修改条件」→ 打开条件选股弹窗（带回这次的条件）
+ *   - 「退出选股」→ 回到全市场
+ *
+ * 「保存条件」与「重新选股」两个按钮**从横幅上删掉了**：「保存」挪进条件选股弹窗
+ * 底部（保存的是草稿，不必先跑结果）；「重新选股」与工具条上的「刷新」完全等价
+ * （`handleRefresh` 在选股结果生效时就是重跑同一条规则），留着是两个按钮一个作用。
  *
  * 「退出选股」不重新请求 —— 表格自己留着全量数据（`sourceRows=null` 就切回
  * 那份缓存），所以退出是瞬时的。
@@ -25,25 +32,15 @@ const T = SCREEN_TEXTS_ZH
 export function ScreenResultBanner({
   response,
   request,
-  rerunning = false,
   onEdit,
-  onRerun,
   onExit,
-  onSave,
   savedName = null,
 }: {
   response: ScreenResponse
   request: ScreenRequest
-  rerunning?: boolean
   onEdit: () => void
-  onRerun: () => void
   onExit: () => void
-  /**
-   * 「保存条件」：排在「修改条件」**前面**（用户反馈 2026-10-20 第 1 条）。
-   * 只有拿到结果之后才谈得上保存 —— 保存的是这一轮真正跑过的请求。
-   */
-  onSave?: () => void
-  /** 当前结果对应的已保存条件名（保存/编辑过后显示在按钮旁，纯提示） */
+  /** 当前结果对应的已保存条件名（从已保存条件跑出来的才有，纯提示） */
   savedName?: string | null
 }) {
   const seconds = (response.stats.elapsed_ms / 1000).toFixed(1)
@@ -72,18 +69,6 @@ export function ScreenResultBanner({
               {SCREEN_PRESET_TEXTS_ZH.summary(savedName)}
             </span>
           ) : null}
-          {onSave ? (
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="h-7 px-2 text-[12px]"
-              onClick={onSave}
-              data-fork-screen-save
-            >
-              <Save className="h-3.5 w-3.5" /> {SCREEN_PRESET_TEXTS_ZH.save}
-            </Button>
-          ) : null}
           <Button
             type="button"
             variant="secondary"
@@ -93,17 +78,6 @@ export function ScreenResultBanner({
             data-fork-screen-edit
           >
             <Filter className="h-3.5 w-3.5" /> {T.editRule}
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="h-7 px-2 text-[12px]"
-            onClick={onRerun}
-            disabled={rerunning}
-            data-fork-screen-rerun
-          >
-            <RefreshCw className={`h-3.5 w-3.5 ${rerunning ? 'animate-spin' : ''}`} /> {T.rerun}
           </Button>
           <Button
             type="button"
@@ -127,3 +101,5 @@ export function ScreenResultBanner({
     </div>
   )
 }
+
+export default ScreenResultBanner

@@ -215,7 +215,7 @@ describe('条件选股弹窗', () => {
     expect((submitButton() as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it('D6 提交中点「取消」会 abort 请求', async () => {
+  it('D6 提交中关闭弹窗会 abort 请求（第 5 条去掉了「取消」文字按钮，走 Esc / X）', async () => {
     let signal: AbortSignal | undefined
     mocks.screen.mockImplementation((_req: unknown, provided?: AbortSignal) => {
       signal = provided
@@ -228,9 +228,26 @@ describe('条件选股弹窗', () => {
     await waitFor(() => expect(mocks.screen).toHaveBeenCalledTimes(1))
     expect(signal?.aborted).toBe(false)
 
-    await userEvent.click(screen.getByRole('button', { name: '取消' }))
+    await userEvent.keyboard('{Escape}')
     expect(signal?.aborted).toBe(true)
     expect(onOpenChange).toHaveBeenCalledWith(false)
+  })
+
+  it('D6b 底部按钮是「删除 / 保存 / 开始选股」，没有「取消」文字按钮', () => {
+    renderDialog({ onSavePreset: vi.fn() })
+    expect(screen.queryByRole('button', { name: '取消' })).toBeNull()
+    expect(document.querySelector('[data-fork-screen-submit]')!.textContent).toContain('开始选股')
+    // 没保存过：删除禁用、保存按钮在
+    const remove = document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement
+    expect(remove).toBeTruthy()
+    expect(remove.disabled).toBe(true)
+    const save = document.querySelector('[data-fork-screen-save-preset]') as HTMLButtonElement
+    expect(save.textContent).toContain('保存')
+    expect(save.disabled).toBe(false)
+    // 顺序：删除 → 保存 → 开始选股
+    const submit = document.querySelector('[data-fork-screen-submit]') as HTMLElement
+    expect(remove.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(save.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('「修改条件」把上次的请求原样带回弹窗', () => {
@@ -261,8 +278,8 @@ describe('条件选股弹窗', () => {
     expect(marketButton('深证').getAttribute('aria-pressed')).toBe('false')
     expect(marketButton('科创').getAttribute('aria-pressed')).toBe('true')
     expect(marketButton('全部').getAttribute('aria-pressed')).toBe('mixed')
-    expect(screen.getAllByText('连续 3 日阳线').length).toBeGreaterThan(0)
-    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe('连续 3 日阳线')
+    expect(screen.getAllByText('倒数第3～1天连续3日阳线').length).toBeGreaterThan(0)
+    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe('倒数第3～1天连续3日阳线')
     const radios = screen.getAllByRole('radio')
     expect(within(radios[0].parentElement as HTMLElement).getAllByRole('radio')).toHaveLength(2)
     expect(radios[1].getAttribute('aria-checked')).toBe('true')
@@ -318,9 +335,9 @@ describe('条件选股弹窗', () => {
     await waitFor(() =>
       expect(document.querySelectorAll('[data-fork-screen-condition]')).toHaveLength(1),
     )
-    // 起点 1 时才显示成「连续 N 日阳线」，否则点名起点
+    // 起点 5 + 连续 4 天 → 覆盖倒数第 8～5 天（用户第 4 条要求的写法）
     expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe(
-      '自倒数第 5 日起连续 4 日阳线',
+      '倒数第8～5天连续4日阳线',
     )
   })
 
@@ -341,7 +358,7 @@ describe('条件选股弹窗', () => {
     await waitFor(() =>
       expect(document.querySelectorAll('[data-fork-screen-condition]')).toHaveLength(1),
     )
-    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe('连续 3 日上涨')
+    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe('倒数第3～1天连续3日上涨')
   })
 
   it('L3 数字框右侧有加减按钮：点一次 ±1、到边界禁用、键盘 ↑/↓ 等价', async () => {
