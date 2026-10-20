@@ -9,6 +9,7 @@ import {
   createDefaultRequest,
   createGroup,
   duplicateNode,
+  fillDefaultParams,
   findNode,
   formatRule,
   removeNode,
@@ -53,7 +54,7 @@ describe('条件选股 / 规则预览', () => {
     expect(formatRule(createGroup('AND'))).toBe('（无技术条件，仅按基础筛选）')
 
     const and = group([cond('close_above_ma', { period: 5 }), cond('consecutive_bullish', { days: 4 })])
-    expect(formatRule(and)).toBe('收盘价站上 MA5 AND 连续 4 日阳线')
+    expect(formatRule(and)).toBe('收盘价站上 MA5 AND 倒数第4～1天连续4日阳线')
 
     const or = group([cond('more_bullish_candles'), cond('more_bearish_candles')], 'OR')
     expect(formatRule(or)).toBe('阳线多于阴线（统计窗口内） OR 阴线多于阳线（统计窗口内）')
@@ -64,7 +65,7 @@ describe('条件选股 / 规则预览', () => {
       group([cond('consecutive_bullish', { days: 4 }), cond('change_pct', { n: 1, min: 5, max: 30 })], 'OR'),
     ])
     expect(formatRule(nested)).toBe(
-      '均线多头排列(5/10/20/60) AND ( 连续 4 日阳线 OR 第 1 日涨跌幅 ∈ (5%, 30%) )',
+      '均线多头排列(5/10/20/60) AND ( 倒数第4～1天连续4日阳线 OR 第 1 日涨跌幅 ∈ (5%, 30%) )',
     )
 
     // 只有 1 个子节点的子组不加括号
@@ -281,12 +282,15 @@ describe('条件选股 / K 与提交', () => {
 describe('条件选股 / 注册表', () => {
   it('连续 N 日阳线的起点参与预览、所需根数与校验', () => {
     const def = CONDITION_DEFS_ZH.consecutive_bullish
-    expect(def.summary({ start: 1, days: 4 })).toBe('连续 4 日阳线')
-    expect(def.summary({ start: 3, days: 4 })).toBe('自倒数第 3 日起连续 4 日阳线')
+    // 用户第 4 条指定的写法：起点是最近那天、往回数 N 天，写成「倒数第a～b天连续N日阳线」
+    expect(def.summary({ start: 1, days: 4 })).toBe('倒数第4～1天连续4日阳线')
+    expect(def.summary({ start: 3, days: 4 })).toBe('倒数第6～3天连续4日阳线')
+    // 只连续 1 天时不写区间
+    expect(def.summary({ start: 3, days: 1 })).toBe('倒数第3天连续1日阳线')
     // 起点之前那 start-1 根也要读进来
     expect(def.requiredBars({ start: 3, days: 4 })).toBe(6)
     expect(formatRule(group([cond('consecutive_bullish', { start: 3, days: 4 })]))).toBe(
-      '自倒数第 3 日起连续 4 日阳线',
+      '倒数第6～3天连续4日阳线',
     )
 
     // 起点 + 天数 必须落在窗口（默认 W=30）内
@@ -303,6 +307,53 @@ describe('条件选股 / 注册表', () => {
   it('F6 老请求缺 start 时按 1 提交（后端 extra=forbid，不能漏字段）', () => {
     const payload = toApiRequest(req(group([cond('consecutive_bullish', { days: 4 })])))
     expect((payload.rule.children[0] as ConditionNode).params).toEqual({ start: 1, days: 4 })
+  })
+
+  /**
+   * 用户第 2 条报的 bug：截图里「连续 undefined 日上涨」＋两条
+   * 「倒数第几个交易日 / 连续天数需为 1 至 30 的整数」。
+   *
+   * 根因是 `normalizeParams` 只认 `consecutive_bullish`，「连续上涨」的
+   * start/days 被整段丢掉（params 变成 {}）。这三条钉住修复：
+   *   ① 提交时不能丢参数；② 参数缺失时摘要不出现 undefined；
+   *   ③ 老条件文件（params 被丢空）读进来时能补回默认值。
+   */
+  it('F6b 连续上涨提交时 start/days 不能被丢掉（params 变 {} 就会报两条校验错）', () => {
+    const payload = toApiRequest(req(group([cond('consecutive_rising', { start: 4, days: 7 })])))
+    expect((payload.rule.children[0] as ConditionNode).params).toEqual({ start: 4, days: 7 })
+    // 存到服务器上的条件也是这样一份请求，所以 params 必须完整
+    expect(payload.rule.children[0]).toMatchObject({ name: 'consecutive_rising' })
+
+    // 缺字段（老草稿）时按 1 补齐，仍然不许漏键
+    const legacy = toApiRequest(req(group([cond('consecutive_rising', { days: 3 })])))
+    expect((legacy.rule.children[0] as ConditionNode).params).toEqual({ start: 1, days: 3 })
+  })
+
+  it('F6c 参数整组缺失时摘要也只出默认值，绝不出现 undefined', () => {
+    const rise = CONDITION_DEFS_ZH.consecutive_rising
+    const bull = CONDITION_DEFS_ZH.consecutive_bullish
+    // 老条件文件里 params 被丢空 → 运行时是 {}，类型上仍是 {start,days}
+    const empty = {} as never
+    expect(rise.summary(empty)).toBe('倒数第3～1天连续3日上涨')
+    expect(bull.summary(empty)).toBe('倒数第4～1天连续4日阳线')
+    expect(formatRule(group([cond('consecutive_rising', {})]))).not.toContain('undefined')
+    // 所需根数也不能是 NaN（footer 会照原样打印出来）
+    expect(Number.isFinite(rise.requiredBars(empty))).toBe(true)
+    expect(Number.isFinite(bull.requiredBars(empty))).toBe(true)
+  })
+
+  it('F6d 读老条件文件时用 fillDefaultParams 补回缺失参数（不覆盖已有值）', () => {
+    const broken = group([
+      { ...cond('consecutive_rising', {}), params: {} } as ConditionNode,
+      cond('close_above_ma', { period: 20 }),
+    ])
+    const fixed = fillDefaultParams(broken)
+    expect((fixed.children[0] as ConditionNode).params).toEqual({ start: 1, days: 3 })
+    // 已有值原样保留
+    expect((fixed.children[1] as ConditionNode).params).toEqual({ period: 20 })
+    // 补完之后能正常摘要、正常校验
+    expect(formatRule(fixed)).toContain('倒数第3～1天连续3日上涨')
+    expect(messages(validateScreenRequest(req(fixed)))).toHaveLength(0)
   })
 
   it('八个条件齐全，分类与默认值符合规格', () => {
@@ -342,8 +393,8 @@ describe('条件选股 / 注册表', () => {
     expect(bull.description).toContain('连续上涨')
     expect(rise.description).toContain('前一交易日收盘价')
 
-    expect(rise.summary({ start: 1, days: 3 })).toBe('连续 3 日上涨')
-    expect(rise.summary({ start: 2, days: 3 })).toBe('自倒数第 2 日起连续 3 日上涨')
+    expect(rise.summary({ start: 1, days: 3 })).toBe('倒数第3～1天连续3日上涨')
+    expect(rise.summary({ start: 2, days: 3 })).toBe('倒数第4～2天连续3日上涨')
     expect(rise.defaults).toEqual({ start: 1, days: 3 })
     // 前收缺失要回退前一根 → 比阳线多读一根
     expect(rise.requiredBars({ start: 1, days: 3 })).toBe(4)

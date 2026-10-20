@@ -239,7 +239,7 @@ def test_A6_只返回命中的股票且形状与market_table一致(monkeypatch):
     body = fork_screen.screen(make_request(rule=group(condition("close_above_ma", period=5))))
 
     assert body["total"] == 1
-    assert [item["code"] for item in body["items"]] == ["600519"]
+    assert [item["c"] for item in body["items"]] == ["600519"]
     assert body["items"][0] == fork_market.map_row(hit)
     assert body["stats"]["candidates"] == 2
     assert body["stats"]["evaluated"] == 1
@@ -256,7 +256,7 @@ def test_A6b_结果按代码升序(monkeypatch):
     data = ScreenData(asof=ASOF, candidates=rows, calendar=calendar_of(30), series=series)
     _patch_fetch(monkeypatch, data)
     body = fork_screen.screen(make_request(rule=group(condition("close_above_ma", period=5))))
-    assert [item["code"] for item in body["items"]] == ["000001", "600519"]
+    assert [item["c"] for item in body["items"]] == ["000001", "600519"]
 
 
 # ---------------------------------------------------------------- A7 空结果

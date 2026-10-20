@@ -1,15 +1,22 @@
 import type { ReactNode } from 'react'
 
 /**
- * fork：分析页筛选行右端的元信息（用户指定的三项与顺序）——
+ * fork：分析页工具条第一行右端的元信息（用户指定）。
  *
- *   数据时间：2026-10-19 17:00:30   vabbac461   2026-10-19 19:28:04
- *   └ 股票数据最后一次同步          └ 代码版本    └ 代码最后提交
+ * 第 7 条（2026-10-20 晚）把它从**三段分开的文字**合并成**一个文本框**：
+ *
+ *   数据时间：2026-10-20 17:00:26 ｜ 代码版本：e669fbad ｜ 部署时间：2026-10-20 19:42:06
+ *
+ * 悬停提示也合并成一段多行文本（不再是三个各自的小提示）：
+ *
+ *   数据时间：2026-10-20 17:00:26（交易日 2026-10-20）
+ *   代码版本：e669fbad（分支 analysis-20261019）
+ *   部署时间：2026-10-20 19:42:06
  *
  * - **数据时间**来自 ``GET /api/stocks/market-meta`` 的 ``data_synced_at`` ——
  *   行情库最后一次同步的时刻（管道 ``sync_log`` 里 ``stock_daily`` 那条成功记录），
- *   不是页面载入时间。用户明确要「股票最后一次数据同步」，页面载入时刻已经去掉。
- * - **版本 / 提交时间**同接口的 ``sha`` / ``commit_time``（部署时写下的
+ *   不是页面载入时间。
+ * - **代码版本 / 部署时间**同接口的 ``sha`` / ``published_at``（部署时写下的
  *   ``BUILD_INFO.json`` 或本机 ``.git``，见 ``fork_market.build_info``）。
  *
  * 时间一律按**浏览器本地时区**显示，格式固定 ``YYYY-MM-DD HH:MM:SS``：
@@ -47,15 +54,18 @@ export function formatLocalStamp(value?: string | null): string {
 }
 
 const BUILD_META_TEXTS_ZH = {
-  dataTime: (stamp: string) => `数据时间：${stamp}`,
-  dataTimeHint: (stamp: string, tradeDate: string | null | undefined) =>
-    `股票数据最后一次同步：${stamp}${tradeDate ? `（交易日 ${tradeDate}）` : ''}`,
-  version: (version: string) => `v${version}`,
-  versionHint: (build: BuildMeta) =>
-    `代码版本 ${build.sha}${build.branch ? `（分支 ${build.branch}）` : ''}${
-      build.published_at ? `，部署于 ${formatLocalStamp(build.published_at)}` : ''
-    }`,
-  commitHint: (stamp: string) => `代码最后一次提交：${stamp}`,
+  dataTime: '数据时间',
+  version: '代码版本',
+  deploy: '部署时间',
+  /** 可见文本的分隔符（一行里三段，顺序固定） */
+  separator: ' ｜ ',
+  /** 悬停提示：一行一项，换行显示 */
+  tip: (lines: string[]) => lines.join('\n'),
+  dataLine: (stamp: string, tradeDate: string | null | undefined) =>
+    `数据时间：${stamp}${tradeDate ? `（交易日 ${tradeDate}）` : ''}`,
+  versionLine: (build: BuildMeta) =>
+    `代码版本：${(build.sha || '').trim()}${build.branch ? `（分支 ${build.branch}）` : ''}`,
+  deployLine: (stamp: string) => `部署时间：${stamp}`,
 }
 
 export interface BuildMetaStripProps {
@@ -65,47 +75,37 @@ export interface BuildMetaStripProps {
 export function BuildMetaStrip({ build }: BuildMetaStripProps) {
   const version = (build?.sha || '').trim()
   const dataTime = formatLocalStamp(build?.data_synced_at)
-  const commit = formatLocalStamp(build?.commit_time)
+  const deploy = formatLocalStamp(build?.published_at)
+  // 老部署的 BUILD_INFO 里没有 published_at 时用最后提交时间兜住「这是哪版」这一项
+  const deployStamp = deploy || formatLocalStamp(build?.commit_time)
 
-  if (!dataTime && !version && !commit) return null
+  if (!dataTime && !version && !deployStamp) return null
 
-  const items: ReactNode[] = []
+  // 可见文本：三段合成一句，缺哪段就跳过哪段（顺序固定）
+  const parts: string[] = []
+  const tipLines: string[] = []
   if (dataTime) {
-    items.push(
-      <span
-        key="data"
-        data-fork-build-data-time
-        title={BUILD_META_TEXTS_ZH.dataTimeHint(dataTime, build?.data_trade_date)}
-      >
-        {BUILD_META_TEXTS_ZH.dataTime(dataTime)}
-      </span>,
-    )
+    parts.push(`${BUILD_META_TEXTS_ZH.dataTime}：${dataTime}`)
+    tipLines.push(BUILD_META_TEXTS_ZH.dataLine(dataTime, build?.data_trade_date))
   }
   if (version) {
-    items.push(
-      <span
-        key="version"
-        data-fork-build-version
-        title={BUILD_META_TEXTS_ZH.versionHint(build as BuildMeta)}
-      >
-        {BUILD_META_TEXTS_ZH.version(version)}
-      </span>,
-    )
+    parts.push(`${BUILD_META_TEXTS_ZH.version}：${version}`)
+    tipLines.push(BUILD_META_TEXTS_ZH.versionLine(build as BuildMeta))
   }
-  if (commit) {
-    items.push(
-      <span key="commit" data-fork-build-commit title={BUILD_META_TEXTS_ZH.commitHint(commit)}>
-        {commit}
-      </span>,
-    )
+  if (deployStamp) {
+    parts.push(`${BUILD_META_TEXTS_ZH.deploy}：${deployStamp}`)
+    tipLines.push(BUILD_META_TEXTS_ZH.deployLine(deployStamp))
   }
+
+  const text: ReactNode = parts.join(BUILD_META_TEXTS_ZH.separator)
 
   return (
     <span
       data-fork-build-meta
-      className="ml-auto flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] leading-none text-muted-foreground/60"
+      title={BUILD_META_TEXTS_ZH.tip(tipLines)}
+      className="ml-auto shrink-0 whitespace-nowrap rounded border border-border/60 px-1.5 py-0.5 text-[11px] leading-tight text-muted-foreground/70"
     >
-      {items}
+      {text}
     </span>
   )
 }

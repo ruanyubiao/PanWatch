@@ -55,15 +55,12 @@ function row(over: Partial<MarketRow> = {}): MarketRow {
     board: 'sz',
     trade_date: '2026-10-14',
     pre_close: 11.78,
-    open: 11.78,
     close: 11.59,
     high: 11.89,
     low: 11.58,
-    change_amount: -0.19,
     change_pct: -1.61,
     total_market_cap: 224914591914.82,
     source: 'sina',
-    adj_factor: 2.68142065,
     ma: { ma5: 11.518, ma10: 11.4623, ma20: 11.4864, ma60: 11.1768 },
     tech: {
       score: 4,
@@ -177,9 +174,10 @@ describe('用库里的 tech_* 复原徽章分数', () => {
   })
 })
 
-describe('板块 pill 的定义（去掉「关注」后仍是 5 个）', () => {
-  it('顺序与 key：上证 / 深证 / 创业 / 科创 / ST（用户第二轮把创业排到了科创前面）', () => {
-    expect(BOARD_OPTIONS.map(o => o.key)).toEqual(['sh', 'sz', 'cyb', 'kcb', 'st'])
-    expect(BOARD_OPTIONS.map(o => o.label)).toEqual(['上证', '深证', '创业', '科创', 'ST'])
+describe('板块 pill 的定义（去掉「关注」后仍是 4 个）', () => {
+  it('顺序与 key：上证 / 深证 / 创业 / 科创（第 8 条去掉了 ST 这一项）', () => {
+    const keys: string[] = BOARD_OPTIONS.map(option => String(option.key))
+    expect(keys).toEqual(['sh', 'sz', 'cyb', 'kcb'])
+    expect(BOARD_OPTIONS.map(option => option.label)).toEqual(['上证', '深证', '创业', '科创'])
   })
 })

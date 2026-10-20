@@ -32,16 +32,13 @@ def _db_row(**over):
         "name": "贵州茅台",
         "board": "sh",
         "trade_date": dt.date(2026, 10, 14),
-        "open": Decimal("1280.0000"),
         "high": Decimal("1299.0000"),
         "low": Decimal("1276.0200"),
         "close": Decimal("1290.5000"),
         "pre_close": Decimal("1286.0000"),
-        "change_amount": Decimal("4.5000"),
         "change_pct": Decimal("0.3500"),
         "total_market_cap": Decimal("1607604938886.00"),
         "info_market_cap": 1607604938886,
-        "circulating_market_cap": Decimal("1607604938886.00"),
         "source": "sina",
         "adj_factor": Decimal("1.00000000"),
         "ma5": Decimal("1280.0000"),
@@ -62,6 +59,27 @@ def _db_row(**over):
     return base
 
 
+# ------------------------------------------------------------------ 字段瘦身
+
+def test_返回字段名都是_1_到_2_个字母且不带表格不用的字段():
+    """用户要求：返回字段瘦身、字段名能一个字母就一个字母。
+
+    这条钉住两件事：① 键名一律 ≤2 个字符；② ``open`` / ``change_amount`` /
+    ``circulating_market_cap`` / ``adj_factor`` 这些表格从来不读的字段不再出现
+    （adj_factor 只用于把均线还原到不复权空间，还原完就没用了）。
+    """
+    item = fork_market.map_row(_db_row())
+    assert all(len(key) <= 2 for key in item), sorted(item)
+    assert set(item) == {
+        "c", "s", "e", "n", "b", "d", "pc", "cl", "h", "l", "cp", "mc",
+        "so", "sc", "sl", "sg", "m", "t",
+    }
+    for gone in ("open", "change_amount", "circulating_market_cap", "adj_factor"):
+        assert gone not in item
+    assert all(len(key) <= 2 for key in item["m"])
+    assert all(len(key) <= 2 for key in item["t"])
+
+
 # ------------------------------------------------------------------ 复权口径
 
 def test_复权因子把均线与支撑压力还原到不复权空间():
@@ -76,36 +94,32 @@ def test_复权因子把均线与支撑压力还原到不复权空间():
     )
     item = fork_market.map_row(row)
 
-    assert item["close"] == 11.59  # 现价本来就不复权，不动
-    assert item["ma"]["ma5"] == pytest.approx(30.88 / 2.68142065, rel=1e-4)
-    assert item["ma"]["ma20"] == pytest.approx(30.80 / 2.68142065, rel=1e-4)
+    assert item["cl"] == 11.59  # 现价本来就不复权，不动
+    assert item["m"]["5"] == pytest.approx(30.88 / 2.68142065, rel=1e-4)
+    assert item["m"]["20"] == pytest.approx(30.80 / 2.68142065, rel=1e-4)
     # 支撑/压力同口径还原（不还原会出现「支撑比现价高一大截」的假象）
-    assert item["tech"]["support"] == pytest.approx(30.21 / 2.68142065, rel=1e-4)
-    assert item["tech"]["resistance"] == pytest.approx(31.875 / 2.68142065, rel=1e-4)
+    assert item["t"]["su"] == pytest.approx(30.21 / 2.68142065, rel=1e-4)
+    assert item["t"]["re"] == pytest.approx(31.875 / 2.68142065, rel=1e-4)
     # 还原后与不复权的现价在同一个量级（这才是这条口径的意义）
-    assert 11.0 < item["tech"]["support"] < item["close"] < item["tech"]["resistance"] < 12.5
-    assert item["adj_factor"] == 2.68142065
+    assert 11.0 < item["t"]["su"] < item["cl"] < item["t"]["re"] < 12.5
 
 
 def test_adj_factor_缺省按_1_处理而不是除零():
     item = fork_market.map_row(_db_row(adj_factor=None))
-    assert item["adj_factor"] == 1.0
-    assert item["ma"]["ma5"] == 1280.0
+    assert item["m"]["5"] == 1280.0
 
 
 def test_adj_factor_为零或负数时按_1_避免除零或价格翻号():
     zero = fork_market.map_row(_db_row(adj_factor=Decimal("0")))
     negative = fork_market.map_row(_db_row(adj_factor=Decimal("-2")))
-    assert zero["adj_factor"] == 1.0
-    assert zero["ma"]["ma5"] == 1280.0
-    assert negative["adj_factor"] == 1.0
-    assert negative["ma"]["ma5"] == 1280.0
+    assert zero["m"]["5"] == 1280.0
+    assert negative["m"]["5"] == 1280.0
 
 
 def test_市值取当日值_当日为空时回落到股票表():
-    assert fork_market.map_row(_db_row())["total_market_cap"] == 1607604938886.0
+    assert fork_market.map_row(_db_row())["mc"] == 1607604938886.0
     fallback = fork_market.map_row(_db_row(total_market_cap=None))
-    assert fallback["total_market_cap"] == 1607604938886.0
+    assert fallback["mc"] == 1607604938886.0
 
 
 # ------------------------------------------------------------------ 数据不足
@@ -115,13 +129,13 @@ def test_技术面为空的票返回_none_而不是零分():
                   tech_kdj=None, tech_boll=None, tech_volume=None,
                   tech_support=None, tech_resistance=None)
     item = fork_market.map_row(row)
-    assert item["tech"] is None
+    assert item["t"] is None
     # 行情照旧要有（新股也有收盘价）
-    assert item["close"] == 1290.5
+    assert item["cl"] == 1290.5
 
 
 def test_交易日序列化成字符串():
-    assert fork_market.map_row(_db_row())["trade_date"] == "2026-10-14"
+    assert fork_market.map_row(_db_row())["d"] == "2026-10-14"
 
 
 # ------------------------------------------------------------------ SQL 形状
@@ -175,7 +189,7 @@ def test_分页查询带上了_CTE_前缀():
 
 @pytest.fixture()
 def canned(monkeypatch):
-    """把 _query 换成固定应答：计数 / 总数 / 页数据。"""
+    """把 _queries 换成固定应答：计数（顺带给 asof）/ 页数据。"""
     calls: list[tuple[str, dict]] = []
     rows = [_db_row(), _db_row(code="000001", symbol="sz000001", exchange="SZ", name="平安银行", board="sz")]
 
@@ -183,9 +197,7 @@ def canned(monkeypatch):
         out = []
         for sql, params in statements:
             calls.append((sql, params or {}))
-            if "COUNT(*) AS total" in sql:
-                out.append([{"total": 2}])
-            elif "c_all" in sql:
+            if "c_all" in sql:
                 out.append([{
                     "asof": dt.date(2026, 10, 14),
                     "c_all": 5574, "c_sh": 1632, "c_sz": 1420,
@@ -199,32 +211,25 @@ def canned(monkeypatch):
     return calls
 
 
-def test_端点返回计数_总数_交易日与行(canned):
+def test_端点只返回交易日与行(canned):
     data = fork_market.market_table(board="all", q="", offset=0, limit=100)
 
-    assert data["asof"] == "2026-10-14"
-    # 未筛选时总数与板块计数里的「全部」是同一次聚合，不再另查 COUNT
-    assert data["total"] == 5574
-    assert data["offset"] == 0 and data["limit"] == 100
-    assert data["counts"] == {
-        "all": 5574, "sh": 1632, "sz": 1420, "kcb": 605, "cyb": 1370, "st": 201,
-    }
-    assert [item["code"] for item in data["items"]] == ["600519", "000001"]
-    # 未筛选：总数直接用 c_all，只查计数和页数据
+    # 瘦身后的响应只有两个键：a = asof，i = rows
+    assert set(data) == {"a", "i"}
+    assert data["a"] == "2026-10-14"
+    assert [item["c"] for item in data["i"]] == ["600519", "000001"]
+    # 不管筛不筛选都只有两条查询：计数（只为了 asof）+ 页数据
     assert len(canned) == 2
     assert "COUNT(*) AS total" not in canned[0][0]
     assert "COUNT(*) AS total" not in canned[1][0]
 
 
-def test_筛选时才单独计数且与分页同口径(canned):
+def test_筛选时不再单独跑_count_但分页参数照样生效(canned):
     data = fork_market.market_table(board="kcb", q=" 茅台 ", offset=20, limit=10)
-    assert data["total"] == 2
-    assert len(canned) == 3
-    total_sql, total_params = canned[1]
-    page_sql, page_params = canned[2]
-    assert "COUNT(*) AS total" in total_sql
-    assert "LOCATE(%(needle)s, code)" in total_sql
-    assert total_params == {"needle": "茅台", "board": "kcb"}
+    assert data["a"] == "2026-10-14"
+    assert len(canned) == 2
+    page_sql, page_params = canned[1]
+    assert "LOCATE(%(needle)s, code)" in page_sql
     assert page_params["needle"] == "茅台"
     assert page_params["board"] == "kcb"
     assert page_params["limit"] == 10 and page_params["offset"] == 20
@@ -232,7 +237,7 @@ def test_筛选时才单独计数且与分页同口径(canned):
 
 def test_端点_板块非法时退化成全部(canned):
     data = fork_market.market_table(board="不存在", q="", offset=0, limit=10)
-    assert data["counts"]["all"] == 5574
+    assert data["a"] == "2026-10-14"
     assert "board = %(board)s" not in canned[-1][0]
 
 
