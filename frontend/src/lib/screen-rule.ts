@@ -196,6 +196,8 @@ export const SCREEN_TEXTS_ZH = {
   nLabel: 'N（倒数第几个交易日）',
   nShortLabel: 'N',
   changePctHint: (max: number) => `N = 倒数第几个交易日（1 – ${max}），下限/上限为百分比、开区间`,
+  consecutiveHint: (start: number, days: number) =>
+    `自倒数第 ${start} 个交易日起连续 ${days} 个交易日都收阳（收盘价 > 开盘价）`,
   pctMinLabel: '下限 %',
   pctMaxLabel: '上限 %',
   summaryMaOrder: (periods: string) => `均线多头排列(${periods})`,
@@ -279,7 +281,9 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
     name: 'consecutive_bullish',
     label: '连续 N 日阳线',
     category: 'K 线',
-    description: '从倒数第 M 个交易日开始的 N 个交易日都收阳（停牌缺一天就不算）',
+    description:
+      '两个参数：倒数第几个交易日（默认 1 = 最近一个交易日）＋连续天数（默认 4）。' +
+      '自倒数第 M 个交易日起连续 N 个交易日收盘价都高于开盘价；中途有一根收阴、平盘或停牌缺数据就不成立',
     defaults: { start: 1, days: 4 },
     summary: p => T.summaryConsecutive(p.start, p.days),
     requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + p.days),
