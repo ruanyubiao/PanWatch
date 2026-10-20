@@ -28,11 +28,18 @@ export interface BoardOption {
  * 用户第二轮指定：全部 / 上证 / 深证 / **创业** / **科创** / ST
  * （创业在科创前面，与常见的「沪、深、创、科」一致）。
  */
+const BOARD_LABELS_ZH = {
+  sh: '上证',
+  sz: '深证',
+  cyb: '创业',
+  kcb: '科创',
+}
+
 export const BOARD_OPTIONS: BoardOption[] = [
-  { key: 'sh', label: '上证' },
-  { key: 'sz', label: '深证' },
-  { key: 'cyb', label: '创业' },
-  { key: 'kcb', label: '科创' },
+  { key: 'sh', label: BOARD_LABELS_ZH.sh },
+  { key: 'sz', label: BOARD_LABELS_ZH.sz },
+  { key: 'cyb', label: BOARD_LABELS_ZH.cyb },
+  { key: 'kcb', label: BOARD_LABELS_ZH.kcb },
   { key: 'st', label: 'ST' },
 ]
 

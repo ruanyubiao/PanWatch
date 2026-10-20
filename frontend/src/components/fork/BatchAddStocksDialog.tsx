@@ -22,6 +22,26 @@ import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import { isLikelyAShareCode, normalizeSymbol, splitStockTokens } from '@/lib/stock-tokens'
 
 /**
+ * fork：弹窗内的固定中文文案（变量名以 _ZH 结尾，仓库的 check:i18n 放行这种声明）。
+ * 这里没有上游 i18n 资源可复用，集中声明既过检查，也方便以后统一替换。
+ */
+const BATCH_ADD_TEXTS_ZH = {
+  title: '添加股票',
+  description: '支持一次输入多只，用空格、换行、逗号（中英文）、顿号、斜杠、竖线、冒号或分号分隔。',
+  searchLabel: '搜索股票',
+  placeholder: '600519 000001\n比亚迪，宁德时代 002594/300750',
+  recognizedPrefix: '已识别',
+  recognizedSuffix: '个输入',
+  missing: '未找到匹配的股票',
+  etfSkipped: 'ETF 不在本页支持范围，已跳过',
+  alreadyFollowed: '已关注',
+  remove: '移除',
+  cancel: '取消',
+  resolve: '解析',
+  confirmAdd: '确认添加',
+}
+
+/**
  * fork 专用：批量添加股票弹窗（替代上游的「添加股票 / ETF」单只弹窗）
  *
  * 上游弹窗一次只能选一只，且带 全部/A股/港股/美股 的市场筛选。fork 版：
@@ -177,14 +197,14 @@ export function BatchAddStocksDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>添加股票</DialogTitle>
+          <DialogTitle>{BATCH_ADD_TEXTS_ZH.title}</DialogTitle>
           <DialogDescription>
-            支持一次输入多只，用空格、换行、逗号（中英文）、顿号、斜杠、竖线、冒号或分号分隔。
+            {BATCH_ADD_TEXTS_ZH.description}
           </DialogDescription>
         </DialogHeader>
 
         <div>
-          <Label className="mb-2 block">搜索股票</Label>
+          <Label className="mb-2 block">{BATCH_ADD_TEXTS_ZH.searchLabel}</Label>
           <textarea
             value={text}
             onChange={e => {
@@ -192,13 +212,13 @@ export function BatchAddStocksDialog({
               setParsed(false)
               setRows([])
             }}
-            placeholder={'600519 000001\n比亚迪，宁德时代 002594/300750'}
+            placeholder={BATCH_ADD_TEXTS_ZH.placeholder}
             rows={4}
             className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 font-mono text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
           <div className="mt-2 flex items-center justify-between gap-2">
             <span className="text-[11px] text-muted-foreground">
-              已识别 {tokens.length} 个输入
+              {BATCH_ADD_TEXTS_ZH.recognizedPrefix} {tokens.length} {BATCH_ADD_TEXTS_ZH.recognizedSuffix}
               {tokens.length > 0 && `：${tokens.slice(0, 6).join(' / ')}${tokens.length > 6 ? ' …' : ''}`}
             </span>
           </div>
@@ -218,14 +238,14 @@ export function BatchAddStocksDialog({
                     {row.token}
                   </span>
                   {row.status === 'missing' ? (
-                    <span className="flex-1 text-[12px] text-rose-500">未找到匹配的股票</span>
+                    <span className="flex-1 text-[12px] text-rose-500">{BATCH_ADD_TEXTS_ZH.missing}</span>
                   ) : row.status === 'etf' ? (
-                    <span className="flex-1 text-[12px] text-amber-600">ETF 不在本页支持范围，已跳过</span>
+                    <span className="flex-1 text-[12px] text-amber-600">{BATCH_ADD_TEXTS_ZH.etfSkipped}</span>
                   ) : (
                     <>
                       <span className="shrink-0 font-mono text-[12px] font-semibold">{item?.symbol}</span>
                       <span className="min-w-0 flex-1 truncate text-[12px]">{item?.name}</span>
-                      {exists && <Badge variant="secondary">已关注</Badge>}
+                      {exists && <Badge variant="secondary">{BATCH_ADD_TEXTS_ZH.alreadyFollowed}</Badge>}
                       {row.candidates.length > 1 && (
                         <Select
                           value={item?.symbol || ''}
@@ -256,7 +276,7 @@ export function BatchAddStocksDialog({
                   <button
                     type="button"
                     className="shrink-0 text-muted-foreground hover:text-foreground"
-                    aria-label="移除"
+                    aria-label={BATCH_ADD_TEXTS_ZH.remove}
                     onClick={() => setRows(prev => prev.filter((_, i) => i !== index))}
                   >
                     <X className="h-3.5 w-3.5" />
@@ -269,7 +289,7 @@ export function BatchAddStocksDialog({
 
         <div className="flex items-center justify-end gap-3">
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-            取消
+            {BATCH_ADD_TEXTS_ZH.cancel}
           </Button>
           {/* fork：解析按钮从输入框下方挪到底部按钮行（原来和底部按钮视觉重叠），
               放在「取消」与「确认添加」之间，用绿色区分。 */}
@@ -281,11 +301,11 @@ export function BatchAddStocksDialog({
             onClick={() => void handleResolve()}
           >
             {resolving && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
-            解析
+            {BATCH_ADD_TEXTS_ZH.resolve}
           </Button>
           <Button type="button" disabled={!parsed || newRows.length === 0 || submitting} onClick={() => void handleSubmit()}>
             {submitting && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
-            确认添加{newRows.length > 0 ? ` (${newRows.length})` : ''}
+            {BATCH_ADD_TEXTS_ZH.confirmAdd}{newRows.length > 0 ? ` (${newRows.length})` : ''}
           </Button>
         </div>
       </DialogContent>
