@@ -8,6 +8,8 @@ name: fork tests
 #   1) 依赖安装/测试步骤都把输出 tee 到 *.log，失败时按修改时间倒序取最新两份；
 #   2) 「Publish failure output」用 if: failure() || cancelled()，被取消也留下最后 10 行，
 #      成功时不发任何 annotation（否则绿榜上会挂一堆假 error）。
+#   3) PR 上的结果由 pr-summary job 写进 PR 描述（本机没有 GitHub 写权限的 API 凭据，
+#      只有 CI 的 GITHUB_TOKEN 能写；区块用 HTML 注释标记，重复运行是替换不是追加）。
 # runner 钉 ubuntu-24.04：ubuntu-latest 从 2026-10-19 起迁 Ubuntu 26，
 # apt 包名（libgdk-pixbuf-2.0-0 等）在新镜像上未验证，钉死才有可比性。
 on:
@@ -37,6 +39,9 @@ jobs:
     name: backend pytest
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    outputs:
+      pytest: ${{ steps.collect.outputs.pytest }}
+      marketdata: ${{ steps.collect.outputs.marketdata }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -75,6 +80,17 @@ jobs:
           set -o pipefail
           echo "step pytest-marketdata"
           python -m pytest packages/marketdata/tests -q 2>&1 | tee pytest-marketdata.log
+      - name: Collect result lines
+        id: collect
+        if: always()
+        run: |
+          last_result () {
+            if [ -f "$1" ]; then grep -E '[0-9]+ (passed|failed|error)' "$1" | tail -n 1; else echo '(no output)'; fi
+          }
+          {
+            echo "pytest=$(last_result pytest.log)"
+            echo "marketdata=$(last_result pytest-marketdata.log)"
+          } >> "$GITHUB_OUTPUT"
       - name: Publish failure output
         if: failure() || cancelled()
         run: |
@@ -93,6 +109,9 @@ jobs:
     name: frontend vitest + build
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    outputs:
+      vitest: ${{ steps.collect.outputs.vitest }}
+      build: ${{ steps.collect.outputs.build }}
     defaults:
       run:
         working-directory: frontend
@@ -128,6 +147,17 @@ jobs:
         run: |
           set -o pipefail
           pnpm build 2>&1 | tee build.log
+      - name: Collect result lines
+        id: collect
+        if: always()
+        run: |
+          test_summary () {
+            if [ -f "$1" ]; then grep -E 'Tests +[0-9]+|Test Files +[0-9]+' "$1" | tr -s ' ' | tr '\n' ' '; else echo '(no output)'; fi
+          }
+          {
+            echo "vitest=$(test_summary vitest.log)"
+            echo "build=$([ -f build.log ] && tail -n 1 build.log | cut -c1-200 || echo '(no output)')"
+          } >> "$GITHUB_OUTPUT"
       - name: Publish failure output
         if: failure() || cancelled()
         run: |
@@ -140,3 +170,64 @@ jobs:
               [ -n "$line" ] && echo "::error file=$f::$line"
             done < <(tail -n 10 "$f")
           done
+
+  # 把两个 job 的实测结果写进 PR 描述：本机没有 GitHub 的写权限凭据（只有 SSH 推送），
+  # 所以「把 CI 结果贴到 PR 描述」这件事只能由 CI 自己用 GITHUB_TOKEN 完成。
+  # 只在 pull_request 上跑；区块用 HTML 注释包起来，重复运行是替换而不是追加。
+  pr-summary:
+    name: pr description
+    needs: [backend, frontend]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Write CI evidence into the pull request body
+        uses: actions/github-script@v7
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          BACKEND_PYTEST: ${{ needs.backend.outputs.pytest }}
+          BACKEND_MARKETDATA: ${{ needs.backend.outputs.marketdata }}
+          FRONTEND_VITEST: ${{ needs.frontend.outputs.vitest }}
+          FRONTEND_BUILD: ${{ needs.frontend.outputs.build }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        with:
+          script: |
+            const start = '<!-- fork-ci-summary:start -->'
+            const end = '<!-- fork-ci-summary:end -->'
+            const mark = (r) => (r === 'success' ? '✅ success' : r === 'failure' ? '❌ failure' : `⚠️ ${r}`)
+            const cell = (s) => (s || '(no output)').toString().replace(/\|/g, '\\|').trim().slice(0, 220) || '(no output)'
+            const env = process.env
+            const section = [
+              start,
+              '### CI 结果（fork tests 自动写入，请勿手改本节）',
+              '',
+              `- 提交：\`${env.HEAD_SHA.slice(0, 8)}\`（base \`${env.BASE_SHA.slice(0, 8)}\`）`,
+              `- run：[${env.RUN_URL.split('/').pop()}](${env.RUN_URL})`,
+              '',
+              '| job | 结果 | 实测摘要 |',
+              '| --- | --- | --- |',
+              `| backend pytest | ${mark(env.BACKEND_RESULT)} | ${cell(env.BACKEND_PYTEST)} |`,
+              `| backend marketdata | ${mark(env.BACKEND_RESULT)} | ${cell(env.BACKEND_MARKETDATA)} |`,
+              `| frontend vitest | ${mark(env.FRONTEND_RESULT)} | ${cell(env.FRONTEND_VITEST)} |`,
+              `| frontend build | ${mark(env.FRONTEND_RESULT)} | ${cell(env.FRONTEND_BUILD)} |`,
+              end,
+            ].join('\n')
+
+            const { owner, repo } = context.repo
+            const number = context.payload.pull_request.number
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number })
+            const body = pr.body || ''
+            const next = body.includes(start)
+              ? body.replace(new RegExp(`${start}[\\s\\S]*?${end}`), section)
+              : (body.trim() ? `${body.trim()}\n\n${section}` : section)
+            if (next === body) {
+              core.info('PR body already up to date')
+              return
+            }
+            await github.rest.pulls.update({ owner, repo, pull_number: number, body: next })
+            core.info(`updated description of PR #${number}`)
