@@ -1,4 +1,4 @@
-"""7 个技术条件的精确定义（规格 §9）。
+"""技术条件的精确定义（规格 §9）。
 
 设计要点
 --------
@@ -257,6 +257,50 @@ def _consecutive_bullish(series: StockSeries, params: ConsecutiveParams, ctx: Ev
     return True
 
 
+def _day_change_pct(series: StockSeries, index: int) -> float | None:
+    """单根日线的**真实涨跌幅**（%）：优先交易所 ``pre_close``，缺失才回退复权收盘。
+
+    与 ``_change_pct`` 同一个口径，只是这里按**下标**取某一天（条件要连着看好几天）。
+    """
+    bar = series.bars[index]
+    if bar.pre_close is not None and bar.pre_close > 0:
+        return (bar.close / bar.pre_close - 1.0) * 100.0
+    if index == 0:
+        return None
+    prev = series.bars[index - 1]
+    if prev.c_adj <= 0:
+        return None
+    return (bar.c_adj / prev.c_adj - 1.0) * 100.0
+
+
+def _consecutive_rising(series: StockSeries, params: ConsecutiveParams, ctx: EvalContext) -> bool:
+    """连续 N 日**涨幅为正**（收盘 > 前收）。
+
+    与 ``consecutive_bullish`` 的区别（用户要求两个条件分开、名字写清区别）：
+
+    - ``consecutive_bullish``（阳线）看 **open → close**：低开高走的下跌日也算阳线；
+    - ``consecutive_rising``（上涨）看 **pre_close → close**：那根低开回升但全天仍跌
+      1.4% 的 K 线是阳线、但**不是**上涨。
+    """
+    first = params.start - 1
+    last = first + params.days  # 不含
+    if last > len(ctx.calendar):
+        ctx.insufficient = True
+        return False
+    for offset in range(first, last):
+        index = series.index_on(ctx.calendar[offset])
+        if index is None:
+            ctx.insufficient = True
+            return False
+        pct = _day_change_pct(series, index)
+        if pct is None:
+            ctx.insufficient = True
+            return False
+        if not _r(pct) > 0:
+            return False
+    return True
+
+
 def _change_pct(series: StockSeries, params: ChangePctParams, ctx: EvalContext) -> bool:
     if params.n > len(ctx.calendar):
         ctx.insufficient = True
@@ -388,5 +432,13 @@ CONDITIONS: dict[str, ConditionSpec] = {
         required_bars=lambda p, w: p.n + 1,
         validate=_validate_change_pct,
         evaluate=_change_pct,
+    ),
+    "consecutive_rising": ConditionSpec(
+        name="consecutive_rising",
+        params_model=ConsecutiveParams,
+        # 起点之前那 start-1 根也要取到日历；+1 给 pre_close 缺失时回退前一根
+        required_bars=lambda p, w: p.start - 1 + p.days + 1,
+        validate=_validate_consecutive,
+        evaluate=_consecutive_rising,
     ),
 }

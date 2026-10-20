@@ -22,23 +22,45 @@ import type { MarketRow } from '@/lib/fork-kline-summary'
 
 export type ChangeFilter = 'all' | 'up' | 'down'
 export type CapFilter = 'lt50' | 'lt100' | 'lt300' | 'lt500' | 'lt1000' | 'gt1000'
+/** 交易日状态（停牌 / 正常 / ST …）的筛选键。 */
+export type TradeStatusFilter =
+  | 'normal'
+  | 'suspended'
+  | 'st'
+  | 'star_st'
+  | 'delisting'
+  | 'new_listing'
+  | 'other'
 
 export interface MarketTableFilters {
-  /** 技术面动作 key（kline-scorer 的 Action）：空数组 = 不限；多选 = 命中其一即可 */
-  status: string[]
+  /**
+   * 技术面**指标** key（kline-scorer 的 Action）：空数组 = 不限；多选 = 命中其一即可。
+   *
+   * 2026-10-20 第 4 条把这一组从「状态」改名为「指标」—— 它给出的是买入/回避/观望
+   * 这种**技术面结论**，而新增的「状态」列说的是停牌/正常这种**交易日状态**，
+   * 两个都叫「状态」会分不清哪个是哪个。
+   */
+  indicator: string[]
   change: ChangeFilter
   /** 市值档位：空数组 = 不限；多选 = 命中任一档即可 */
   cap: CapFilter[]
+  /** 交易日状态：空数组 = 不限；多选 = 命中其一即可 */
+  tradeStatus: TradeStatusFilter[]
 }
 
-export const EMPTY_MARKET_FILTERS: MarketTableFilters = { status: [], change: 'all', cap: [] }
+export const EMPTY_MARKET_FILTERS: MarketTableFilters = {
+  indicator: [],
+  change: 'all',
+  cap: [],
+  tradeStatus: [],
+}
 
 /**
- * 组2 的候选动作 —— 就是状态列里「技术面」那颗徽章能给出的动作全集
+ * 「指标」组的候选动作 —— 就是指标列里技术面那颗徽章能给出的动作全集
  * （未持仓口径：score≥3 买入 / score≤−2 回避 / 其余观望，见 lib/kline-scorer.ts）。
  * 文案由页面从 bizUi 的 kline.actions.* 取，避免同一个动作两套叫法。
  */
-export const STATUS_FILTER_KEYS = ['buy', 'avoid', 'watch'] as const
+export const INDICATOR_FILTER_KEYS = ['buy', 'avoid', 'watch'] as const
 
 export interface FilterOption<T extends string> {
   key: T
@@ -94,11 +116,53 @@ export function matchChange(pct: number | null | undefined, filter: ChangeFilter
   return filter === 'up' ? pct > 0 : pct < 0
 }
 
-/** 状态：未选任何动作 = 不限；选了则命中其一即可。 */
-export function matchStatus(action: string | null | undefined, selected: string[]): boolean {
+/**
+ * 「指标」组：未选任何动作 = 不限；选了则命中其一即可。
+ */
+export function matchIndicator(action: string | null | undefined, selected: string[]): boolean {
   if (selected.length === 0) return true
   if (!action) return false
   return selected.includes(action)
+}
+
+/**
+ * 交易日状态的筛选项（用户反馈 2026-10-20 第 6 条：放在「全部市值」后面）。
+ *
+ * 「正常」是缺省值 —— 库里没有状态行的股票就是正常交易；停牌、ST 这几档来自
+ * 行情库的 ``stock_status_daily``（由管道的状态作业写入），前端只做展示与筛选。
+ */
+export const TRADE_STATUS_FILTER_OPTIONS_ZH: FilterOption<TradeStatusFilter>[] = [
+  { key: 'normal', label: '正常', hint: '当日正常交易' },
+  { key: 'suspended', label: '停牌', hint: '全天停牌（当日无成交）' },
+  { key: 'st', label: 'ST', hint: '其他风险警示（简称含 ST）' },
+  { key: 'star_st', label: '*ST', hint: '退市风险警示（简称含 *ST）' },
+  { key: 'delisting', label: '退市', hint: '退市整理期 / 摘牌待定' },
+  { key: 'new_listing', label: '新股', hint: '上市首日' },
+  { key: 'other', label: '其他', hint: '暂无状态记录的其它情形' },
+]
+
+/** 库里的状态码 → 筛选键。缺省（没有状态行）按正常交易。 */
+const TRADE_STATUS_KEY_BY_CODE: Record<string, TradeStatusFilter> = {
+  NORMAL: 'normal',
+  SUSPENDED: 'suspended',
+  ST: 'st',
+  STAR_ST: 'star_st',
+  DELISTING: 'delisting',
+  DELIST_PENDING: 'delisting',
+  DELISTED: 'delisting',
+  NEW_LISTING: 'new_listing',
+}
+
+/** 一行属于哪一档状态（筛选用；与「状态」列显示的那个标签同源）。 */
+export function tradeStatusKeyOf(row: MarketRow): TradeStatusFilter {
+  const code = String(row.status_code || 'NORMAL').trim().toUpperCase()
+  return TRADE_STATUS_KEY_BY_CODE[code] ?? 'other'
+}
+
+/** 交易日状态（多选）：空数组 = 不限；否则命中任一档即可。 */
+export function matchTradeStatus(row: MarketRow, selected: TradeStatusFilter[]): boolean {
+  if (selected.length === 0) return true
+  return selected.includes(tradeStatusKeyOf(row))
 }
 
 /**
@@ -118,9 +182,10 @@ export function passesMarketFilters(
   if (!stockMatchesSearch(row, query)) return false
   if (!matchChange(row.change_pct, filters.change)) return false
   if (!matchCap(row.total_market_cap, filters.cap)) return false
-  // 状态未选 = 不限。先判断再调用 actionOf，否则每次搜索都会对全市场逐行重算技术面。
-  if (filters.status.length === 0) return true
-  return matchStatus(actionOf ? actionOf(row) : null, filters.status)
+  if (!matchTradeStatus(row, filters.tradeStatus)) return false
+  // 指标未选 = 不限。先判断再调用 actionOf，否则每次搜索都会对全市场逐行重算技术面。
+  if (filters.indicator.length === 0) return true
+  return matchIndicator(actionOf ? actionOf(row) : null, filters.indicator)
 }
 
 /** 全量过滤（板块 + 搜索 + 三组筛选）。 */
@@ -136,7 +201,12 @@ export function filterMarketRows(
 
 /** 除板块外的筛选是否处于「不限」状态。 */
 export function hasActiveFilters(filters: MarketTableFilters): boolean {
-  return filters.status.length > 0 || filters.change !== 'all' || filters.cap.length > 0
+  return (
+    filters.indicator.length > 0 ||
+    filters.change !== 'all' ||
+    filters.cap.length > 0 ||
+    filters.tradeStatus.length > 0
+  )
 }
 
 /**

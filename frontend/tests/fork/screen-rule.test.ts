@@ -305,7 +305,7 @@ describe('条件选股 / 注册表', () => {
     expect((payload.rule.children[0] as ConditionNode).params).toEqual({ start: 1, days: 4 })
   })
 
-  it('七个条件齐全，分类与默认值符合规格', () => {
+  it('八个条件齐全，分类与默认值符合规格', () => {
     expect(Object.keys(CONDITION_DEFS_ZH)).toEqual([
       'ma_bullish',
       'ma_bearish',
@@ -313,6 +313,7 @@ describe('条件选股 / 注册表', () => {
       'more_bullish_candles',
       'more_bearish_candles',
       'consecutive_bullish',
+      'consecutive_rising',
       'change_pct',
     ])
     expect(CONDITION_DEFS_ZH.ma_bullish.defaults).toEqual({ periods: [5, 10, 20, 60] })
@@ -328,6 +329,30 @@ describe('条件选股 / 注册表', () => {
     expect(CONDITION_DEFS_ZH.ma_bullish.summary({ periods: [60, 5, 20, 10] })).toBe(
       '均线多头排列(5/10/20/60)',
     )
+  })
+
+  it('连续上涨（涨幅 > 0）与连续阳线是两个条件，判据在名字与说明里分开写清', () => {
+    const bull = CONDITION_DEFS_ZH.consecutive_bullish
+    const rise = CONDITION_DEFS_ZH.consecutive_rising
+
+    // 名字里就写清区别
+    expect(bull.label).toContain('收盘 > 开盘')
+    expect(rise.label).toContain('涨幅 > 0')
+    // 说明互相点名对方，避免「低开高走但全天跌」那种歧义
+    expect(bull.description).toContain('连续上涨')
+    expect(rise.description).toContain('前一交易日收盘价')
+
+    expect(rise.summary({ start: 1, days: 3 })).toBe('连续 3 日上涨')
+    expect(rise.summary({ start: 2, days: 3 })).toBe('自倒数第 2 日起连续 3 日上涨')
+    expect(rise.defaults).toEqual({ start: 1, days: 3 })
+    // 前收缺失要回退前一根 → 比阳线多读一根
+    expect(rise.requiredBars({ start: 1, days: 3 })).toBe(4)
+    expect(bull.requiredBars({ start: 1, days: 3 })).toBe(3)
+
+    // 校验跟阳线同一套：起点 + 天数落在窗口上限内
+    expect(
+      messages(validateScreenRequest(req(group([cond('consecutive_rising', { start: 10, days: 25 })])))),
+    ).toContain('起点与天数之和不能超过 30')
   })
 
   it('连续阳线的说明要点名两个参数（倒数第几个交易日 + 连续天数）', () => {

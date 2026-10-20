@@ -589,7 +589,9 @@ export function ScreenStocksDialog({
           </div>
         ) : null}
 
-        <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+        {/* 最后一行按钮与上面的预览/报错之间留出间距并加分隔线 ——
+            用户反馈「条件选股的最后按钮行和上面 UI 贴在一起了」 */}
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
           <div className="text-[10px] text-muted-foreground" data-fork-screen-meta>
             {asof
               ? T.footerMeta(asof, bars, conditions, depth)
