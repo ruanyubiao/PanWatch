@@ -301,6 +301,12 @@ interface StockMarketTableProps {
   toolbarActions?: ReactNode
   /** 搜索框（只在**上**一条分页条里出现，用户要求底部不要） */
   searchSlot?: ReactNode
+  /**
+   * 工具条（刷新 / 添加股票 / 条件选股 + 搜索框）那一行的**下一行**内容。
+   * 页面把「条件选股结果」横幅放进来 —— 用户要求横幅在按钮那一行的下面，
+   * 而不是表格上方（那是按钮行的上面）。
+   */
+  belowToolbar?: ReactNode
   renderStatus: (row: MarketRow) => ReactNode
   renderAgentStatus: (row: MarketRow) => ReactNode
   renderSource: (row: MarketRow) => ReactNode
@@ -325,6 +331,7 @@ export function StockMarketTable({
   onAsof,
   toolbarActions,
   searchSlot,
+  belowToolbar,
   renderStatus,
   renderAgentStatus,
   renderSource,
@@ -529,6 +536,9 @@ export function StockMarketTable({
     <div>
       {/* 上方分页条：左边是工具条（刷新 / 添加股票 + 50px + 搜索框），右边是页码区 */}
       {pagination('top')}
+
+      {/* 工具条下一行（条件选股结果横幅） */}
+      {belowToolbar}
 
       {sorted.length === 0 ? (
         <div className="py-10 text-center text-[12px] text-muted-foreground">{emptyText}</div>
