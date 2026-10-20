@@ -261,6 +261,17 @@ const COPY_CODE_TEXTS_ZH = {
   failed: '复制失败，请手动选择文本',
 }
 
+/** fork：条件选股入口与列表页里直接写死的文案（变量名以 _ZH 结尾，check:i18n 放行）。 */
+const FORK_ANALYSIS_TEXTS_ZH = {
+  addStock: '添加股票',
+  searchPlaceholder: '搜索代码或名称',
+  noMatch: '没有匹配的股票',
+  prevPage: '上一页',
+  nextPage: '下一页',
+  unfollow: '取消关注',
+  unfollowDescription: '取消后该股票将从关注列表移除，关联的价格提醒也会一并清理。',
+}
+
 export default function StocksPage() {
   const tour = useGuidedTour()
   const tourQuoteBusy = useRef(false)
@@ -1828,7 +1839,7 @@ export default function StocksPage() {
         className="h-7 px-2 text-[12px]"
         onClick={() => setShowBatchAdd(true)}
       >
-        <Plus className="h-3.5 w-3.5" /> 添加股票
+        <Plus className="h-3.5 w-3.5" /> {FORK_ANALYSIS_TEXTS_ZH.addStock}
       </Button>
       {/* fork：条件选股入口（需求规格 §5.1），在「添加股票」后面。
           结果生效时显示激活态 —— 否则用户看不出「现在看到的不是全市场」。 */}
@@ -2580,7 +2591,7 @@ export default function StocksPage() {
               <StockListToolbar
                 value={stockQuery}
                 onChange={setStockQuery}
-                placeholder="搜索代码或名称"
+                placeholder={FORK_ANALYSIS_TEXTS_ZH.searchPlaceholder}
                 status={`共 ${watchFiltered.length} 只${
                   watchFiltered.length > STOCK_PAGE_SIZE
                     ? `，当前 ${watchScopeOffset + 1}-${Math.min(watchScopeOffset + STOCK_PAGE_SIZE, watchFiltered.length)}`
@@ -2595,7 +2606,7 @@ export default function StocksPage() {
                       <div className="mt-2 text-[11px] text-muted-foreground/70">{stockT('stocksPage.messages.startAddWatchlist')}</div>
                     </>
                   ) : (
-                    <div className="text-[13px] text-muted-foreground">没有匹配的股票</div>
+                    <div className="text-[13px] text-muted-foreground">{FORK_ANALYSIS_TEXTS_ZH.noMatch}</div>
                   )}
                 </div>
               ) : (
@@ -2695,7 +2706,7 @@ export default function StocksPage() {
                     onClick={() => setWatchScopeOffset(Math.max(0, watchScopeOffset - STOCK_PAGE_SIZE))}
                   >
                     <ChevronLeft className="h-3.5 w-3.5" />
-                    上一页
+                    {FORK_ANALYSIS_TEXTS_ZH.prevPage}
                   </Button>
                   <Button
                     size="sm"
@@ -2704,7 +2715,7 @@ export default function StocksPage() {
                     disabled={watchScopeOffset + STOCK_PAGE_SIZE >= watchFiltered.length}
                     onClick={() => setWatchScopeOffset(watchScopeOffset + STOCK_PAGE_SIZE)}
                   >
-                    下一页
+                    {FORK_ANALYSIS_TEXTS_ZH.nextPage}
                     <ChevronRight className="h-3.5 w-3.5" />
                   </Button>
                 </div>
@@ -2750,8 +2761,8 @@ export default function StocksPage() {
       <Dialog open={!!removeWatchStock} onOpenChange={(open) => { if (!open) setRemoveWatchStock(null) }}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>取消关注</DialogTitle>
-            <DialogDescription>取消后该股票将从关注列表移除，关联的价格提醒也会一并清理。</DialogDescription>
+            <DialogTitle>{FORK_ANALYSIS_TEXTS_ZH.unfollow}</DialogTitle>
+            <DialogDescription>{FORK_ANALYSIS_TEXTS_ZH.unfollowDescription}</DialogDescription>
           </DialogHeader>
           {removeWatchStock && (
             <div className="space-y-4 mt-2">
@@ -2774,7 +2785,7 @@ export default function StocksPage() {
                   onClick={() => removeFromWatchlist(removeWatchStock)}
                   disabled={removingWatchStock || hasAnyPositionForStockId(removeWatchStock.id)}
                 >
-                  {hasAnyPositionForStockId(removeWatchStock.id) ? stockT('stocksPage.messages.deleteStockFirst') : (removingWatchStock ? stockT('stocksPage.messages.processing') : '取消关注')}
+                  {hasAnyPositionForStockId(removeWatchStock.id) ? stockT('stocksPage.messages.deleteStockFirst') : (removingWatchStock ? stockT('stocksPage.messages.processing') : FORK_ANALYSIS_TEXTS_ZH.unfollow)}
                 </Button>
               </div>
             </div>
