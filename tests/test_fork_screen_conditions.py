@@ -215,6 +215,44 @@ def test_C14_平盘不算阳线():
     )
 
 
+def test_C15_起点把窗口从最近一天挪开():
+    """同一条序列：最近一天是阴线，但倒数第 2 天起连 3 根都是阳线。
+
+    ``start`` 的语义必须是「倒数第几个交易日」，否则这两个断言不可能同时成立。
+    """
+    series = _candle_series(["+", "+", "+", "+", "-"])
+    ctx = ctx_of(5)
+    spec = CONDITIONS["consecutive_bullish"]
+
+    assert spec.evaluate(series, ConsecutiveParams(start=1, days=4), ctx) is False
+    assert spec.evaluate(series, ConsecutiveParams(start=2, days=3), ctx) is True
+
+
+def test_C16_起点之后的某天是阴线就不成立():
+    series = _candle_series(["+", "+", "-", "+", "+"])
+    ctx = ctx_of(5)
+    spec = CONDITIONS["consecutive_bullish"]
+
+    # D2、D3：D3 是阴线 → False
+    assert spec.evaluate(series, ConsecutiveParams(start=2, days=2), ctx) is False
+    # D1、D2：两根都是阳线 → True
+    assert spec.evaluate(series, ConsecutiveParams(start=1, days=2), ctx) is True
+
+
+def test_C17_起点加天数超出日历算数据不足():
+    series = _candle_series(["+", "+", "+", "+"])
+    ctx = ctx_of(4)
+    spec = CONDITIONS["consecutive_bullish"]
+
+    ctx.insufficient = False
+    assert spec.evaluate(series, ConsecutiveParams(start=2, days=4), ctx) is False
+    assert ctx.insufficient is True
+
+
+def test_C18_起点默认是1_老请求语义不变():
+    assert ConsecutiveParams(days=4).start == 1
+
+
 # ---------------------------------------------------------------- 涨跌幅
 
 

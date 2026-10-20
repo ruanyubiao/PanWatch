@@ -59,6 +59,12 @@ const submitButton = () => screen.getByRole('button', { name: /开始选股|选�
 const daysInput = () =>
   document.querySelector<HTMLInputElement>('[data-screen-field="trading_days"]')!
 
+/** 填统计窗口：弹窗打开时窗口是**空的**（用户要求不要默认选中值）。 */
+const fillDays = async (value: string) => {
+  await userEvent.clear(daysInput())
+  await userEvent.type(daysInput(), value)
+}
+
 beforeEach(() => {
   mocks.confirm.mockReset()
   mocks.confirm.mockResolvedValue(true)
@@ -71,9 +77,10 @@ afterEach(() => {
 })
 
 describe('条件选股弹窗', () => {
-  it('默认值：窗口 30、四个市场全选、不含 ST、空根组', () => {
+  it('默认值：窗口留空、四个市场全选、不含 ST、空根组', () => {
     renderDialog()
-    expect(daysInput().value).toBe('30')
+    // 用户反馈：这个界面打开时不要有默认选中的窗口值（之前预填 30）
+    expect(daysInput().value).toBe('')
     for (const name of ['上证', '深证', '创业', '科创']) {
       expect(marketButton(name).getAttribute('aria-pressed')).toBe('true')
     }
@@ -111,12 +118,18 @@ describe('条件选股弹窗', () => {
     }
   })
 
-  it('D2 校验失败时提交按钮置灰，并给出错误条数汇总', async () => {
+  it('D2 控件挡住非法窗口值；留空提交被拦并给出错误', async () => {
     renderDialog()
     const input = daysInput()
-    await userEvent.clear(input)
-    await userEvent.type(input, '0')
 
+    // 0 / 999 都进不去：控件直接夹到 [1, 250]
+    await fillDays('0')
+    expect(input.value).toBe('1')
+    await fillDays('999')
+    expect(input.value).toBe('250')
+
+    // 清空 → 提交被拦（窗口必填），错误条里点名
+    await userEvent.clear(input)
     await userEvent.click(submitButton())
     const issues = document.querySelector('[data-fork-screen-issues]')!
     expect(issues.textContent).toContain('有 1 处需要修正')
@@ -124,9 +137,8 @@ describe('条件选股弹窗', () => {
     await waitFor(() => expect((submitButton() as HTMLButtonElement).disabled).toBe(true))
     expect(mocks.screen).not.toHaveBeenCalled()
 
-    // 改回合法值 → 错误消失、按钮恢复
-    await userEvent.clear(input)
-    await userEvent.type(input, '30')
+    // 填回合法值 → 错误消失、按钮恢复
+    await fillDays('30')
     await waitFor(() => expect(document.querySelector('[data-fork-screen-issues]')).toBeNull())
     expect((submitButton() as HTMLButtonElement).disabled).toBe(false)
   })
@@ -175,6 +187,7 @@ describe('条件选股弹窗', () => {
     mocks.screen.mockResolvedValue(response(37))
     const { onResult, onOpenChange } = renderDialog()
 
+    await fillDays('30')
     await userEvent.click(submitButton())
     await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1))
     expect(onResult.mock.calls[0][0].total).toBe(37)
@@ -188,6 +201,7 @@ describe('条件选股弹窗', () => {
     mocks.screen.mockRejectedValue(new Error('选股任务繁忙，请稍后重试'))
     const { onResult, onOpenChange } = renderDialog()
 
+    await fillDays('30')
     await userEvent.click(submitButton())
     expect(await screen.findByText(/选股失败：选股任务繁忙，请稍后重试/)).toBeTruthy()
     expect(onResult).not.toHaveBeenCalled()
@@ -204,6 +218,7 @@ describe('条件选股弹窗', () => {
     })
     const { onOpenChange } = renderDialog()
 
+    await fillDays('30')
     await userEvent.click(submitButton())
     await waitFor(() => expect(mocks.screen).toHaveBeenCalledTimes(1))
     expect(signal?.aborted).toBe(false)
