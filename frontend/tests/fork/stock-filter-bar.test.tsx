@@ -56,7 +56,7 @@ const expectFilters = (fn: ReturnType<typeof vi.fn>, expected: Partial<MarketTab
 }
 
 describe('fork: 分析页筛选行', () => {
-  it('市场是单选下拉：选项 全部市场 / 上证 / 深证 / 创业 / 科创 / ST，各带计数', async () => {
+  it('市场是单选下拉：选项 全部市场 / 上证 / 深证 / 创业 / 科创，各带计数（第 8 条去掉 ST）', async () => {
     const user = userEvent.setup()
     renderBar()
     await openSelect(user, '全部市场')
@@ -67,7 +67,6 @@ describe('fork: 分析页筛选行', () => {
       '深证 (1421)',
       '创业 (1369)',
       '科创 (605)',
-      'ST (201)',
     ])
   })
 

@@ -43,7 +43,7 @@ import { buildKlineSuggestion } from '@/lib/kline-scorer'
 import {
   buildSummaryFromMarketRow,
   type MarketRow,
-  type MarketTableResponse,
+  type MarketBoardCounts,
 } from '@/lib/fork-kline-summary'
 import { normalizeSymbol, sameListingCode } from '@/lib/stock-tokens'
 import {
@@ -81,6 +81,7 @@ import {
 } from '@/lib/screen-presets'
 import {
   SCREEN_TEXTS_ZH,
+  fillDefaultParams,
   type ScreenRequest,
   type ScreenResponse,
 } from '@/lib/screen-rule'
@@ -421,7 +422,7 @@ export default function StocksPage() {
   // watch 分支只是为了让 merge upstream 时的 diff 尽量小，界面上够不到它。
   const stockScope = 'market' as 'watch' | 'market'
   // fork：全市场各板块总数（由 StockMarketTable 拉取后回传，用于市场下拉的计数）
-  const [marketCounts, setMarketCounts] = useState<MarketTableResponse['counts'] | null>(null)
+  const [marketCounts, setMarketCounts] = useState<MarketBoardCounts | null>(null)
   // 递增后让行情表重新向本机 MySQL 取全量。「刷新」只动这个，不再打外网行情。
   const [marketReloadToken, setMarketReloadToken] = useState(0)
   const [tableLoading, setTableLoading] = useState(false)
@@ -450,6 +451,9 @@ export default function StocksPage() {
   const [presetName, setPresetName] = useState<string | null>(null)
   const [screenPresetName, setScreenPresetName] = useState<string | null>(null)
   const [saveOpen, setSaveOpen] = useState(false)
+  /* 要保存的那份请求：弹窗底部「保存」交出的是**当前草稿**（第 5 条），
+     所以不能再像横幅时代那样直接读 screenResult.request。 */
+  const [saveRequest, setSaveRequest] = useState<ScreenRequest | null>(null)
   const [marketAsof, setMarketAsof] = useState<string | null>(null)
   /* fork：搜索词由页面持有，StockMarketTable 受控（搜索框在分页条左侧，上下各一个）。 */
   const [stockQuery, setStockQuery] = useState('')
@@ -917,13 +921,18 @@ export default function StocksPage() {
    * 打开条件选股弹窗。
    *
    * `fromPreset` 有值 = 从「已保存条件 → 编辑」进来：把那条件存下来的**完整请求**
-   * 填回去（窗口 / 市场 / 市值 / 条件树），并让弹窗显示「删除」按钮。
+   * 填回去（窗口 / 市场 / 市值 / 条件树），并让弹窗显示「覆盖保存 / 删除」。
    * 没有值 = 普通「条件选股」：沿用上一次跑过的请求（没有就是空）。
+   *
+   * 老文件里的条件可能缺参数（上一版前端把「连续上涨」的 start/days 丢了），
+   * 所以进来先 `fillDefaultParams` 补默认值 —— 否则摘要会显示 undefined、
+   * 提交时被校验拦下。
    */
   const openScreenDialog = useCallback(
     (fromPreset?: string) => {
       const preset = fromPreset ? presets.find(item => item.name === fromPreset) : null
-      setScreenInitial(preset ? preset.request : screenResult?.request ?? null)
+      const base = preset ? preset.request : screenResult?.request ?? null
+      setScreenInitial(base ? { ...base, rule: fillDefaultParams(base.rule) } : null)
       setScreenPresetName(preset ? preset.name : null)
       setScreenOpen(true)
     },
@@ -933,7 +942,8 @@ export default function StocksPage() {
   /** 「保存条件」：同名先问一句「覆盖？」，存成功后在下拉里选中它。 */
   const handleSavePreset = useCallback(
     async (name: string): Promise<boolean> => {
-      if (!screenResult) return false
+      const request = saveRequest ?? screenResult?.request
+      if (!request) return false
       const exists = presets.some(item => item.name === name)
       if (exists) {
         const ok = await confirmAction(SCREEN_PRESET_TEXTS_ZH.overwriteConfirm(name), {
@@ -943,16 +953,45 @@ export default function StocksPage() {
         // 用户选了「不覆盖」：留在保存弹窗里，名字可以再改
         if (!ok) return false
       }
-      await savePreset(name, screenResult.request, exists)
+      await savePreset(name, request, exists)
       await reloadPresets()
       setPresetName(name)
+      // 弹窗还开着时把它切成「已保存」状态：按钮变「覆盖保存」、删除可用
+      setScreenPresetName(name)
       toast(SCREEN_PRESET_TEXTS_ZH.saved(name), 'success')
       return true
     },
-    [confirmAction, presets, reloadPresets, screenResult, toast],
+    [confirmAction, presets, reloadPresets, saveRequest, screenResult, toast],
   )
 
-  /** 弹窗里的「删除」：只有从已保存条件打开时才有这个按钮。 */
+  /**
+   * 条件选股弹窗底部的「保存」（第 5 条）。
+   *
+   * 有名字（从已保存条件打开）= 直接覆盖那个文件，不再弹名字、也不再问一遍「覆盖？」——
+   * 用户点的就是「覆盖保存」。没名字 = 弹输入框（名字即文件名）。
+   */
+  const handleSaveFromDialog = useCallback(
+    async (request: ScreenRequest, name: string | null) => {
+      setSaveRequest(request)
+      if (!name) {
+        setSaveOpen(true)
+        return
+      }
+      try {
+        await savePreset(name, request, true)
+        await reloadPresets()
+        setPresetName(name)
+        setScreenPresetName(name)
+        toast(SCREEN_PRESET_TEXTS_ZH.saved(name), 'success')
+      } catch (exc) {
+        const message = exc instanceof Error ? exc.message : String(exc)
+        toast(SCREEN_PRESET_TEXTS_ZH.saveFailed(message), 'error')
+      }
+    },
+    [reloadPresets, toast],
+  )
+
+  /** 弹窗里的「删除」：按钮一直在，没保存过时禁用（第 5 条），点了先确认。 */
   const handleDeletePreset = useCallback(
     async (name: string) => {
       const ok = await confirmAction(SCREEN_PRESET_TEXTS_ZH.deleteConfirm(name), {
@@ -2161,6 +2200,7 @@ export default function StocksPage() {
         asof={marketAsof}
         presetName={screenPresetName}
         onDeletePreset={name => void handleDeletePreset(name)}
+        onSavePreset={(request, name) => void handleSaveFromDialog(request, name)}
         onResult={(response, request) => setScreenResult({ request, response })}
       />
 
@@ -2759,11 +2799,8 @@ export default function StocksPage() {
                   <ScreenResultBanner
                     response={screenResult.response}
                     request={screenResult.request}
-                    rerunning={screenRerunning}
                     savedName={screenPresetName}
-                    onSave={() => setSaveOpen(true)}
                     onEdit={() => openScreenDialog()}
-                    onRerun={() => void rerunScreen()}
                     onExit={() => setScreenResult(null)}
                   />
                 ) : null
