@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchAPI } from '@panwatch/api'
 import { StockMarketTable, MARKET_FETCH_LIMIT } from '@/components/fork/StockMarketTable'
+import { EMPTY_MARKET_FILTERS } from '@/lib/market-filters'
 import type { MarketRow, MarketTableResponse } from '@/lib/fork-kline-summary'
 
 vi.mock('@panwatch/api', () => ({ fetchAPI: vi.fn() }))
@@ -103,7 +104,7 @@ const renderTable = (props: Partial<React.ComponentProps<typeof StockMarketTable
       onAdd={onAdd}
       onRemove={onRemove}
       onOpenDetail={onOpenDetail}
-      renderStatus={r => <span>状态-{r.code}</span>}
+      renderIndicator={r => <span>状态-{r.code}</span>}
       renderAgentStatus={() => <span>未配置 Agent</span>}
       renderSource={r => <span>技术指标 · {r.trade_date?.slice(5)}</span>}
       renderActions={(r, state) => (
@@ -153,10 +154,39 @@ describe('fork: 分析页全市场表格', () => {
       '最低价',
       '总市值',
       '状态',
+      '指标',
       'Agent 状态',
       '来源',
       '操作',
     ])
+  })
+
+  it('状态列：跟在总市值后面、固定 68px；没注入渲染器时直接显示短标签', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(
+      response([
+        row({ code: '600519' }),
+        row({ code: '000001', name: '平安银行', status_code: 'SUSPENDED', status_label: '停牌' }),
+        row({ code: '920000', name: '安徽凤凰', status_code: 'ST', status_label: 'ST' }),
+      ]),
+    )
+    renderTable()
+
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    const table = screen.getByRole('table')
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map(node => node.textContent?.trim())
+    // 紧跟在「总市值」后面
+    expect(headers.indexOf('状态')).toBe(headers.indexOf('总市值') + 1)
+
+    // 列宽固定：68px（「停牌 / 正常 / *ST」都在 3 个字以内）
+    const col = table.querySelectorAll('colgroup col')[headers.indexOf('状态')] as HTMLElement
+    expect(col.style.width).toBe('68px')
+
+    // 正常（没有状态行）/ 停牌 / ST 三种都出得来
+    expect(screen.getAllByText('正常').length).toBeGreaterThan(0)
+    expect(screen.getByText('停牌')).toBeTruthy()
+    expect(screen.getByText('ST')).toBeTruthy()
   })
 
   it('belowToolbar 渲染在工具条那一行的下面、表格之前', async () => {
@@ -199,7 +229,7 @@ describe('fork: 分析页全市场表格', () => {
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -216,7 +246,7 @@ describe('fork: 分析页全市场表格', () => {
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -343,7 +373,7 @@ describe('fork: 分析页全市场表格', () => {
 
   it('三组筛选（状态/涨跌/市值）都在前端做，且不发新请求', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response())
-    const filters = { status: [], change: 'down' as const, cap: [] }
+    const filters = { ...EMPTY_MARKET_FILTERS, change: 'down' as const }
     const { rerender } = render(
       <StockMarketTable
         board="all"
@@ -353,7 +383,7 @@ describe('fork: 分析页全市场表格', () => {
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -368,12 +398,12 @@ describe('fork: 分析页全市场表格', () => {
       <StockMarketTable
         board="all"
         query=""
-        filters={{ status: [], change: 'all', cap: ['lt50'] }}
+        filters={{ ...EMPTY_MARKET_FILTERS, cap: ['lt50'] }}
         existingSymbols={new Set<string>()}
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -387,13 +417,13 @@ describe('fork: 分析页全市场表格', () => {
       <StockMarketTable
         board="all"
         query=""
-        filters={{ status: ['avoid'], change: 'all', cap: [] }}
+        filters={{ ...EMPTY_MARKET_FILTERS, indicator: ['avoid'] }}
         existingSymbols={new Set<string>()}
         getRowAction={(r: MarketRow) => (r.tech ? (r.tech.score <= -2 ? 'avoid' : 'buy') : null)}
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -473,19 +503,19 @@ describe('fork: 分析页全市场表格', () => {
     expect(screen.getAllByText('100 条/页').length).toBeGreaterThan(0)
   })
 
-  it('表头点击排序：状态列按库里分数，无分的新股恒排最后', async () => {
+  it('表头点击排序：指标列按库里分数，无分的新股恒排最后', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response())
     renderTable()
 
     await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
     expect(codesInOrder()).toEqual(['000001', '600519', '920000'])
 
-    // 第一次点「状态」→ 分数降序（6 在前，-3 在后，无分的最后）
-    await userEvent.click(screen.getByRole('button', { name: '按状态排序' }))
+    // 第一次点「指标」→ 分数降序（6 在前，-3 在后，无分的最后）
+    await userEvent.click(screen.getByRole('button', { name: '按指标排序' }))
     await waitFor(() => expect(codesInOrder()).toEqual(['600519', '000001', '920000']))
 
     // 再点一次 → 升序，但「无分」仍然在最后（不是跑到最前）
-    await userEvent.click(screen.getByRole('button', { name: '按状态排序' }))
+    await userEvent.click(screen.getByRole('button', { name: '按指标排序' }))
     await waitFor(() => expect(codesInOrder()).toEqual(['000001', '600519', '920000']))
 
     // 数值列：涨跌降序
@@ -504,7 +534,7 @@ describe('fork: 分析页全市场表格', () => {
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -545,7 +575,7 @@ describe('fork: 分析页全市场表格', () => {
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={r => (r.tech ? <span>badge-{r.tech.score}</span> : <span>数据不足</span>)}
+        renderIndicator={r => (r.tech ? <span>badge-{r.tech.score}</span> : <span>数据不足</span>)}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -567,7 +597,7 @@ describe('fork: 分析页全市场表格', () => {
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -612,7 +642,7 @@ describe('fork: 分析页全市场表格', () => {
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -652,7 +682,7 @@ describe('fork: 分析页全市场表格', () => {
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
@@ -682,7 +712,7 @@ describe('fork: 分析页全市场表格', () => {
         onAdd={vi.fn()}
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
-        renderStatus={() => null}
+        renderIndicator={() => null}
         renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}

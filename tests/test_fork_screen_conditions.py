@@ -355,3 +355,70 @@ def test_复权因子缺失或非正按1处理():
     series = series_from(rows)
     assert series.bars[-1].c_adj == 11.0
     assert series.bars[0].c_adj == 10.0
+
+
+# ---------------------------------------------------------------- 连续上涨（涨幅 > 0）
+#
+# 与「连续阳线」的差别（用户 2026-10-20 第 7 条要求两条条件分开、名字写清）：
+#   阳线 = close > open（低开高走但全天仍跌的那根也算）
+#   上涨 = close > pre_close（那根就不算）
+# 这里每个用例都同时断言两条条件，差别才钉得住。
+
+
+def _ohlc_series(bars: list[tuple[float, float, float | None]]) -> StockSeries:
+    """bars: ``[(open, close, pre_close), ...]`` 升序，adj=1，日期用 ``day()`` 倒排。"""
+    total = len(bars)
+    rows = [
+        (day(total - 1 - index), open_, close, pre_close, 1.0)
+        for index, (open_, close, pre_close) in enumerate(bars)
+    ]
+    return series_from(rows)
+
+
+def test_C21_连续三天涨幅为正() -> None:
+    series = _ohlc_series([(10.0, 10.4, 9.9), (10.4, 10.8, 10.4), (10.8, 11.1, 10.8)])
+    ctx = ctx_of(3)
+    spec = CONDITIONS["consecutive_rising"]
+    assert spec.evaluate(series, ConsecutiveParams(days=3), ctx) is True
+    # 相邻两根都是阳线，两条条件在这组数据上结论一致
+    assert CONDITIONS["consecutive_bullish"].evaluate(series, ConsecutiveParams(days=3), ctx) is True
+
+
+def test_C22_低开高走的下跌日算阳线但不算上涨() -> None:
+    """末根：open 9.0 → close 9.5（阳线），但前收 10.0 → 全天跌 5%，不是上涨。"""
+    series = _ohlc_series([(10.0, 10.2, 10.0), (10.2, 10.4, 10.2), (9.0, 9.5, 10.4)])
+    ctx = ctx_of(3)
+
+    assert CONDITIONS["consecutive_rising"].evaluate(series, ConsecutiveParams(days=3), ctx) is False
+    assert CONDITIONS["consecutive_bullish"].evaluate(series, ConsecutiveParams(days=3), ctx) is True
+
+
+def test_C23_连续上涨的起点也是倒数第几个交易日() -> None:
+    """最近一天下跌，但倒数第 2 天起连 2 天上涨。"""
+    series = _ohlc_series([(10.0, 10.3, 10.0), (10.3, 10.6, 10.3), (10.6, 10.4, 10.6)])
+    ctx = ctx_of(3)
+    spec = CONDITIONS["consecutive_rising"]
+
+    assert spec.evaluate(series, ConsecutiveParams(start=1, days=2), ctx) is False
+    assert spec.evaluate(series, ConsecutiveParams(start=2, days=2), ctx) is True
+
+
+def test_C24_前收缺失时用前一根复权收盘回退() -> None:
+    series = _ohlc_series([(10.0, 10.0, None), (10.0, 10.5, None)])
+    ctx = ctx_of(2)
+    spec = CONDITIONS["consecutive_rising"]
+    # 末根 10.5 > 前一根 10.0 → 上涨
+    assert spec.evaluate(series, ConsecutiveParams(start=1, days=1), ctx) is True
+
+    falling = _ohlc_series([(10.0, 10.0, None), (10.0, 9.8, None)])
+    assert spec.evaluate(falling, ConsecutiveParams(start=1, days=1), ctx) is False
+
+
+def test_C25_连续上涨缺一天算数据不足() -> None:
+    series = _ohlc_series([(10.0, 10.2, 10.0), (10.2, 10.4, 10.2)])
+    ctx = ctx_of(3)  # 日历有 3 天，但序列只有 2 根（D3 停牌）
+    ctx.insufficient = False
+    assert (
+        CONDITIONS["consecutive_rising"].evaluate(series, ConsecutiveParams(days=3), ctx) is False
+    )
+    assert ctx.insufficient is True

@@ -62,6 +62,18 @@ export interface MarketRow {
   total_market_cap: number | null
   source: string | null
   adj_factor: number
+  /**
+   * 交易日状态（`market-table` 与 `stocks/screen` 都会带）。
+   *
+   * `status_code` 是行情库 `stock_status_daily` 当日**最严重**的那条
+   * （NORMAL / SUSPENDED / ST / STAR_ST / DELISTING / NEW_LISTING …），
+   * `status_label` 是 2–3 个字的短标签（正常 / 停牌 / ST / *ST / 退市 / 新股），
+   * `status_group` 是库里的分组（suspension / risk_warning / delisting / listing）。
+   * 老接口没有这三个字段时按「正常」处理（见 market-filters 的 tradeStatusKeyOf）。
+   */
+  status_code?: string | null
+  status_label?: string | null
+  status_group?: string | null
   ma: MarketRowMa
   tech: MarketRowTech | null
 }

@@ -118,7 +118,8 @@ export function SaveConditionDialog({
           ) : null}
         </div>
 
-        <div className="flex items-center justify-end gap-1.5">
+        {/* 按钮行与输入框之间留出间距并加一条分隔线 —— 用户反馈「确认按钮行和输入框贴在一起了」 */}
+        <div className="mt-4 flex items-center justify-end gap-1.5 border-t border-border/60 pt-3">
           <Button
             type="button"
             variant="ghost"

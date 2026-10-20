@@ -1,4 +1,3 @@
-import type { ReactNode } from 'react'
 import { BOARD_OPTIONS, type BoardKey } from '@/lib/board-classify'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@panwatch/base-ui/components/ui/select'
 import { MultiSelectFilter } from '@/components/fork/MultiSelectFilter'
@@ -6,59 +5,53 @@ import {
   CAP_FILTER_OPTIONS_ZH,
   CHANGE_FILTER_OPTIONS_ZH,
   EMPTY_MARKET_FILTERS,
+  TRADE_STATUS_FILTER_OPTIONS_ZH,
   hasAnyFilterActive,
   type CapFilter,
   type ChangeFilter,
   type MarketTableFilters,
+  type TradeStatusFilter,
 } from '@/lib/market-filters'
 
 /**
- * fork：分析页的筛选行（四组）。
+ * fork：分析页的筛选行（五组）。
  *
  *   组1 市场   全部 | 上证 | 深证 | 创业 | 科创 | ST    单选下拉（带计数）
- *   组2 状态   全部状态 | 买入 | 回避 | 观望              多选下拉
- *   组3 涨跌   全部涨跌 | 上涨 | 下跌                      单选下拉
- *   组4 市值   全部市值 | 50亿 | 100亿 | … | 其他          多选下拉
+ *   组2 指标   全部指标 | 买入 | 回避 | 观望            多选下拉（技术面结论）
+ *   组3 涨跌   全部涨跌 | 上涨 | 下跌                    单选下拉
+ *   组4 市值   全部市值 | 50亿 | 100亿 | … | 其他        多选下拉
+ *   组5 状态   全部状态 | 正常 | 停牌 | ST | *ST | …     多选下拉（交易日状态）
  *
- * 第四轮用户要求：
- *   - 组1 从 pill 行**也改成下拉菜单**（和另外三组统一），所以 pill 那套
- *     FilterChip / 分组标题 / 竖分隔线都删了 —— 这一行现在就是四个下拉 + 清空筛选。
- *     计数跟着选项走，触发器上显示的也是带计数的那个文案。
- *   - 「清空筛选」**紧跟在下拉菜单后面**（原来有 ml-auto 被推到行尾，看着像和筛选无关）。
+ * 2026-10-20 第四批反馈的改动：
+ *   - 第 4 条：组2 从「状态」改名「指标」（表格里那一列的标题同步改成「指标」），
+ *     腾出「状态」这个词给第 5 条新增的**交易日状态**（停牌 / 正常 / …）；
+ *   - 第 6 条：新增组5「全部状态」，位置按用户要求放在「全部市值」后面；
+ *   - 第 3 条：组1 触发器的宽度减 70px（208 → 138）—— 用户觉得市场那个下拉太宽。
+ *     面板宽度跟着触发器走（Radix 的 SelectContent 取 min-w = 触发器宽度），
+ *     选项文案不会因此被截断。
  *
- * 第五轮：组1 的「全部」选项文案改成「全部市场 (5574)」（触发器与选项同文案），
- * 触发器宽度**翻倍**（104 → 208，见 MARKET_TRIGGER_WIDTH）——原来是按 pill 时代的短文案留的，
- * 现在文案变长且用户反馈太窄。Radix 的 SelectContent 是 min-w-[var(--radix-select-trigger-width)]，
- * 所以面板宽度跟着触发器一起放大，不用单独调。
- * 另外三组（状态 / 涨跌 / 市值）文案没变，宽度保持 104。
- *
- * 顺序照旧：全部 / 上证 / 深证 / **创业** / **科创** / ST —— 即 BOARD_OPTIONS 的顺序。
- * 「清空筛选」连**市场**一起复位（hasAnyFilterActive 因此把 board 也算进来，
- * 名字用机会页的叫法）。
- *
- * 与机会页的一点差别（报备过的）：机会页那颗「应用筛选」在这里没有意义 ——
- * 数据是一次全量取回、筛选在浏览器里即时生效，按下去不会有任何变化，
- * 所以不放一个空转的按钮。要加的话是一行的事。
+ * 上一批（第五轮）留下的两点仍然有效：组1 的文案是「全部市场 (5574)」（触发器与
+ * 选项同文案）；「清空筛选」紧跟在下拉后面，连**市场**一起复位。
  *
  * 组件是**受控**的：状态由页面持有，筛选结果与分页都在 StockMarketTable 里算
  * （数据是全市场一次取回的，所以这里不需要发任何请求）。
  *
- * 第六轮：市值那组的下拉面板放不下「1000亿 + 总市值 500 亿 ~ 1000 亿」，
- * 档位被压成「1000…」—— 面板宽度改由 MultiSelectFilter 的 menuClassName 给（见下），
- * 并在筛选行右端留一个 ``trailing`` 槽位显示「代码版本 / 提交时间 / 数据同步时间」。
- * 这一行从「只有筛选」变成「筛选靠左、元信息靠右」，所以 trailing 用 ``ml-auto`` 推过去。
+ * 行尾的「代码版本 / 提交时间 / 数据同步时间」原先是这里的 ``trailing`` 槽位，
+ * 2026-10-20 第 1 条要求把它挪到工具条**第一行靠右**（见 TablePagination 的
+ * ``meta``），所以这里不再提供 trailing。
  */
 
 const FILTER_BAR_TEXTS_ZH = {
   /** 组1 的「不限市场」文案。第五轮从「全部」改成「全部市场」（更明确这是市场维度）。 */
   all: '全部市场',
   marketAll: '全部市场',
-  statusAll: '全部状态',
+  indicatorAll: '全部指标',
   changeAll: '全部涨跌',
   capAll: '全部市值',
+  tradeStatusAll: '全部状态',
   clear: '清空筛选',
-  clearHint: '市场、状态、涨跌、市值一起复位',
-  statusHint: (label: string) => `技术面：${label}`,
+  clearHint: '市场、指标、涨跌、市值、状态一起复位',
+  indicatorHint: (label: string) => `技术面：${label}`,
 }
 
 export interface StockFilterBarProps {
@@ -69,9 +62,7 @@ export interface StockFilterBarProps {
   filters: MarketTableFilters
   onFiltersChange: (filters: MarketTableFilters) => void
   /** 组2 的候选动作文案（页面从 bizUi 的 kline.actions.* 取，与徽章同一套叫法） */
-  statusOptions: { key: string; label: string }[]
-  /** 行尾右对齐的附注（页面注入「代码版本 / 提交时间 / 数据同步时间」） */
-  trailing?: ReactNode
+  indicatorOptions: { key: string; label: string }[]
   className?: string
 }
 
@@ -81,10 +72,10 @@ function marketOptionLabel(label: string, count: number | undefined): string {
 }
 
 /**
- * 组1 触发器的宽度。第五轮用户反馈「太短」，按 104px **翻倍**到 208px；
- * 其余三组仍是 104。Radix 的 SelectContent 取 min-w = 触发器宽度，面板随之变宽。
+ * 组1 触发器的宽度。第五轮按 104px **翻倍**到 208；2026-10-20 第 3 条要求再减 70px →
+ * 138。其余几组仍是 104。
  */
-const MARKET_TRIGGER_WIDTH = 'w-[208px]'
+const MARKET_TRIGGER_WIDTH = 'w-[138px]'
 
 export function StockFilterBar({
   board,
@@ -92,11 +83,10 @@ export function StockFilterBar({
   counts,
   filters,
   onFiltersChange,
-  statusOptions,
-  trailing,
+  indicatorOptions,
   className,
 }: StockFilterBarProps) {
-  /** 「清空筛选」= 市场 + 其余三组一起回到「不限」（用户要求连市场一起复位）。 */
+  /** 「清空筛选」= 市场 + 其余四组一起回到「不限」（用户要求连市场一起复位）。 */
   const clearAll = () => {
     onBoardChange('all')
     onFiltersChange(EMPTY_MARKET_FILTERS)
@@ -121,17 +111,17 @@ export function StockFilterBar({
         </SelectContent>
       </Select>
 
-      {/* 组2 状态：多选下拉 */}
+      {/* 组2 指标：多选下拉（买入 / 回避 / 观望） */}
       <MultiSelectFilter
-        label={FILTER_BAR_TEXTS_ZH.statusAll}
-        allLabel={FILTER_BAR_TEXTS_ZH.statusAll}
-        options={statusOptions.map(option => ({
+        label={FILTER_BAR_TEXTS_ZH.indicatorAll}
+        allLabel={FILTER_BAR_TEXTS_ZH.indicatorAll}
+        options={indicatorOptions.map(option => ({
           key: option.key,
           label: option.label,
-          hint: FILTER_BAR_TEXTS_ZH.statusHint(option.label),
+          hint: FILTER_BAR_TEXTS_ZH.indicatorHint(option.label),
         }))}
-        value={filters.status}
-        onChange={next => onFiltersChange({ ...filters, status: next })}
+        value={filters.indicator}
+        onChange={next => onFiltersChange({ ...filters, indicator: next })}
         className="w-[104px]"
       />
 
@@ -164,6 +154,21 @@ export function StockFilterBar({
         menuClassName="w-[288px]"
       />
 
+      {/* 组5 状态：多选下拉（用户要求放在「全部市值」后面）—— 交易日状态，不是技术面结论 */}
+      <MultiSelectFilter
+        label={FILTER_BAR_TEXTS_ZH.tradeStatusAll}
+        allLabel={FILTER_BAR_TEXTS_ZH.tradeStatusAll}
+        options={TRADE_STATUS_FILTER_OPTIONS_ZH.map(option => ({
+          key: option.key,
+          label: option.label,
+          hint: option.hint,
+        }))}
+        value={filters.tradeStatus}
+        onChange={next => onFiltersChange({ ...filters, tradeStatus: next as TradeStatusFilter[] })}
+        className="w-[104px]"
+        menuClassName="w-[236px]"
+      />
+
       {/* 清空筛选（含市场）——紧跟在下拉菜单后面，只在真有筛选生效时出现 */}
       {hasAnyFilterActive(board, filters) && (
         <button
@@ -175,9 +180,6 @@ export function StockFilterBar({
           {FILTER_BAR_TEXTS_ZH.clear}
         </button>
       )}
-
-      {/* 行尾右对齐的元信息（代码版本 / 提交时间 / 数据同步时间），由页面注入 */}
-      {trailing}
     </div>
   )
 }

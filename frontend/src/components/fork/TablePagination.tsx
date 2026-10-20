@@ -5,11 +5,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 /**
  * fork：分析页表格的分页条（上、下各一条）。
  *
- * 用户给的参考（截图）是一个「共 N 条 + ‹ 1 2 3 … › + 每页条数下拉」的横条。
- * 排布按用户要求定成：
- *   - **上**一条：左边是「刷新 / 添加股票 两个按钮 + 50px 间距 + 搜索框」，
- *     右边是「共 N 条 + 页码 + 每页条数」（页码在下拉前面）
- *   - **下**一条：只保留右边那一块（用户明确说底部不要搜索框）
+ * 2026-10-20 第 1 条要求把上面那条**拆成两行**：
+ *
+ *   第一行：左 = 条件选股 → 已保存条件下拉 → 编辑
+ *           右 = 数据时间 / 代码版本 / 提交时间（页面注入的 ``meta``）
+ *   第二行：刷新 → 添加股票 → 搜索框 → 五组筛选 → 「共 N 条 + 页码 + 每页条数」
+ *
+ * 拆成两行的原因：第一行那三个控件是**整套选股流程**的入口，第二行是行情表的
+ * 日常操作；原来挤在一行里，条件多了以后搜索框和筛选会被挤到下一行、位置飘。
+ *
+ * 下面那条分页条只有页码区（用户明确说底部不要搜索框），所以不传 actions/meta
+ * 时第一行整行不渲染。
  *
  * 每页条数给到 10000：数据是**一次性全量取回**的（见 StockMarketTable），
  * 所以「每页 10000 条」只是浏览器里切一刀，不会再打接口。
@@ -55,13 +61,15 @@ interface TablePaginationProps {
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
   disabled?: boolean
-  /** 工具条左端的按钮组（「刷新」「添加股票」），排在 leading 前面，中间留 50px */
+  /** 第一行左侧的按钮组（条件选股 → 已保存条件下拉 → 编辑），只有上方那条分页条传 */
   actions?: ReactNode
-  /** 工具条里的搜索框（只有上方那条分页条传） */
+  /** 第一行**右侧**的元信息（数据时间 / 代码版本 / 提交时间），只有上方那条分页条传 */
+  meta?: ReactNode
+  /** 第二行左端的按钮组 + 搜索框（刷新 / 添加股票 + 50px + 搜索框） */
   leading?: ReactNode
   /**
-   * 搜索框**后面**的筛选控件（用户反馈 2026-10-20 第 2 条：市场 / 状态 / 涨跌 /
-   * 市值 / 清空筛选整体从「表格上方一行」挪到搜索框后面）。只有上方那条分页条传。
+   * 第二行搜索框**后面**的筛选控件（市场 / 指标 / 涨跌 / 市值 / 状态 / 清空筛选）。
+   * 只有上方那条分页条传。
    */
   filters?: ReactNode
 }
@@ -74,6 +82,7 @@ export function TablePagination({
   onPageSizeChange,
   disabled = false,
   actions,
+  meta,
   leading,
   filters,
 }: TablePaginationProps) {
@@ -81,29 +90,44 @@ export function TablePagination({
   const arrowClass =
     'inline-flex h-6 w-6 items-center justify-center rounded border border-border/60 text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40'
 
-  // 工具条：按钮组 + 50px + 搜索框，然后是筛选控件（紧跟搜索框，间距 8px）
-  const toolbar =
-    actions || leading || filters ? (
-      <div className="flex flex-wrap items-center gap-2">
-        {actions || leading ? (
-          <div
-            className="flex items-center"
-            style={actions && leading ? { columnGap: TOOLBAR_GAP_PX } : undefined}
-          >
-            {actions}
-            {leading ? <div className="w-[260px] shrink-0">{leading}</div> : null}
-          </div>
-        ) : null}
-        {filters}
-      </div>
-    ) : null
+  const showTopRow = Boolean(actions || meta)
+  // 第二行：按钮组 + 50px + 搜索框，然后是筛选控件（紧跟搜索框，间距 8px）
+  const showMainRow = Boolean(leading || filters)
 
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 text-[11px] text-muted-foreground">
-      {toolbar}
+    <div className="py-2 text-[11px] text-muted-foreground">
+      {/* 第一行：左 = 选股流程（条件选股 / 已保存 / 编辑），右 = 数据时间与版本信息 */}
+      {showTopRow ? (
+        <div
+          data-fork-toolbar-row="top"
+          className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-2"
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">{actions}</div>
+          <div className="flex shrink-0 items-center">{meta}</div>
+        </div>
+      ) : null}
 
-      {/* 页码与每页条数整块靠右；页码在下拉前面 */}
-      <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2">
+      {/* 第二行：日常操作 + 搜索 + 筛选，页码区靠右 */}
+      <div
+        data-fork-toolbar-row="main"
+        className={`flex flex-wrap items-center gap-x-3 gap-y-2 ${showMainRow ? '' : 'justify-end'}`}
+      >
+        {showMainRow ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            {actions || leading ? (
+              <div
+                className="flex items-center"
+                style={leading ? { columnGap: TOOLBAR_GAP_PX } : undefined}
+              >
+                {leading}
+              </div>
+            ) : null}
+            {filters}
+          </div>
+        ) : null}
+
+        {/* 页码与每页条数整块靠右；页码在下拉前面 */}
+        <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-2" data-fork-pager>
         <span className="whitespace-nowrap">{PAGINATION_TEXTS_ZH.total(total)}</span>
 
         <div className="flex items-center gap-1">
@@ -164,6 +188,7 @@ export function TablePagination({
             ))}
           </SelectContent>
         </Select>
+        </div>
       </div>
     </div>
   )
