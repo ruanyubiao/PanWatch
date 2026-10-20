@@ -295,7 +295,7 @@ describe('条件选股弹窗', () => {
   it('L2 连续阳线两个参数：倒数第几个交易日（默认 1）+ 天数（默认 4）', async () => {
     renderDialog()
     await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
-    await userEvent.click(await screen.findByText('连续 N 日阳线'))
+    await userEvent.click(await screen.findByText('连续阳线（收盘 > 开盘）'))
 
     const start = document.querySelector<HTMLInputElement>('[data-screen-param-field="start"]')!
     const days = document.querySelector<HTMLInputElement>('[data-screen-param-field="days"]')!
@@ -322,6 +322,26 @@ describe('条件选股弹窗', () => {
     expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe(
       '自倒数第 5 日起连续 4 日阳线',
     )
+  })
+
+  it('L7 连续上涨（涨幅 > 0）：两个参数，提示语说「收盘价 > 前收」', async () => {
+    renderDialog()
+    await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
+    await userEvent.click(await screen.findByText('连续上涨（涨幅 > 0）'))
+
+    const start = document.querySelector<HTMLInputElement>('[data-screen-param-field="start"]')!
+    const days = document.querySelector<HTMLInputElement>('[data-screen-param-field="days"]')!
+    expect(start.value).toBe('1')
+    expect(days.value).toBe('3')
+
+    const hint = document.querySelector('[data-fork-screen-consecutive-hint]')?.textContent
+    expect(hint).toBe('自倒数第 1 个交易日起连续 3 个交易日都上涨（收盘价 > 前收）')
+
+    await userEvent.click(screen.getByRole('button', { name: '确定' }))
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-fork-screen-condition]')).toHaveLength(1),
+    )
+    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe('连续 3 日上涨')
   })
 
   it('L3 数字框右侧有加减按钮：点一次 ±1、到边界禁用、键盘 ↑/↓ 等价', async () => {
@@ -359,7 +379,7 @@ describe('条件选股弹窗', () => {
   it('L4 条件参数的加减按钮：连续阳线起点 1 → 2，上限跟着窗口走', async () => {
     renderDialog()
     await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
-    await userEvent.click(await screen.findByText('连续 N 日阳线'))
+    await userEvent.click(await screen.findByText('连续阳线（收盘 > 开盘）'))
 
     const start = document.querySelector<HTMLInputElement>('[data-screen-param-field="start"]')!
     const up = screen.getByRole('button', { name: '倒数第几个交易日 +1' }) as HTMLButtonElement
