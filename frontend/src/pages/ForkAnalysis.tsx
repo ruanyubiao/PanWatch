@@ -2546,18 +2546,9 @@ export default function StocksPage() {
             }
           />
 
-          {/* fork：选股结果横幅（需求规格 §5.5）—— 「退出选股」只清空 sourceRows，
-              表格的全量数据一直留着，所以不重新请求。 */}
-          {screenResult ? (
-            <ScreenResultBanner
-              response={screenResult.response}
-              request={screenResult.request}
-              rerunning={screenRerunning}
-              onEdit={() => setScreenOpen(true)}
-              onRerun={() => void rerunScreen()}
-              onExit={() => setScreenResult(null)}
-            />
-          ) : null}
+          {/* fork：选股结果横幅（需求规格 §5.5）不放这里 —— 用户要求它出现在
+              「条件选股」按钮那一行的**下面**，所以经由 belowToolbar 塞进表格里。
+              「退出选股」只清空 sourceRows，表格的全量数据一直留着，不重新请求。 */}
 
           {/* fork：全部 = A 股全市场（后端 /stocks/market-table，读本机 MySQL，分页）。
               行情/市值/技术面全部来自库，**一个外网请求都不发** —— 这是
@@ -2581,6 +2572,18 @@ export default function StocksPage() {
               onAsof={setMarketAsof}
               toolbarActions={tableToolbarActions}
               searchSlot={<StockSearchBox value={stockQuery} onChange={setStockQuery} />}
+              belowToolbar={
+                screenResult ? (
+                  <ScreenResultBanner
+                    response={screenResult.response}
+                    request={screenResult.request}
+                    rerunning={screenRerunning}
+                    onEdit={() => setScreenOpen(true)}
+                    onRerun={() => void rerunScreen()}
+                    onExit={() => setScreenResult(null)}
+                  />
+                ) : null
+              }
               renderStatus={renderMarketStatus}
               renderAgentStatus={renderMarketAgentStatus}
               renderSource={renderMarketSource}

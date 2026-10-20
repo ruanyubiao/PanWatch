@@ -109,7 +109,18 @@ class NoParams(_Strict):
     pass
 
 
+#: 连续阳线：起点（倒数第几个交易日）+ 天数 的跨度上限
+MAX_CONSECUTIVE_SPAN = 30
+
+
 class ConsecutiveParams(_Strict):
+    """从倒数第 ``start`` 个交易日起，连续 ``days`` 天每天都收阳。
+
+    ``start=1`` 就是「最近 days 天」，与加这个参数之前的语义完全一致，
+    所以老请求（只带 days）不需要迁移。
+    """
+
+    start: int = 1
     days: int = 4
 
 
@@ -228,10 +239,13 @@ def _more_bearish_candles(series: StockSeries, params: NoParams, ctx: EvalContex
 
 
 def _consecutive_bullish(series: StockSeries, params: ConsecutiveParams, ctx: EvalContext) -> bool:
-    if params.days > len(ctx.calendar):
+    # 起点 = 倒数第 start 个交易日（start=1 → 日历下标 0），落到窗口末尾
+    first = params.start - 1
+    last = first + params.days  # 不含
+    if last > len(ctx.calendar):
         ctx.insufficient = True
         return False
-    for offset in range(params.days):
+    for offset in range(first, last):
         index = series.index_on(ctx.calendar[offset])
         if index is None:
             # 停牌缺一条就不成立，也计入「数据不足」—— 这一条要求窗口内**每天都有**记录
@@ -298,10 +312,16 @@ def _validate_none(params: NoParams, trading_days: int) -> list[str]:
 
 
 def _validate_consecutive(params: ConsecutiveParams, trading_days: int) -> list[str]:
-    limit = min(int(trading_days), 30)
+    # 起点与天数各自 ≤ 窗口（再压到 30 根跨度上限），且两者合起来必须落在窗口内
+    limit = min(int(trading_days), MAX_CONSECUTIVE_SPAN)
+    errors: list[str] = []
+    if not 1 <= params.start <= limit:
+        errors.append(f"倒数第几个交易日需为 1 至 {limit} 的整数")
     if not 1 <= params.days <= limit:
-        return [f"连续天数需为 1 至 min(统计窗口, 30) 的整数（当前上限 {limit}）"]
-    return []
+        errors.append(f"连续天数需为 1 至 {limit} 的整数")
+    if not errors and params.start - 1 + params.days > limit:
+        errors.append(f"起点与天数之和不能超过 {limit}（当前统计窗口上限）")
+    return errors
 
 
 def _validate_change_pct(params: ChangePctParams, trading_days: int) -> list[str]:
@@ -356,7 +376,8 @@ CONDITIONS: dict[str, ConditionSpec] = {
     "consecutive_bullish": ConditionSpec(
         name="consecutive_bullish",
         params_model=ConsecutiveParams,
-        required_bars=lambda p, w: p.days,
+        # 起点之前那 start-1 根也要取到日历（窗口上限 30，实际影响很小）
+        required_bars=lambda p, w: p.start - 1 + p.days,
         validate=_validate_consecutive,
         evaluate=_consecutive_bullish,
     ),

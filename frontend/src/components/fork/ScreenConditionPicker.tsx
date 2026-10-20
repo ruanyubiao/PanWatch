@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { ReactNode, WheelEvent } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@panwatch/base-ui/components/ui/popover'
 import { Input } from '@panwatch/base-ui/components/ui/input'
 import {
@@ -21,6 +21,28 @@ import { ScreenParamForm } from '@/components/fork/ScreenParamEditor'
  */
 
 const T = SCREEN_TEXTS_ZH
+
+/**
+ * 列表的滚轮。
+ *
+ * 坑：这个浮层是 portal 到 body 的，而外层「条件选股」是 Radix Dialog（modal）。
+ * Dialog 的滚动锁（react-remove-scroll）在 **document 的 capture 阶段** 拦掉
+ * 所有不在锁范围内元素的 wheel 默认行为，浮层正落在锁范围外 —— 于是鼠标滚轮
+ * 完全推不动列表，只能拖滚动条（用户反馈）。
+ *
+ * 该事件到我们手上时 `defaultPrevented` 已经是 true，说明原生滚动不会发生，
+ * 那就自己改 scrollTop；为 false 说明没被锁（或不在 Dialog 里），交回浏览器，
+ * 避免滚两倍。
+ */
+function scrollListByWheel(event: WheelEvent<HTMLDivElement>) {
+  const node = event.currentTarget
+  const max = node.scrollHeight - node.clientHeight
+  if (max <= 0) return
+  if (!event.defaultPrevented) return
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? node.clientHeight : 1
+  const next = Math.min(max, Math.max(0, node.scrollTop + event.deltaY * unit))
+  if (next !== node.scrollTop) node.scrollTop = next
+}
 
 export function ScreenConditionPicker({
   tradingDays,
@@ -84,7 +106,11 @@ export function ScreenConditionPicker({
               onChange={event => setQuery(event.target.value)}
               data-fork-screen-picker-search
             />
-            <div className="max-h-72 overflow-y-auto scrollbar">
+            <div
+              className="max-h-72 overflow-y-auto scrollbar"
+              data-fork-screen-picker-list
+              onWheel={scrollListByWheel}
+            >
               {filtered.length === 0 ? (
                 <div className="py-4 text-center text-[11px] text-muted-foreground">{T.pickerEmpty}</div>
               ) : (

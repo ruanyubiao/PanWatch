@@ -28,7 +28,7 @@ export interface ConditionParamsMap {
   close_above_ma: { period: MaPeriod }
   more_bullish_candles: Record<string, never>
   more_bearish_candles: Record<string, never>
-  consecutive_bullish: { days: number }
+  consecutive_bullish: { start: number; days: number }
   change_pct: { n: number; min: number; max: number }
 }
 export type ConditionName = keyof ConditionParamsMap
@@ -107,10 +107,13 @@ export const SCREEN_TEXTS_ZH = {
   baseHint: '先在数据库层过滤，与下方条件树为『且』关系',
   tradingDays: '统计窗口',
   tradingDaysSuffix: '个交易日',
+  tradingDaysPlaceholder: '1–250',
   tradingDaysHint: '1–250；均线等指标所需的更早历史自动补足，不计入窗口',
   marketCap: '总市值（亿元）',
   capMin: '>',
   capMax: '且 <',
+  capMinLabel: '总市值下限',
+  capMaxLabel: '总市值上限',
   capHint: '按总市值，严格大于下限、严格小于上限',
   market: '市场',
   marketAll: '全部',
@@ -181,19 +184,27 @@ export const SCREEN_TEXTS_ZH = {
   periodsInvalid: '均线周期至少选 2 个且不能重复',
   periodInvalid: '均线周期不合法',
   daysInvalid: (max: number) => `连续天数需为 1 至 ${max} 的整数`,
+  startInvalid: (max: number) => `倒数第几个交易日需为 1 至 ${max} 的整数`,
+  spanInvalid: (max: number) => `起点与天数之和不能超过 ${max}（统计窗口上限）`,
   nInvalid: (max: number) => `N 需为 1 至 ${max} 之间的整数`,
   pctInvalid: '涨跌幅下限必须小于上限',
+  pctRangeInvalid: '涨跌幅需在 -100 至 1000 之间',
   periodsLabel: '周期（可多选）',
   periodLabel: '周期',
+  startLabel: '倒数第几个交易日',
   daysLabel: '连续天数',
   nLabel: 'N（倒数第几个交易日）',
+  nShortLabel: 'N',
+  changePctHint: (max: number) => `N = 倒数第几个交易日（1 – ${max}），下限/上限为百分比、开区间`,
   pctMinLabel: '下限 %',
   pctMaxLabel: '上限 %',
   summaryMaOrder: (periods: string) => `均线多头排列(${periods})`,
   summaryMaBear: (periods: string) => `均线空头排列(${periods})`,
   summaryAboveMa: (period: number) => `收盘价站上 MA${period}`,
   summaryPct: (n: number, min: number, max: number) => `第 ${n} 日涨跌幅 ∈ (${min}%, ${max}%)`,
-  summaryConsecutive: (days: number) => `连续 ${days} 日阳线`,
+  summaryConsecutive: (start: number, days: number) =>
+    // start 缺失（老草稿）按「最近 days 天」显示
+    !start || start <= 1 ? `连续 ${days} 日阳线` : `自倒数第 ${start} 日起连续 ${days} 日阳线`,
   summaryPeriodsJoin: '/',
 }
 
@@ -268,13 +279,17 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
     name: 'consecutive_bullish',
     label: '连续 N 日阳线',
     category: 'K 线',
-    description: '最近 N 个交易日每天都收阳（停牌缺一天就不算）',
-    defaults: { days: 4 },
-    summary: p => T.summaryConsecutive(p.days),
-    requiredBars: p => p.days,
+    description: '从倒数第 M 个交易日开始的 N 个交易日都收阳（停牌缺一天就不算）',
+    defaults: { start: 1, days: 4 },
+    summary: p => T.summaryConsecutive(p.start, p.days),
+    requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + p.days),
     validate: (p, tradingDays) => {
       const limit = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
-      return Number.isInteger(p.days) && p.days >= 1 && p.days <= limit ? [] : [T.daysInvalid(limit)]
+      const issues: string[] = []
+      if (!Number.isInteger(p.start) || p.start < 1 || p.start > limit) issues.push(T.startInvalid(limit))
+      if (!Number.isInteger(p.days) || p.days < 1 || p.days > limit) issues.push(T.daysInvalid(limit))
+      if (issues.length === 0 && p.start - 1 + p.days > limit) issues.push(T.spanInvalid(limit))
+      return issues
     },
   },
   change_pct: {
@@ -289,9 +304,24 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
       const issues: string[] = []
       if (!Number.isInteger(p.n) || p.n < 1 || p.n > tradingDays) issues.push(T.nInvalid(tradingDays))
       if (!(p.min < p.max)) issues.push(T.pctInvalid)
+      else if (!inPctRange(p.min) || !inPctRange(p.max)) issues.push(T.pctRangeInvalid)
       return issues
     },
   },
+}
+
+/** 涨跌幅取值区间（与后端 ``_validate_change_pct`` 一致）。 */
+export const MIN_CHANGE_PCT = -100
+export const MAX_CHANGE_PCT = 1000
+
+/** 连续阳线的起点；缺（老草稿 / 老请求）按 1。 */
+function consecutiveStart(params: { start?: number }): number {
+  const start = Number(params.start)
+  return Number.isFinite(start) && start >= 1 ? Math.trunc(start) : 1
+}
+
+function inPctRange(value: number): boolean {
+  return value >= MIN_CHANGE_PCT && value <= MAX_CHANGE_PCT
 }
 
 // 无参数条件的摘要走固定文案（上面已写在各定义里，这里只导出分类顺序）
@@ -573,7 +603,9 @@ export function findConflictGroup(rule: GroupNode): GroupNode | null {
 /** 前端算的 K（与后端 `required_bars_of_group` 同式，只用于 footer 的提示）。 */
 export function requiredBarsOf(req: ScreenRequest): number {
   if (countConditions(req.rule) === 0) return 0
-  return Math.max(req.trading_days, requiredBarsOfGroup(req.rule))
+  // 窗口留空（NaN）时只按条件自己的预热需求算，footer 不会出现 NaN
+  const days = Number.isFinite(req.trading_days) ? req.trading_days : 0
+  return Math.max(days, requiredBarsOfGroup(req.rule))
 }
 
 function requiredBarsOfGroup(node: GroupNode): number {
@@ -624,7 +656,9 @@ function normalizeParams<K extends ConditionName>(name: K, params: ConditionPara
   }
   if (name === 'consecutive_bullish') {
     const p = params as ConditionParamsMap['consecutive_bullish']
-    return { days: Number(p.days) } as ConditionParamsMap[K]
+    // start 缺失时按 1 处理：老草稿 / 老请求只带 days
+    const start = Number(p.start)
+    return { start: Number.isFinite(start) && start > 0 ? start : 1, days: Number(p.days) } as ConditionParamsMap[K]
   }
   if (name === 'change_pct') {
     const p = params as ConditionParamsMap['change_pct']

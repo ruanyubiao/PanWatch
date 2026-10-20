@@ -279,6 +279,32 @@ describe('条件选股 / K 与提交', () => {
 })
 
 describe('条件选股 / 注册表', () => {
+  it('连续 N 日阳线的起点参与预览、所需根数与校验', () => {
+    const def = CONDITION_DEFS_ZH.consecutive_bullish
+    expect(def.summary({ start: 1, days: 4 })).toBe('连续 4 日阳线')
+    expect(def.summary({ start: 3, days: 4 })).toBe('自倒数第 3 日起连续 4 日阳线')
+    // 起点之前那 start-1 根也要读进来
+    expect(def.requiredBars({ start: 3, days: 4 })).toBe(6)
+    expect(formatRule(group([cond('consecutive_bullish', { start: 3, days: 4 })]))).toBe(
+      '自倒数第 3 日起连续 4 日阳线',
+    )
+
+    // 起点 + 天数 必须落在窗口（默认 W=30）内
+    expect(
+      messages(
+        validateScreenRequest(req(group([cond('consecutive_bullish', { start: 10, days: 25 })]))),
+      ),
+    ).toContain('起点与天数之和不能超过 30')
+    expect(
+      messages(validateScreenRequest(req(group([cond('consecutive_bullish', { start: 0, days: 4 })])))),
+    ).toContain('倒数第几个交易日需为 1 至 30 的整数')
+  })
+
+  it('F6 老请求缺 start 时按 1 提交（后端 extra=forbid，不能漏字段）', () => {
+    const payload = toApiRequest(req(group([cond('consecutive_bullish', { days: 4 })])))
+    expect((payload.rule.children[0] as ConditionNode).params).toEqual({ start: 1, days: 4 })
+  })
+
   it('七个条件齐全，分类与默认值符合规格', () => {
     expect(Object.keys(CONDITION_DEFS_ZH)).toEqual([
       'ma_bullish',
@@ -291,7 +317,7 @@ describe('条件选股 / 注册表', () => {
     ])
     expect(CONDITION_DEFS_ZH.ma_bullish.defaults).toEqual({ periods: [5, 10, 20, 60] })
     expect(CONDITION_DEFS_ZH.close_above_ma.defaults).toEqual({ period: 5 })
-    expect(CONDITION_DEFS_ZH.consecutive_bullish.defaults).toEqual({ days: 4 })
+    expect(CONDITION_DEFS_ZH.consecutive_bullish.defaults).toEqual({ start: 1, days: 4 })
     expect(CONDITION_DEFS_ZH.change_pct.defaults).toEqual({ n: 1, min: -30, max: 30 })
     expect(CONDITION_DEFS_ZH.ma_bullish.category).toBe('均线')
     expect(CONDITION_DEFS_ZH.more_bearish_candles.category).toBe('K 线')

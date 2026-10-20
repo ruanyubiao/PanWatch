@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Filter, Loader2 } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
-import { Input } from '@panwatch/base-ui/components/ui/input'
-import { Label } from '@panwatch/base-ui/components/ui/label'
 import { Switch } from '@panwatch/base-ui/components/ui/switch'
 import {
   Dialog,
@@ -14,13 +12,15 @@ import {
 import { useConfirm } from '@panwatch/base-ui/components/ui/confirm-dialog'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import {
+  MAX_MARKET_CAP_YI,
+  MAX_TRADING_DAYS,
+  MIN_TRADING_DAYS,
   SCREEN_MARKETS,
   SCREEN_TEXTS_ZH,
   addChild,
   countConditions,
   countConditionsIn,
   createCondition,
-  createDefaultRequest,
   createGroup,
   duplicateNode,
   findConflictGroup,
@@ -40,6 +40,7 @@ import {
   type ScreenMarket,
   type ValidationIssue,
 } from '@/lib/screen-rule'
+import { cleanNumeric } from '@/components/fork/ScreenNumberField'
 import { ScreenConditionGroup, type ScreenTreeHandlers } from '@/components/fork/ScreenConditionGroup'
 import { screenStocks } from '@/lib/screen-api'
 
@@ -53,9 +54,15 @@ import { screenStocks } from '@/lib/screen-api'
  *
  * 数字输入用字符串保存在草稿里（`daysText` 等）：受控 number input 一旦把
  * 空串转成 0，「清空重输」就会卡成 `0`。提交前统一 `Number()`。
+ *
+ * 基础筛选的三个字段都是「标题 + 控件同一行」（用户反馈），且控件自身限死取值
+ * 范围（`BaseNumberInput`：越界当场夹回边界，非法字符敲不进去）。
  */
 
 const T = SCREEN_TEXTS_ZH
+
+/** 总市值默认范围（亿元）：与后端 `validate_params` 的 [0, 1e6] 一致。 */
+const DEFAULT_CAP = { min_yi: 1, max_yi: 100000 }
 
 interface DraftForm {
   daysText: string
@@ -66,7 +73,24 @@ interface DraftForm {
   rule: GroupNode
 }
 
-function toDraft(request: ScreenRequest): DraftForm {
+/**
+ * 打开时的草稿。
+ *
+ * `request === null` 表示「第一次打开」：**统计窗口不预填**（用户明确要求这个
+ * 界面不要有默认选中值），其余保持可用状态（四个市场全选、不含 ST、空根组）。
+ * 「修改条件」传回上次的请求时按请求原样回填。
+ */
+function toDraft(request: ScreenRequest | null): DraftForm {
+  if (!request) {
+    return {
+      daysText: '',
+      capMinText: String(DEFAULT_CAP.min_yi),
+      capMaxText: String(DEFAULT_CAP.max_yi),
+      markets: [...SCREEN_MARKETS],
+      includeSt: false,
+      rule: createGroup('AND'),
+    }
+  }
   return {
     daysText: String(request.trading_days),
     capMinText: String(request.market_cap.min_yi),
@@ -86,14 +110,88 @@ function stripCollapsed(node: GroupNode): GroupNode {
   }
 }
 
+/** 窗口留空 → NaN：校验报「统计窗口需为 1–250 的整数」，不会被悄悄当成 0。 */
+function daysOf(form: DraftForm): number {
+  const text = form.daysText.trim()
+  return text === '' ? Number.NaN : Number(text)
+}
+
 function toRequest(form: DraftForm): ScreenRequest {
   return {
-    trading_days: Number(form.daysText),
+    trading_days: daysOf(form),
     markets: [...form.markets],
     include_st: form.includeSt,
     market_cap: { min_yi: Number(form.capMinText), max_yi: Number(form.capMaxText) },
     rule: form.rule,
   }
+}
+
+/**
+ * 基础筛选里的数字框（草稿里存的是**字符串**，所以不走 `ScreenNumberField`）。
+ *
+ * 只吃数字（整数场不吃小数点、负数只在 min < 0 时吃一个开头的负号），越界
+ * 立刻夹回边界 —— 「由条件的限制，最好控件直接有限制，不让输入」。
+ */
+function BaseNumberInput({
+  text,
+  min,
+  max,
+  integer = true,
+  allowEmpty = false,
+  screenField,
+  ariaLabel,
+  className = '',
+  onText,
+}: {
+  text: string
+  min: number
+  max: number
+  integer?: boolean
+  allowEmpty?: boolean
+  screenField: string
+  ariaLabel: string
+  className?: string
+  onText: (text: string) => void
+}) {
+  return (
+    <input
+      type="text"
+      inputMode={integer ? 'numeric' : 'decimal'}
+      role="spinbutton"
+      aria-label={ariaLabel}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      data-screen-field={screenField}
+      value={text}
+      onChange={event => {
+        const cleaned = cleanNumeric(event.target.value, integer, min < 0)
+        // 空串 / 孤立负号：先留着（allowEmpty 时提交会被校验拦住）
+        if (cleaned === '' || cleaned === '-' || cleaned === '.') {
+          onText(cleaned)
+          return
+        }
+        const parsed = Number(cleaned)
+        if (!Number.isFinite(parsed)) {
+          onText(cleaned)
+          return
+        }
+        if (parsed < min) {
+          onText(String(min))
+          return
+        }
+        if (parsed > max) {
+          onText(String(max))
+          return
+        }
+        onText(cleaned)
+      }}
+      onBlur={() => {
+        if (allowEmpty) return
+        if (text.trim() === '' || text === '-' || text === '.') onText(String(min))
+      }}
+      className={`h-7 rounded-md border border-input bg-background px-2 text-[12px] font-mono text-foreground outline-none transition-colors focus:border-primary ${className}`}
+    />
+  )
 }
 
 export function ScreenStocksDialog({
@@ -111,7 +209,7 @@ export function ScreenStocksDialog({
 }) {
   const { toast } = useToast()
   const askConfirm = useConfirm()
-  const [form, setForm] = useState<DraftForm>(() => toDraft(initialRequest ?? createDefaultRequest()))
+  const [form, setForm] = useState<DraftForm>(() => toDraft(initialRequest ?? null))
   const [issues, setIssues] = useState<ValidationIssue[]>([])
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -121,7 +219,7 @@ export function ScreenStocksDialog({
   // 每次打开都用最新的 initialRequest（「修改条件」要把上次的请求原样带回）
   useEffect(() => {
     if (open) {
-      setForm(toDraft(initialRequest ?? createDefaultRequest()))
+      setForm(toDraft(initialRequest ?? null))
       setIssues([])
       setSubmitted(false)
       setSubmitting(false)
@@ -137,6 +235,16 @@ export function ScreenStocksDialog({
   const bars = useMemo(() => requiredBarsOf(request), [request])
   const conditions = countConditions(form.rule)
   const depth = treeDepth(form.rule)
+  /**
+   * 条件参数校验用的窗口：窗口留空时按上限 250 算。
+   *
+   * 否则「连续 N 日阳线」这类跟窗口联动的参数会在窗口还空着的时候被卡到 1，
+   * 用户填完窗口再回头看，条件参数已经被改小了 —— 真正拦提交的是统计窗口
+   * 自己那条校验。
+   */
+  const effectiveDays = Number.isFinite(request.trading_days)
+    ? Math.min(Math.max(MIN_TRADING_DAYS, Math.trunc(request.trading_days)), MAX_TRADING_DAYS)
+    : MAX_TRADING_DAYS
 
   const setRule = useCallback((rule: GroupNode) => setForm(current => ({ ...current, rule })), [])
 
@@ -249,59 +357,53 @@ export function ScreenStocksDialog({
               <span className="text-[12px] font-medium text-foreground">{T.baseTitle}</span>
               <span className="text-[10px] text-muted-foreground">{T.baseHint}</span>
             </div>
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">{T.tradingDays}</Label>
-                <div className="flex items-center gap-1">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={250}
-                    className="h-7 w-20 text-[12px] font-mono"
-                    data-screen-field="trading_days"
-                    value={form.daysText}
-                    onChange={event => setForm(current => ({ ...current, daysText: event.target.value }))}
-                  />
-                  <span className="text-[11px] text-muted-foreground">{T.tradingDaysSuffix}</span>
-                </div>
+            <div className="space-y-2">
+              {/* 统计窗口：标题与控件同一行（用户反馈） */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.tradingDays}</span>
+                <BaseNumberInput
+                  screenField="trading_days"
+                  ariaLabel={T.tradingDays}
+                  text={form.daysText}
+                  min={MIN_TRADING_DAYS}
+                  max={MAX_TRADING_DAYS}
+                  allowEmpty
+                  className="w-20"
+                  onText={next => setForm(current => ({ ...current, daysText: next }))}
+                />
+                <span className="text-[11px] text-muted-foreground">{T.tradingDaysSuffix}</span>
               </div>
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">{T.marketCap}</Label>
-                <div className="flex items-center gap-1">
-                  <span className="text-[11px] text-muted-foreground">{T.capMin}</span>
-                  <Input
-                    type="number"
-                    className="h-7 w-24 text-[12px] font-mono"
-                    data-screen-field="market_cap.min_yi"
-                    value={form.capMinText}
-                    onChange={event => setForm(current => ({ ...current, capMinText: event.target.value }))}
-                  />
-                  <span className="text-[11px] text-muted-foreground">{T.capMax}</span>
-                  <Input
-                    type="number"
-                    className="h-7 w-24 text-[12px] font-mono"
-                    data-screen-field="market_cap.max_yi"
-                    value={form.capMaxText}
-                    onChange={event => setForm(current => ({ ...current, capMaxText: event.target.value }))}
-                  />
-                </div>
-              </div>
-              <div className="space-y-1">
-                <Label className="text-[11px] text-muted-foreground">{T.st}</Label>
-                <div className="flex h-7 items-center gap-1.5">
-                  <Switch
-                    checked={form.includeSt}
-                    aria-label={T.includeSt}
-                    data-screen-field="include_st"
-                    onCheckedChange={checked => setForm(current => ({ ...current, includeSt: checked }))}
-                  />
-                  <span className="text-[11px] text-muted-foreground">{T.includeSt}</span>
-                </div>
+
+              {/* 总市值：标题与控件同一行 */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.marketCap}</span>
+                <span className="text-[11px] text-muted-foreground">{T.capMin}</span>
+                <BaseNumberInput
+                  screenField="market_cap.min_yi"
+                  ariaLabel={T.capMinLabel}
+                  text={form.capMinText}
+                  min={0}
+                  max={MAX_MARKET_CAP_YI}
+                  integer={false}
+                  className="w-24"
+                  onText={next => setForm(current => ({ ...current, capMinText: next }))}
+                />
+                <span className="text-[11px] text-muted-foreground">{T.capMax}</span>
+                <BaseNumberInput
+                  screenField="market_cap.max_yi"
+                  ariaLabel={T.capMaxLabel}
+                  text={form.capMaxText}
+                  min={0}
+                  max={MAX_MARKET_CAP_YI}
+                  integer={false}
+                  className="w-24"
+                  onText={next => setForm(current => ({ ...current, capMaxText: next }))}
+                />
               </div>
             </div>
 
-            <div className="mt-2 space-y-1">
-              <Label className="text-[11px] text-muted-foreground">{T.market}</Label>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.market}</span>
               <div className="flex flex-wrap items-center gap-1" role="group" aria-label={T.market}>
                 <button
                   type="button"
@@ -360,6 +462,16 @@ export function ScreenStocksDialog({
                   )
                 })}
               </div>
+              {/* ST / *ST 跟在市场按钮后面，留一点间隔；不再单独占一行、也没有自己的标题 */}
+              <div className="ml-3 flex items-center gap-1.5">
+                <Switch
+                  checked={form.includeSt}
+                  aria-label={T.includeSt}
+                  data-screen-field="include_st"
+                  onCheckedChange={checked => setForm(current => ({ ...current, includeSt: checked }))}
+                />
+                <span className="text-[11px] text-muted-foreground">{T.includeSt}</span>
+              </div>
             </div>
           </div>
 
@@ -370,7 +482,7 @@ export function ScreenStocksDialog({
               node={form.rule}
               depth={1}
               isRoot
-              tradingDays={Number(form.daysText) || 1}
+              tradingDays={effectiveDays}
               handlers={handlers}
               issues={shownIssues}
               submitted={submitted}
