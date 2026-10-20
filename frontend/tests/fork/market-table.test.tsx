@@ -159,6 +159,21 @@ describe('fork: 分析页全市场表格', () => {
     ])
   })
 
+  it('belowToolbar 渲染在工具条那一行的下面、表格之前', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable({
+      toolbarActions: <button type="button">工具条按钮</button>,
+      belowToolbar: <div data-testid="screen-banner">选股结果横幅</div>,
+    })
+
+    const banner = await screen.findByTestId('screen-banner')
+    const toolbar = screen.getByRole('button', { name: '工具条按钮' })
+    const table = screen.getByRole('table')
+    // 文档顺序：工具条 → 横幅 → 表格（用户要求横幅在「条件选股」按钮那行的下面）
+    expect(toolbar.compareDocumentPosition(banner) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(banner.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('全量只取一次，且不再发外网批量行情/技术面请求', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response())
     renderTable()
