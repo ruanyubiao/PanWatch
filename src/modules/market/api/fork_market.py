@@ -297,7 +297,8 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
 
     **字段名一律 1–2 个字母**（用户要求：返回字段瘦身，变量名能一个字母就一个字母）。
     全市场一次要传 5500 余行，字段名占的字节和字段值是一个量级 —— 实测这一轮
-    从 3.6MB 降到 1.5MB 左右（gzip 后 1.2MB → 0.4MB）。对照表：
+    全市场（5577 行）响应从 **3.66 MB 降到 2.48 MB**（gzip 547 KB → 439 KB），
+    单行 620 → 405 字节。对照表：
 
         c=code  s=symbol  e=exchange  n=name  b=board  d=trade_date
         pc=pre_close  cl=close  h=high  l=low  cp=change_pct
