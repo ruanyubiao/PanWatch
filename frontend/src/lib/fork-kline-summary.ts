@@ -53,15 +53,12 @@ export interface MarketRow {
   board: string
   trade_date: string | null
   pre_close: number | null
-  open: number | null
   close: number | null
   high: number | null
   low: number | null
-  change_amount: number | null
   change_pct: number | null
   total_market_cap: number | null
   source: string | null
-  adj_factor: number
   /**
    * 交易日状态（`market-table` 与 `stocks/screen` 都会带）。
    *
@@ -87,13 +84,108 @@ export interface MarketBoardCounts {
   st: number
 }
 
+/**
+ * 后端 ``GET /api/stocks/market-table`` 的**原始**行。
+ *
+ * 字段名被压到 1–2 个字母（用户要求「返回字段瘦身、变量名能一个字母就一个字母」）：
+ * 全市场一次要传 5500 余行，字段名占的字节和字段值是一个量级。对照表见后端
+ * ``fork_market.map_row`` 的 docstring：``c`` 代码 / ``n`` 名称 / ``cl`` 收盘 /
+ * ``mc`` 总市值 / ``m`` 均线 / ``t`` 技术面 …
+ *
+ * 前端只在**取数的那一处**（``parseMarketRow``）把短名翻译回可读名，其余组件
+ * 一律用 ``MarketRow`` —— 否则这张表 5000 行逻辑全要改成单字母，读不下去。
+ */
+export interface MarketRowRaw {
+  c: string
+  s: string
+  e: string
+  n: string
+  b: string
+  d: string | null
+  pc: number | null
+  cl: number | null
+  h: number | null
+  l: number | null
+  cp: number | null
+  mc: number | null
+  so: string | null
+  sc?: string | null
+  sl?: string | null
+  sg?: string | null
+  m?: Partial<Record<'5' | '10' | '20' | '60', number | null>> | null
+  t?: {
+    s: number
+    t: string | null
+    m: string | null
+    r: string | null
+    k: string | null
+    b: string | null
+    v: string | null
+    su: number | null
+    re: number | null
+  } | null
+}
+
+/** 接口响应：``a`` = asof（交易日），``i`` = 行数组。别的键都不再返回。 */
+export interface MarketTablePayload {
+  a: string | null
+  i: MarketRowRaw[]
+}
+
+/** 解析后的响应（组件用的形状）。 */
 export interface MarketTableResponse {
   asof: string | null
-  total: number
-  offset: number
-  limit: number
-  counts: MarketBoardCounts
   items: MarketRow[]
+}
+
+/** 原始行 → ``MarketRow``（短名翻译成可读名，只做一次）。 */
+export function parseMarketRow(raw: MarketRowRaw): MarketRow {
+  const tech = raw.t
+  return {
+    code: raw.c,
+    symbol: raw.s,
+    exchange: raw.e,
+    name: raw.n,
+    board: raw.b,
+    trade_date: raw.d ?? null,
+    pre_close: raw.pc ?? null,
+    close: raw.cl ?? null,
+    high: raw.h ?? null,
+    low: raw.l ?? null,
+    change_pct: raw.cp ?? null,
+    total_market_cap: raw.mc ?? null,
+    source: raw.so ?? null,
+    status_code: raw.sc ?? null,
+    status_label: raw.sl ?? null,
+    status_group: raw.sg ?? null,
+    ma: {
+      ma5: raw.m?.['5'] ?? null,
+      ma10: raw.m?.['10'] ?? null,
+      ma20: raw.m?.['20'] ?? null,
+      ma60: raw.m?.['60'] ?? null,
+    },
+    tech: tech
+      ? {
+          score: tech.s,
+          trend: tech.t,
+          macd: tech.m,
+          rsi: tech.r,
+          kdj: tech.k,
+          boll: tech.b,
+          volume: tech.v,
+          support: tech.su,
+          resistance: tech.re,
+        }
+      : null,
+  }
+}
+
+/** 原始响应 → 组件用的形状（``items`` 逐行翻译）。 */
+export function parseMarketTablePayload(payload: MarketTablePayload | null | undefined): MarketTableResponse {
+  return {
+    asof: payload?.a ?? null,
+    items: (payload?.i ?? []).map(parseMarketRow),
+  }
 }
 
 const MACD_CROSS_DAYS = /\((\d+)日\)/

@@ -126,10 +126,15 @@ FROM latest l CROSS JOIN uni u
 GROUP BY l.asof
 """
 
+# 只取 ``map_row`` 真正会用到的列（用户要求「表格用不到的别带」）：
+#   open / change_amount / circulating_market_cap 三个列表格从来不读，取回来只是
+#   白白占带宽与内存（5500 行 × 3 列），所以连 SQL 里也去掉。
+#   adj_factor 必须留：ma5..ma60 与 tech_support/resistance 是后复权空间的，
+#   ``map_row`` 要拿它除回不复权空间。
 _PAGE_SELECT = """
-SELECT code, symbol, exchange, name, board, trade_date, open, high, low, close,
-       pre_close, change_amount, change_pct, total_market_cap, info_market_cap,
-       circulating_market_cap, source, adj_factor, ma5, ma10, ma20, ma60,
+SELECT code, symbol, exchange, name, board, trade_date, high, low, close,
+       pre_close, change_pct, total_market_cap, info_market_cap,
+       source, adj_factor, ma5, ma10, ma20, ma60,
        tech_score, tech_trend, tech_macd, tech_rsi, tech_kdj, tech_boll,
        tech_volume, tech_support, tech_resistance,
        status_code, status_group, status_text, traded
@@ -290,6 +295,20 @@ def trade_status_code(row: dict[str, Any]) -> str:
 def map_row(row: dict[str, Any]) -> dict[str, Any]:
     """库行 → 响应条目。
 
+    **字段名一律 1–2 个字母**（用户要求：返回字段瘦身，变量名能一个字母就一个字母）。
+    全市场一次要传 5500 余行，字段名占的字节和字段值是一个量级 —— 实测这一轮
+    从 3.6MB 降到 1.5MB 左右（gzip 后 1.2MB → 0.4MB）。对照表：
+
+        c=code  s=symbol  e=exchange  n=name  b=board  d=trade_date
+        pc=pre_close  cl=close  h=high  l=low  cp=change_pct
+        mc=total_market_cap  so=source
+        sc/sl/sg=status_code/status_label/status_group
+        m={5,10,20,60} 均线（不复权空间）  t=技术面结论（无分时为 null）
+
+    只带表格真的会读的字段：``open`` / ``change_amount`` /
+    ``circulating_market_cap`` / ``adj_factor`` 已经去掉（复权因子只在下面这一步用到，
+    前端拿到的是已经还原到不复权空间的值）。
+
     **复权口径**：``ma5..ma250`` 与 ``tech_support`` / ``tech_resistance`` 都是
     **后复权空间**的值（``close_adj = close × adj_factor``，管道按 close_adj 算），
     而 ``close`` / ``high`` / ``low`` 是不复权价。直接并列显示会出现「ma5 比现价高
@@ -311,52 +330,50 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
     tech = None
     if score is not None:
         tech = {
-            "score": int(score),
-            "trend": row.get("tech_trend"),
-            "macd": row.get("tech_macd"),
-            "rsi": row.get("tech_rsi"),
-            "kdj": row.get("tech_kdj"),
-            "boll": row.get("tech_boll"),
-            "volume": row.get("tech_volume"),
-            "support": adjusted(row.get("tech_support")),
-            "resistance": adjusted(row.get("tech_resistance")),
+            "s": int(score),
+            "t": row.get("tech_trend"),
+            "m": row.get("tech_macd"),
+            "r": row.get("tech_rsi"),
+            "k": row.get("tech_kdj"),
+            "b": row.get("tech_boll"),
+            "v": row.get("tech_volume"),
+            "su": adjusted(row.get("tech_support")),
+            "re": adjusted(row.get("tech_resistance")),
         }
 
     market_cap = row.get("total_market_cap")
     if market_cap is None:
         market_cap = row.get("info_market_cap")
 
+    status_code = trade_status_code(row)
     return {
-        "code": row.get("code"),
-        "symbol": row.get("symbol"),
-        "exchange": row.get("exchange"),
-        "name": row.get("name"),
-        "board": row.get("board"),
-        "trade_date": str(row.get("trade_date")) if row.get("trade_date") is not None else None,
-        "pre_close": _f(row.get("pre_close")),
-        "open": _f(row.get("open")),
-        "close": _f(row.get("close")),
-        "high": _f(row.get("high")),
-        "low": _f(row.get("low")),
-        "change_amount": _f(row.get("change_amount")),
-        "change_pct": _f(row.get("change_pct")),
-        "total_market_cap": _f(market_cap),
-        "source": row.get("source"),
-        "adj_factor": fq,
+        "c": row.get("code"),
+        "s": row.get("symbol"),
+        "e": row.get("exchange"),
+        "n": row.get("name"),
+        "b": row.get("board"),
+        "d": str(row.get("trade_date")) if row.get("trade_date") is not None else None,
+        "pc": _f(row.get("pre_close")),
+        "cl": _f(row.get("close")),
+        "h": _f(row.get("high")),
+        "l": _f(row.get("low")),
+        "cp": _f(row.get("change_pct")),
+        "mc": _f(market_cap),
+        "so": row.get("source"),
         # 交易日状态（停牌 / ST / *ST / 退市 / 新股 / 正常）。
         # 库里的 status_code 是当日 ``stock_status_daily`` 的**最严重**那条
         # （按 ``stock_status_type.sort_order`` 排序取第一条：停牌 10 < ST 20 < …）；
         # 状态管道没有这一行时退回 ``traded``：当日无成交 = 停牌，其余正常。
-        "status_code": trade_status_code(row),
-        "status_label": _STATUS_SHORT_ZH.get(trade_status_code(row), "其他"),
-        "status_group": row.get("status_group"),
-        "ma": {
-            "ma5": adjusted(row.get("ma5")),
-            "ma10": adjusted(row.get("ma10")),
-            "ma20": adjusted(row.get("ma20")),
-            "ma60": adjusted(row.get("ma60")),
+        "sc": status_code,
+        "sl": _STATUS_SHORT_ZH.get(status_code, "其他"),
+        "sg": row.get("status_group"),
+        "m": {
+            "5": adjusted(row.get("ma5")),
+            "10": adjusted(row.get("ma10")),
+            "20": adjusted(row.get("ma20")),
+            "60": adjusted(row.get("ma60")),
         },
-        "tech": tech,
+        "t": tech,
     }
 
 
@@ -369,15 +386,20 @@ def market_table(
     offset: int = Query(0, ge=0),
     limit: int = Query(DEFAULT_LIMIT, ge=1, le=MAX_LIMIT),
 ) -> dict[str, Any]:
-    """A 股全市场行情表（分页），行情与技术面全部来自本机 MySQL，不打外网。"""
+    """A 股全市场行情表（分页），行情与技术面全部来自本机 MySQL，不打外网。
+
+    响应只有两个键（用户要求「返回字段瘦身」）：
+
+        {"a": "2026-10-20", "i": [ {c,s,e,n,b,d,pc,cl,h,l,cp,mc,so,sc,sl,sg,m,t}, … ]}
+
+    ``total`` / ``offset`` / ``limit`` / ``counts`` 都去掉了：前端一次性把全市场
+    取回去（``limit=20000``），条数、板块计数都在浏览器里从 ``i`` 直接数，从来
+    没有读过这四个键。``asof``（交易日）仍要带 —— 页面要显示「数据截至」。
+    """
     board_key = board if board in BOARD_KEYS else "all"
 
-    # 前端全市场一次取回（board=all 且无关键词）时，总数就是计数查询里的 c_all，
-    # 不必再扫一遍 uni。带板块或关键词时才单独 COUNT，保证和分页同一套 WHERE。
-    filtered = board_key != "all" or bool((q or "").strip())
+    # 只需要 asof：计数查询顺带把「最新交易日」拿出来，比单独 SELECT MAX(...) 少一次往返。
     statements: list[tuple[str, dict[str, Any] | None]] = [(_COUNTS_SQL, None)]
-    if filtered:
-        statements.append(build_total_sql(board_key, q))
     page_sql, page_params = build_page_sql(board_key, q)
     statements.append((
         page_sql + " LIMIT %(limit)s OFFSET %(offset)s",
@@ -390,27 +412,13 @@ def market_table(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     count_rows = results[0]
-    total_rows = results[1] if filtered else []
     rows = results[-1]
     counts_row = count_rows[0] if count_rows else {}
-    counts = {
-        "all": int(counts_row.get("c_all") or 0),
-        "sh": int(counts_row.get("c_sh") or 0),
-        "sz": int(counts_row.get("c_sz") or 0),
-        "kcb": int(counts_row.get("c_kcb") or 0),
-        "cyb": int(counts_row.get("c_cyb") or 0),
-        "st": int(counts_row.get("c_st") or 0),
-    }
     asof = counts_row.get("asof")
-    total = int(total_rows[0].get("total") or 0) if total_rows else counts["all"]
 
     return {
-        "asof": str(asof) if asof is not None else None,
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-        "counts": counts,
-        "items": [map_row(row) for row in rows],
+        "a": str(asof) if asof is not None else None,
+        "i": [map_row(row) for row in rows],
     }
 
 

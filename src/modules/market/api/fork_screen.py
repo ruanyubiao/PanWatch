@@ -69,7 +69,7 @@ def _screen_response(req: ScreenRequest, rule, data: ScreenData, k: int, elapsed
         data.asof,
     )
     items = [fork_market.map_row(row) for row in outcome.hit_rows]
-    items.sort(key=lambda item: str(item.get("code") or ""))
+    items.sort(key=lambda item: str(item.get("c") or ""))
     return {
         "asof": str(data.asof) if data.asof is not None else None,
         "total": len(items),

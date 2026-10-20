@@ -27,6 +27,11 @@ export interface BoardOption {
  *
  * 用户第二轮指定：全部 / 上证 / 深证 / **创业** / **科创** / ST
  * （创业在科创前面，与常见的「沪、深、创、科」一致）。
+ *
+ * 第 8 条（2026-10-20 晚）：**去掉 ST 这一项** —— ST 已经由「全部状态」筛选
+ * （正常 / 停牌 / ST / *ST / 退市 / 新股）和表格的状态列表达，市场维度只按交易所分。
+ * ``BoardKey`` 里的 'st' 仍保留：后端的板块判定与 ``classifyBoard`` 仍会把 ST 标出来，
+ * 只是下拉里不再给这个入口。
  */
 const BOARD_LABELS_ZH = {
   sh: '上证',
@@ -40,7 +45,6 @@ export const BOARD_OPTIONS: BoardOption[] = [
   { key: 'sz', label: BOARD_LABELS_ZH.sz },
   { key: 'cyb', label: BOARD_LABELS_ZH.cyb },
   { key: 'kcb', label: BOARD_LABELS_ZH.kcb },
-  { key: 'st', label: 'ST' },
 ]
 
 interface BoardClassifiable {
