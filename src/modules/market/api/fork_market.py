@@ -90,15 +90,27 @@ WITH base AS (
     WHERE i.status = 'listed'
 ),
 latest AS (SELECT MAX(trade_date) AS asof FROM stock_daily),
+status_today AS (
+    SELECT s.symbol,
+           SUBSTRING_INDEX(GROUP_CONCAT(s.status_code ORDER BY t.sort_order, s.status_code), ',', 1) AS status_code,
+           SUBSTRING_INDEX(GROUP_CONCAT(s.status_group ORDER BY t.sort_order, s.status_code), ',', 1) AS status_group,
+           SUBSTRING_INDEX(GROUP_CONCAT(t.status_cn ORDER BY t.sort_order, s.status_code), ',', 1) AS status_text
+    FROM stock_status_daily s
+    JOIN stock_status_type t ON t.status_code = s.status_code
+    WHERE s.trade_date = (SELECT asof FROM latest)
+    GROUP BY s.symbol
+),
 uni AS (
     SELECT b.*, d.trade_date, d.open, d.high, d.low, d.close, d.pre_close,
            d.change_amount, d.change_pct, d.total_market_cap, d.circulating_market_cap,
-           d.source, d.adj_factor, d.ma5, d.ma10, d.ma20, d.ma60,
+           d.source, d.adj_factor, d.ma5, d.ma10, d.ma20, d.ma60, d.traded,
            d.tech_score, d.tech_trend, d.tech_macd, d.tech_rsi, d.tech_kdj,
-           d.tech_boll, d.tech_volume, d.tech_support, d.tech_resistance
+           d.tech_boll, d.tech_volume, d.tech_support, d.tech_resistance,
+           st.status_code, st.status_group, st.status_text
     FROM base b
     JOIN stock_daily d ON d.symbol = b.symbol
     JOIN latest l ON d.trade_date = l.asof
+    LEFT JOIN status_today st ON st.symbol = b.symbol
 )
 """
 
@@ -119,7 +131,8 @@ SELECT code, symbol, exchange, name, board, trade_date, open, high, low, close,
        pre_close, change_amount, change_pct, total_market_cap, info_market_cap,
        circulating_market_cap, source, adj_factor, ma5, ma10, ma20, ma60,
        tech_score, tech_trend, tech_macd, tech_rsi, tech_kdj, tech_boll,
-       tech_volume, tech_support, tech_resistance
+       tech_volume, tech_support, tech_resistance,
+       status_code, status_group, status_text, traded
 FROM uni
 """
 
@@ -244,6 +257,36 @@ def _f(value: Any) -> float | None:
     return float(value)
 
 
+#: 交易日状态的**短文案**。库里的 ``stock_status_type.status_cn`` 是完整叫法
+#: （「其他风险警示(ST)」这种），表格里那一列按用户要求是**固定列宽**，塞不下长文案，
+#: 所以这里给一套 2–3 个字的短标签；完整叫法仍留在 ``status_text``（悬停显示）。
+_STATUS_SHORT_ZH: dict[str, str] = {
+    "NORMAL": "正常",
+    "SUSPENDED": "停牌",
+    "ST": "ST",
+    "STAR_ST": "*ST",
+    "DELISTING": "退市",
+    "DELIST_PENDING": "待摘牌",
+    "DELISTED": "已退市",
+    "NEW_LISTING": "新股",
+}
+
+
+def trade_status_code(row: dict[str, Any]) -> str:
+    """一行的状态码：``stock_status_daily`` 当日那条优先，缺失时按 ``traded`` 兜底。
+
+    ``traded=0`` = 当日有行情行但没有成交 = 全天停牌（管道同样会写一条
+    ``SUSPENDED``；这里兜底是为了「状态管道还没跑完、行情已入库」的那段窗口）。
+    """
+    code = str(row.get("status_code") or "").strip()
+    if code:
+        return code
+    traded = row.get("traded")
+    if traded is not None and int(traded) == 0:
+        return "SUSPENDED"
+    return "NORMAL"
+
+
 def map_row(row: dict[str, Any]) -> dict[str, Any]:
     """库行 → 响应条目。
 
@@ -300,6 +343,13 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
         "total_market_cap": _f(market_cap),
         "source": row.get("source"),
         "adj_factor": fq,
+        # 交易日状态（停牌 / ST / *ST / 退市 / 新股 / 正常）。
+        # 库里的 status_code 是当日 ``stock_status_daily`` 的**最严重**那条
+        # （按 ``stock_status_type.sort_order`` 排序取第一条：停牌 10 < ST 20 < …）；
+        # 状态管道没有这一行时退回 ``traded``：当日无成交 = 停牌，其余正常。
+        "status_code": trade_status_code(row),
+        "status_label": _STATUS_SHORT_ZH.get(trade_status_code(row), "其他"),
+        "status_group": row.get("status_group"),
         "ma": {
             "ma5": adjusted(row.get("ma5")),
             "ma10": adjusted(row.get("ma10")),

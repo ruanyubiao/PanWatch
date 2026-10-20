@@ -127,18 +127,24 @@ export function ScreenParamForm({
         </div>
       ) : null}
 
-      {/* 连续阳线：起点（倒数第几个交易日，默认 1）+ 天数（默认 4） */}
-      {name === 'consecutive_bullish' ? (
+      {/* 连续阳线 / 连续上涨：起点（倒数第几个交易日，默认 1）+ 天数 */}
+      {name === 'consecutive_bullish' || name === 'consecutive_rising' ? (
         <>
-          {/* 输入时就把「从倒数第几日、连续几日」念一遍 —— description 说不清两个参数的关系 */}
+          {/* 输入时就把「从倒数第几日、连续几日」念一遍 —— description 说不清两个参数的关系。
+              两个条件的参数形状一样、判据不同，所以提示语按条件名分开说。 */}
           <div
             className="text-[11px] leading-4 text-muted-foreground"
             data-fork-screen-consecutive-hint=""
           >
-            {T.consecutiveHint(
-              (draft as ConditionParamsMap['consecutive_bullish']).start,
-              (draft as ConditionParamsMap['consecutive_bullish']).days,
-            )}
+            {name === 'consecutive_rising'
+              ? T.consecutiveRisingHint(
+                  (draft as ConditionParamsMap['consecutive_rising']).start,
+                  (draft as ConditionParamsMap['consecutive_rising']).days,
+                )
+              : T.consecutiveHint(
+                  (draft as ConditionParamsMap['consecutive_bullish']).start,
+                  (draft as ConditionParamsMap['consecutive_bullish']).days,
+                )}
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="min-w-0 space-y-1">

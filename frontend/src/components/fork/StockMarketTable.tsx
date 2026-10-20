@@ -22,7 +22,7 @@ import type { MarketRow, MarketTableResponse } from '@/lib/fork-kline-summary'
  * ------------------------------------------
  * 用户要求「一下子获取全部的数据，剩下的就是前端缓存，然后自己处理数据」。
  * 所以这里只发**一次**请求（``limit=20000``，覆盖全市场 5600 余只），
- * 板块 / 状态 / 涨跌 / 市值筛选、搜索、排序、分页**全部在前端做**：
+ * 板块 / 指标 / 涨跌 / 市值 / 状态筛选、搜索、排序、分页**全部在前端做**：
  *   - 翻页不再打接口（上游那套「每翻一页 100 只」的请求彻底消失）
  *   - 每页条数可以给到 10000（只是浏览器里切一刀）
  *   - 排序作用于**全量**（5000 余行）之后再切片，不是只排当前页
@@ -31,15 +31,16 @@ import type { MarketRow, MarketTableResponse } from '@/lib/fork-kline-summary'
  * --------------------------------
  *   未排序（灰 ↕，提示「点击降序」）→ 降序（蓝 ↓，提示「点击升序」）
  *   → 升序（蓝 ↑，提示「取消排序」）→ 未排序
- * 「市场」列不给排序（用户明确说不需要）。「状态」列按库里的 ``tech_score`` 排，
- * 无分的新股恒排最后。
+ * 「市场」列不给排序（用户明确说不需要）。「指标」列按库里的 ``tech_score`` 排，
+ * 无分的新股恒排最后；「状态」列是交易日状态，固定列宽、不给排序。
  *
- * 列宽（用户逐列指定）：市场 60 / 代码 80 / 名称 140 / 状态 200（左内边距 40，
- * 免得紧挨着右对齐的总市值）/ Agent 状态 120 / 来源 200 / 操作 220；
+ * 列宽（用户逐列指定）：市场 60 / 代码 80 / 名称 140 / 总市值之后紧跟**状态 68**
+ * （停牌 / 正常 / ST 这类 2–3 字标签）/ 指标 200（左内边距 40，免得紧挨着右对齐的
+ * 总市值）/ Agent 状态 120 / 来源 200 / 操作 220；
  * 其余数值列只给最小列宽，宽屏时摊开剩余空间。
  *
  * 本组件只管「取数 / 筛选 / 排序 / 分页 / 表格骨架 / 列的格式」——四个富列
- * （状态、Agent 状态、来源、操作）由页面通过 render prop 注入：它们要弹上游的
+ * （状态、指标、Agent 状态、来源、操作）由页面通过 render prop 注入：它们要弹上游的
  * 弹窗、要读建议池与自选状态，属于页面的事。列的顺序与表头只在这里出现一次
  * （**单一真相**），单测直接钉住它。
  *
@@ -57,11 +58,16 @@ const MARKET_TABLE_TEXTS_ZH = {
   colHigh: '最高价',
   colLow: '最低价',
   colMarketCap: '总市值',
-  colStatus: '状态',
+  /** 交易日状态（停牌 / 正常 / ST …）。第 4 条把原来的「状态」标题让给了这一列。 */
+  colTradeStatus: '状态',
+  /** 技术面结论（买入 / 回避 / 观望 + 技术面徽章）。原名「状态」，第 4 条改名。 */
+  colIndicator: '指标',
   colAgent: 'Agent 状态',
   colSource: '来源',
   colActions: '操作',
   sortBy: (label: string) => `按${label}排序`,
+  /** 状态列的兜底文案：库里没有状态行 = 正常交易 */
+  statusNormal: '正常',
   // 表头排序提示：说的是「下一次点击会发生什么」（与截图一致）
   sortToDesc: '点击降序',
   sortToAsc: '点击升序',
@@ -220,8 +226,11 @@ const COLUMNS: ColumnDef[] = [
   { key: 'high', label: MARKET_TABLE_TEXTS_ZH.colHigh, sortKey: 'high', align: 'right', minWidth: 84 },
   { key: 'low', label: MARKET_TABLE_TEXTS_ZH.colLow, sortKey: 'low', align: 'right', minWidth: 84 },
   { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', minWidth: 104 },
-  // 状态列固定 200px + 左内边距 40px —— 总市值是右对齐的，两块贴一起会糊成一片
-  { key: 'status', label: MARKET_TABLE_TEXTS_ZH.colStatus, sortKey: 'score', width: 200, padLeft: 40 },
+  // 状态列（交易日状态）：固定 68px —— 「停牌」「正常」「*ST」「待摘牌」都在 3 个字以内，
+  // 68 = 3 个字（约 36px）+ 左右内边距，再宽就是白占地方。紧跟在总市值后面（用户指定）。
+  { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 68 },
+  // 指标列固定 200px + 左内边距 40px —— 总市值是右对齐的，两块贴一起会糊成一片
+  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 200, padLeft: 40 },
   { key: 'agent', label: MARKET_TABLE_TEXTS_ZH.colAgent, width: 120 },
   { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 200 },
   { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 220 },
@@ -299,10 +308,15 @@ interface StockMarketTableProps {
    * 只有上一条分页条渲染它；下一条只保留「共 N 条 / 页码 / 每页条数」。
    */
   toolbarActions?: ReactNode
-  /** 搜索框（只在**上**一条分页条里出现，用户要求底部不要） */
+  /**
+   * 工具条**第一行右侧**的元信息（数据时间 / 代码版本 / 提交时间）。
+   * 第 1 条要求把它和「条件选股 / 已保存 / 编辑」放在同一行、一左一右。
+   */
+  toolbarMeta?: ReactNode
+  /** 搜索框 + 「刷新 / 添加股票」按钮组（第二行；只有**上**一条分页条里出现） */
   searchSlot?: ReactNode
   /**
-   * 搜索框**后面**的筛选控件（市场 / 状态 / 涨跌 / 市值 / 清空筛选）。
+   * 第二行搜索框**后面**的筛选控件（市场 / 指标 / 涨跌 / 市值 / 状态 / 清空筛选）。
    * 用户要求把它们从「表格上方独立一行」挪到搜索框后面（2026-10-20 第 2 条）。
    */
   filtersSlot?: ReactNode
@@ -312,7 +326,10 @@ interface StockMarketTableProps {
    * 而不是表格上方（那是按钮行的上面）。
    */
   belowToolbar?: ReactNode
-  renderStatus: (row: MarketRow) => ReactNode
+  /** 「指标」列：AI 建议徽章 + 技术面徽章（原 renderStatus；第 4 条改名） */
+  renderIndicator: (row: MarketRow) => ReactNode
+  /** 「状态」列：交易日状态（停牌 / 正常 / ST …），由页面给标签与配色；不给就用纯文本 */
+  renderTradeStatus?: (row: MarketRow) => ReactNode
   renderAgentStatus: (row: MarketRow) => ReactNode
   renderSource: (row: MarketRow) => ReactNode
   renderActions: (row: MarketRow, state: MarketRowState) => ReactNode
@@ -335,10 +352,12 @@ export function StockMarketTable({
   emptyTextOverride,
   onAsof,
   toolbarActions,
+  toolbarMeta,
   searchSlot,
   filtersSlot,
   belowToolbar,
-  renderStatus,
+  renderIndicator,
+  renderTradeStatus,
   renderAgentStatus,
   renderSource,
   renderActions,
@@ -489,8 +508,17 @@ export function StockMarketTable({
         return <span className="font-mono">{formatPrice(row.low)}</span>
       case 'total_market_cap':
         return <span className="font-mono">{formatMarketCap(row.total_market_cap)}</span>
-      case 'status':
-        return renderStatus(row)
+      case 'trade_status':
+        // 页面没注入渲染器时的兜底：纯文本标签（正常 / 停牌 / ST …）
+        return renderTradeStatus ? (
+          renderTradeStatus(row)
+        ) : (
+          <span className="whitespace-nowrap text-[11px] text-muted-foreground">
+            {row.status_label || MARKET_TABLE_TEXTS_ZH.statusNormal}
+          </span>
+        )
+      case 'indicator':
+        return renderIndicator(row)
       case 'agent':
         return renderAgentStatus(row)
       case 'source':
@@ -534,6 +562,7 @@ export function StockMarketTable({
       onPageSizeChange={setPageSize}
       disabled={loading}
       actions={position === 'top' ? toolbarActions : undefined}
+      meta={position === 'top' ? toolbarMeta : undefined}
       leading={position === 'top' ? searchSlot : undefined}
       filters={position === 'top' ? filtersSlot : undefined}
     />
@@ -552,7 +581,7 @@ export function StockMarketTable({
       ) : (
         <div className="overflow-x-auto scrollbar">
           {/* 表格最小宽度 = 固定列之和 + 各列最小宽，窄屏横向滚动而不是把列挤烂 */}
-          <table className="w-full min-w-[1530px] table-fixed text-[12px]">
+          <table className="w-full min-w-[1598px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col

@@ -29,6 +29,7 @@ export interface ConditionParamsMap {
   more_bullish_candles: Record<string, never>
   more_bearish_candles: Record<string, never>
   consecutive_bullish: { start: number; days: number }
+  consecutive_rising: { start: number; days: number }
   change_pct: { n: number; min: number; max: number }
 }
 export type ConditionName = keyof ConditionParamsMap
@@ -207,6 +208,10 @@ export const SCREEN_TEXTS_ZH = {
   summaryConsecutive: (start: number, days: number) =>
     // start 缺失（老草稿）按「最近 days 天」显示
     !start || start <= 1 ? `连续 ${days} 日阳线` : `自倒数第 ${start} 日起连续 ${days} 日阳线`,
+  summaryRising: (start: number, days: number) =>
+    !start || start <= 1 ? `连续 ${days} 日上涨` : `自倒数第 ${start} 日起连续 ${days} 日上涨`,
+  consecutiveRisingHint: (start: number, days: number) =>
+    `自倒数第 ${start} 个交易日起连续 ${days} 个交易日都上涨（收盘价 > 前收）`,
   summaryPeriodsJoin: '/',
 }
 
@@ -279,14 +284,46 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
   },
   consecutive_bullish: {
     name: 'consecutive_bullish',
-    label: '连续 N 日阳线',
+    label: '连续阳线（收盘 > 开盘）',
     category: 'K 线',
     description:
       '两个参数：倒数第几个交易日（默认 1 = 最近一个交易日）＋连续天数（默认 4）。' +
-      '自倒数第 M 个交易日起连续 N 个交易日收盘价都高于开盘价；中途有一根收阴、平盘或停牌缺数据就不成立',
+      '自倒数第 M 个交易日起连续 N 个交易日收盘价都高于开盘价（阳线），' +
+      '中途有一根收阴、平盘或停牌缺数据就不成立。' +
+      '注意：只看开盘价到收盘价，低开高走但全天仍下跌的那根也算阳线 —— ' +
+      '要「当天真正上涨」请用另一条「连续上涨（涨幅 > 0）」',
     defaults: { start: 1, days: 4 },
     summary: p => T.summaryConsecutive(p.start, p.days),
     requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + p.days),
+    validate: (p, tradingDays) => {
+      const limit = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
+      const issues: string[] = []
+      if (!Number.isInteger(p.start) || p.start < 1 || p.start > limit) issues.push(T.startInvalid(limit))
+      if (!Number.isInteger(p.days) || p.days < 1 || p.days > limit) issues.push(T.daysInvalid(limit))
+      if (issues.length === 0 && p.start - 1 + p.days > limit) issues.push(T.spanInvalid(limit))
+      return issues
+    },
+  },
+  /**
+   * 连续上涨（涨幅 > 0）：与「连续阳线」**不是同一个条件**（用户要求分成两条、
+   * 名字里写清区别）。
+   *
+   *   阳线：收盘 > **开盘**（低开高走的那根也算，哪怕全天是跌的）
+   *   上涨：收盘 > **前收**（那根低开回升但收跌 1.4% 的 K 线不算）
+   */
+  consecutive_rising: {
+    name: 'consecutive_rising',
+    label: '连续上涨（涨幅 > 0）',
+    category: 'K 线',
+    description:
+      '两个参数：倒数第几个交易日（默认 1 = 最近一个交易日）＋连续天数（默认 3）。' +
+      '自倒数第 M 个交易日起连续 N 个交易日收盘价都高于前一交易日收盘价（涨幅 > 0），' +
+      '中途有一根下跌、平盘或停牌缺数据就不成立。' +
+      '与「连续阳线（收盘 > 开盘）」的区别：那条只比开盘价，这条比的是当天涨跌幅',
+    defaults: { start: 1, days: 3 },
+    summary: p => T.summaryRising(p.start, p.days),
+    // +1：前收缺失时要往回多取一根做回退
+    requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + p.days + 1),
     validate: (p, tradingDays) => {
       const limit = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
       const issues: string[] = []
