@@ -59,7 +59,7 @@ const submitButton = () => screen.getByRole('button', { name: /开始选股|选�
 const daysInput = () =>
   document.querySelector<HTMLInputElement>('[data-screen-field="trading_days"]')!
 
-/** 填统计窗口：弹窗打开时窗口是**空的**（用户要求不要默认选中值）。 */
+/** 填统计窗口：打开时预填 30（默认值，但不聚焦），要换值先清空。 */
 const fillDays = async (value: string) => {
   await userEvent.clear(daysInput())
   await userEvent.type(daysInput(), value)
@@ -77,10 +77,15 @@ afterEach(() => {
 })
 
 describe('条件选股弹窗', () => {
-  it('默认值：窗口留空、四个市场全选、不含 ST、空根组', () => {
+  it('默认值：窗口预填 30 但不抢焦点、四个市场全选、不含 ST、空根组', () => {
     renderDialog()
-    // 用户反馈：这个界面打开时不要有默认选中的窗口值（之前预填 30）
-    expect(daysInput().value).toBe('')
+    // 窗口有默认值 30……
+    expect(daysInput().value).toBe('30')
+    // ……但打开时不聚焦它，否则带焦点描边看着像「已选中」
+    expect(document.activeElement).not.toBe(daysInput())
+    expect(daysInput().className).not.toContain('ring')
+    // 焦点确实被接住了（落在弹窗容器上），不是「谁都没聚焦」的空过
+    expect(document.activeElement).toBe(document.querySelector('[data-fork-screen-dialog]'))
     for (const name of ['上证', '深证', '创业', '科创']) {
       expect(marketButton(name).getAttribute('aria-pressed')).toBe('true')
     }
@@ -267,14 +272,15 @@ describe('条件选股弹窗', () => {
     renderDialog()
 
     // 统计窗口：标题与输入框在同一个 flex 行容器里
+    // （输入框外面多套了一层 span —— 右侧的加减按钮定位用，所以往上找两层）
     const days = daysInput()
-    const daysRow = days.parentElement as HTMLElement
+    const daysRow = days.parentElement!.parentElement as HTMLElement
     expect(daysRow.className).toContain('flex')
     expect(daysRow.textContent).toContain('统计窗口')
 
     // 总市值：标题与两个输入框同一行
     const capMin = document.querySelector<HTMLInputElement>('[data-screen-field="market_cap.min_yi"]')!
-    const capRow = capMin.parentElement as HTMLElement
+    const capRow = capMin.parentElement!.parentElement as HTMLElement
     expect(capRow.textContent).toContain('总市值（亿元）')
 
     // 市场 + ST：同一个行容器；「ST 股票」这个单独标题已删除
@@ -311,5 +317,102 @@ describe('条件选股弹窗', () => {
     expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe(
       '自倒数第 5 日起连续 4 日阳线',
     )
+  })
+
+  it('L3 数字框右侧有加减按钮：点一次 ±1、到边界禁用、键盘 ↑/↓ 等价', async () => {
+    renderDialog()
+    const up = () => screen.getByRole('button', { name: '统计窗口 +1' }) as HTMLButtonElement
+    const down = () => screen.getByRole('button', { name: '统计窗口 -1' }) as HTMLButtonElement
+    const input = daysInput()
+
+    // 默认 30 → +1 / -1
+    await userEvent.click(up())
+    expect(input.value).toBe('31')
+    await userEvent.click(down())
+    expect(input.value).toBe('30')
+
+    // 清空后点 +1：先落到下限，不是从 0 或 NaN 起飞
+    await userEvent.clear(input)
+    await userEvent.click(up())
+    expect(input.value).toBe('1')
+    // 到边界按钮直接禁用（点了不会有反应，也不会越界）
+    expect(down().disabled).toBe(true)
+    expect(up().disabled).toBe(false)
+
+    await fillDays('250')
+    expect(up().disabled).toBe(true)
+    expect(down().disabled).toBe(false)
+
+    // 键盘等价物
+    input.focus()
+    await userEvent.keyboard('{ArrowDown}')
+    expect(input.value).toBe('249')
+    await userEvent.keyboard('{ArrowUp}')
+    expect(input.value).toBe('250')
+  })
+
+  it('L4 条件参数的加减按钮：连续阳线起点 1 → 2，上限跟着窗口走', async () => {
+    renderDialog()
+    await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
+    await userEvent.click(await screen.findByText('连续 N 日阳线'))
+
+    const start = document.querySelector<HTMLInputElement>('[data-screen-param-field="start"]')!
+    const up = screen.getByRole('button', { name: '倒数第几个交易日 +1' }) as HTMLButtonElement
+    expect(start.value).toBe('1')
+    await userEvent.click(up)
+    expect(start.value).toBe('2')
+
+    // 参数框里也有一个「上下箭头」，说明浮层没有因为按钮变宽而裁切
+    const form = document.querySelector('[data-fork-screen-param="consecutive_bullish"]')!
+    expect(form.querySelectorAll('[data-fork-screen-stepper]')).toHaveLength(2)
+  })
+
+  it('L5 弹窗宽 968px；「+ 条件 / + 条件组」只有一个加号', () => {
+    renderDialog()
+    expect(document.querySelector('[data-fork-screen-dialog]')!.className).toContain('max-w-[968px]')
+
+    const addCondition = screen.getByRole('button', { name: '+ 条件' })
+    // 文案自带「+」，图标已去掉：文本里只有一个加号，也没有 svg
+    expect(addCondition.textContent).toBe('+ 条件')
+    expect(addCondition.querySelector('svg')).toBeNull()
+    const addGroup = screen.getByRole('button', { name: '+ 条件组' })
+    expect(addGroup.textContent).toBe('+ 条件组')
+    expect(addGroup.querySelector('svg')).toBeNull()
+  })
+
+  it('L6 条件列表：浮层加宽 + 滚轮真的能滚（自己 preventDefault 改 scrollTop）', async () => {
+    renderDialog()
+    await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
+    await screen.findByText('均线多头排列')
+
+    const panel = document.querySelector('[data-fork-screen-picker]') as HTMLElement
+    // w-80（320px）下说明文字会折行；27rem = 432px
+    expect(panel.className).toContain('w-[27rem]')
+
+    const list = document.querySelector('[data-fork-screen-picker-list]') as HTMLElement
+    // jsdom 没有布局：手工声明「内容 800 高、可视区 200 高」
+    Object.defineProperty(list, 'scrollHeight', { value: 800, configurable: true })
+    Object.defineProperty(list, 'clientHeight', { value: 200, configurable: true })
+
+    // 模拟 Dialog 的滚动锁：document 上的冒泡监听（react-remove-scroll 就是在这一步
+    // preventDefault 的，而我们的监听必须抢在它之前把事件吃掉）
+    const blocker = vi.fn()
+    document.addEventListener('wheel', blocker)
+    try {
+      const wheel = new WheelEvent('wheel', { deltaY: 120, bubbles: true, cancelable: true })
+      list.dispatchEvent(wheel)
+      expect(list.scrollTop).toBe(120)
+      expect(wheel.defaultPrevented).toBe(true)
+      expect(blocker).not.toHaveBeenCalled()
+
+      // 往上滚回顶部；不会滚成负数
+      list.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true, cancelable: true }))
+      expect(list.scrollTop).toBe(0)
+      // 滚到底部；不会越界
+      list.dispatchEvent(new WheelEvent('wheel', { deltaY: 99999, bubbles: true, cancelable: true }))
+      expect(list.scrollTop).toBe(600)
+    } finally {
+      document.removeEventListener('wheel', blocker)
+    }
   })
 })

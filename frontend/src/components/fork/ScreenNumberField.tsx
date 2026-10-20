@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { ScreenStepButtons, STEP_INPUT_CLASSES, stepValue, type StepDirection } from '@/components/fork/ScreenStepButtons'
 
 /**
  * fork 专用：条件选股里的受控数字输入。
@@ -79,34 +80,62 @@ export function ScreenNumberField({
     onChange(parsed)
   }
 
+  /** 加减按钮的起点：空值按「下限」算（`stepValue` 内部同一条规则）。 */
+  const stepBase = Number.isFinite(value) ? value : min
+  const canStepUp = stepBase < max
+  const canStepDown = stepBase > min
+
+  const applyStep = (direction: StepDirection) => {
+    const next = stepValue(value, direction, min, max, integer)
+    // 立刻回写本地文本，不等父级的 value → text 同步（连点时中间态更跟手）
+    setText(String(next))
+    onChange(next)
+  }
+
   return (
-    <input
-      type="text"
-      inputMode={integer ? 'numeric' : 'decimal'}
-      role="spinbutton"
-      aria-label={ariaLabel}
-      aria-valuemin={min}
-      aria-valuemax={max}
-      aria-valuenow={Number.isFinite(value) ? value : undefined}
-      data-screen-field={screenField}
-      data-screen-param-field={paramField}
-      value={text}
-      onBlur={() => {
-        onTouched?.()
-        if (text === '' || text === '-' || text === '.') {
-          if (allowEmpty) {
-            setText('')
-            return
+    <span className={`relative flex w-full min-w-0 items-stretch ${className}`}>
+      <input
+        type="text"
+        inputMode={integer ? 'numeric' : 'decimal'}
+        role="spinbutton"
+        aria-label={ariaLabel}
+        aria-valuemin={min}
+        aria-valuemax={max}
+        aria-valuenow={Number.isFinite(value) ? value : undefined}
+        data-screen-field={screenField}
+        data-screen-param-field={paramField}
+        value={text}
+        onBlur={() => {
+          onTouched?.()
+          if (text === '' || text === '-' || text === '.') {
+            if (allowEmpty) {
+              setText('')
+              return
+            }
+            setText(String(min))
+            onChange(min)
           }
-          setText(String(min))
-          onChange(min)
-        }
-      }}
-      onChange={event => handleChange(event.target.value)}
-      className={`h-7 w-full min-w-0 rounded-md border border-input bg-background px-2 text-[12px] font-mono text-foreground outline-none transition-colors focus:border-primary ${
-        invalid ? 'border-destructive' : ''
-      } ${className}`}
-    />
+        }}
+        onChange={event => handleChange(event.target.value)}
+        onKeyDown={event => {
+          // 键盘等价物：↑/↓ 走一步，和右侧按钮同一条路径
+          if (event.key === 'ArrowUp') {
+            event.preventDefault()
+            if (canStepUp) applyStep(1)
+          } else if (event.key === 'ArrowDown') {
+            event.preventDefault()
+            if (canStepDown) applyStep(-1)
+          }
+        }}
+        className={`${STEP_INPUT_CLASSES} ${invalid ? 'border-destructive' : ''}`}
+      />
+      <ScreenStepButtons
+        onStep={applyStep}
+        canStepUp={canStepUp}
+        canStepDown={canStepDown}
+        label={ariaLabel}
+      />
+    </span>
   )
 }
 
