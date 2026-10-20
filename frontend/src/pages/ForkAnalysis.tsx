@@ -68,7 +68,16 @@ import { StockSearchBox } from '@/components/fork/StockSearchBox'
 import { BatchAddStocksDialog } from '@/components/fork/BatchAddStocksDialog'
 import { ScreenStocksDialog } from '@/components/fork/ScreenStocksDialog'
 import { ScreenResultBanner } from '@/components/fork/ScreenResultBanner'
+import { ScreenPresetMenu } from '@/components/fork/ScreenPresetMenu'
+import { SaveConditionDialog } from '@/components/fork/SaveConditionDialog'
 import { screenStocks } from '@/lib/screen-api'
+import {
+  SCREEN_PRESET_TEXTS_ZH,
+  deletePreset,
+  listPresets,
+  savePreset,
+  type ScreenPreset,
+} from '@/lib/screen-presets'
 import {
   SCREEN_TEXTS_ZH,
   type ScreenRequest,
@@ -417,6 +426,18 @@ export default function StocksPage() {
     response: ScreenResponse
   } | null>(null)
   const [screenRerunning, setScreenRerunning] = useState(false)
+  /* fork：弹窗打开时用的初始请求。普通「条件选股」= 上次的请求（没有就是空）；
+     从「已保存条件 → 编辑」打开 = 那个条件存下来的完整请求。 */
+  const [screenInitial, setScreenInitial] = useState<ScreenRequest | null>(null)
+  /* fork：已保存条件（用户反馈 2026-10-20 第 1 / 2 条）。
+       presets          服务器上现有的条件（名字 = 文件名）
+       presetName       下拉里选中的那个
+       screenPresetName 弹窗是从哪个已保存条件打开的（有值时弹窗多一个「删除」）
+       saveOpen         保存条件弹窗 */
+  const [presets, setPresets] = useState<ScreenPreset[]>([])
+  const [presetName, setPresetName] = useState<string | null>(null)
+  const [screenPresetName, setScreenPresetName] = useState<string | null>(null)
+  const [saveOpen, setSaveOpen] = useState(false)
   const [marketAsof, setMarketAsof] = useState<string | null>(null)
   /* fork：搜索词由页面持有，StockMarketTable 受控（搜索框在分页条左侧，上下各一个）。 */
   const [stockQuery, setStockQuery] = useState('')
@@ -861,6 +882,84 @@ export default function StocksPage() {
       setScreenRerunning(false)
     }
   }, [screenResult, screenRerunning, toast])
+
+  /* fork：重新读一次「已保存条件」（进页面 / 保存后 / 删除后）。
+     失败只 toast —— 这是辅助功能，不该影响表格与选股。 */
+  const reloadPresets = useCallback(async () => {
+    try {
+      const items = await listPresets()
+      setPresets(items)
+      // 删掉/改名之后，下拉里那个已经不存在的选中项要清掉
+      setPresetName(current => (current && items.some(item => item.name === current) ? current : null))
+    } catch (exc) {
+      const message = exc instanceof Error ? exc.message : String(exc)
+      toast(SCREEN_PRESET_TEXTS_ZH.loadFailed(message), 'error')
+    }
+  }, [toast])
+
+  useEffect(() => {
+    void reloadPresets()
+  }, [reloadPresets])
+
+  /**
+   * 打开条件选股弹窗。
+   *
+   * `fromPreset` 有值 = 从「已保存条件 → 编辑」进来：把那条件存下来的**完整请求**
+   * 填回去（窗口 / 市场 / 市值 / 条件树），并让弹窗显示「删除」按钮。
+   * 没有值 = 普通「条件选股」：沿用上一次跑过的请求（没有就是空）。
+   */
+  const openScreenDialog = useCallback(
+    (fromPreset?: string) => {
+      const preset = fromPreset ? presets.find(item => item.name === fromPreset) : null
+      setScreenInitial(preset ? preset.request : screenResult?.request ?? null)
+      setScreenPresetName(preset ? preset.name : null)
+      setScreenOpen(true)
+    },
+    [presets, screenResult],
+  )
+
+  /** 「保存条件」：同名先问一句「覆盖？」，存成功后在下拉里选中它。 */
+  const handleSavePreset = useCallback(
+    async (name: string): Promise<boolean> => {
+      if (!screenResult) return false
+      const exists = presets.some(item => item.name === name)
+      if (exists) {
+        const ok = await confirmAction(SCREEN_PRESET_TEXTS_ZH.overwriteConfirm(name), {
+          destructive: true,
+          title: SCREEN_PRESET_TEXTS_ZH.overwriteTitle,
+        })
+        // 用户选了「不覆盖」：留在保存弹窗里，名字可以再改
+        if (!ok) return false
+      }
+      await savePreset(name, screenResult.request, exists)
+      await reloadPresets()
+      setPresetName(name)
+      toast(SCREEN_PRESET_TEXTS_ZH.saved(name), 'success')
+      return true
+    },
+    [confirmAction, presets, reloadPresets, screenResult, toast],
+  )
+
+  /** 弹窗里的「删除」：只有从已保存条件打开时才有这个按钮。 */
+  const handleDeletePreset = useCallback(
+    async (name: string) => {
+      const ok = await confirmAction(SCREEN_PRESET_TEXTS_ZH.deleteConfirm(name), {
+        destructive: true,
+        title: SCREEN_PRESET_TEXTS_ZH.deleteTitle,
+      })
+      if (!ok) return
+      try {
+        await deletePreset(name)
+        setScreenOpen(false)
+        toast(SCREEN_PRESET_TEXTS_ZH.deleted(name), 'success')
+        await reloadPresets()
+      } catch (exc) {
+        const message = exc instanceof Error ? exc.message : String(exc)
+        toast(SCREEN_PRESET_TEXTS_ZH.deleteFailed(message), 'error')
+      }
+    },
+    [confirmAction, reloadPresets, toast],
+  )
 
   // 刷新 = 重新读本机行情库 + 建议池 + 价格提醒。不打外网批量行情/K 线。
   // 选股结果生效时，「刷新」等同于「重新选股」（用户要求）。
@@ -1817,11 +1916,37 @@ export default function StocksPage() {
   // 而且要和自选列表并行取数，不能等 /stocks 与组合汇总回来才开始。
 
   /**
-   * fork：表格工具条上的两个按钮 —— 原来在页头，用户要求缩小并挪到搜索框前面。
-   * 放在上一条分页条里（见 StockMarketTable 的 toolbarActions），中间留 50px。
+   * fork：表格工具条左侧的按钮组。
+   *
+   * 用户反馈 2026-10-20 第 2 条要求「条件选股」挪到**第一行最左边**（原来那格是
+   * 「全部市场」下拉，而筛选控件整体挪到了搜索框后面），紧随其后是「已保存条件」
+   * 下拉与「编辑」；「刷新」「添加股票」顺延。整组放在上一条分页条里
+   * （见 StockMarketTable 的 toolbarActions），与搜索框之间留 50px。
    */
   const tableToolbarActions = (
     <div className="flex items-center gap-1.5">
+      {/* fork：条件选股入口（需求规格 §5.1），现在排在工具条最左边。
+          结果生效时显示激活态 —— 否则用户看不出「现在看到的不是全市场」。 */}
+      <Button
+        data-tour="screen-stocks"
+        size="sm"
+        variant="secondary"
+        className={`h-7 px-2 text-[12px] ${
+          screenResult ? 'border border-primary/60 bg-primary/10 text-primary' : ''
+        }`}
+        aria-pressed={Boolean(screenResult)}
+        onClick={() => openScreenDialog()}
+      >
+        <Filter className="h-3.5 w-3.5" />
+        {screenResult ? SCREEN_TEXTS_ZH.buttonActive : SCREEN_TEXTS_ZH.button}
+      </Button>
+      {/* 已保存条件下拉 + 编辑：一个条件都没有时两个控件都不可操作 */}
+      <ScreenPresetMenu
+        presets={presets}
+        value={presetName}
+        onChange={setPresetName}
+        onEdit={name => openScreenDialog(name)}
+      />
       <Button
         data-tour="refresh-quotes"
         variant="secondary"
@@ -1840,21 +1965,6 @@ export default function StocksPage() {
         onClick={() => setShowBatchAdd(true)}
       >
         <Plus className="h-3.5 w-3.5" /> {FORK_ANALYSIS_TEXTS_ZH.addStock}
-      </Button>
-      {/* fork：条件选股入口（需求规格 §5.1），在「添加股票」后面。
-          结果生效时显示激活态 —— 否则用户看不出「现在看到的不是全市场」。 */}
-      <Button
-        data-tour="screen-stocks"
-        size="sm"
-        variant="secondary"
-        className={`h-7 px-2 text-[12px] ${
-          screenResult ? 'border border-primary/60 bg-primary/10 text-primary' : ''
-        }`}
-        aria-pressed={Boolean(screenResult)}
-        onClick={() => setScreenOpen(true)}
-      >
-        <Filter className="h-3.5 w-3.5" />
-        {screenResult ? SCREEN_TEXTS_ZH.buttonActive : SCREEN_TEXTS_ZH.button}
       </Button>
     </div>
   )
@@ -1980,13 +2090,24 @@ export default function StocksPage() {
       />
 
       {/* fork：条件选股弹窗。「修改条件」时把上次的请求原样带回（不持久化，
-          只活在页面内存里 —— 需求规格 §14-Q9）。 */}
+          只活在页面内存里 —— 需求规格 §14-Q9）；从「已保存条件 → 编辑」打开时
+          带回那个条件存下来的完整请求，并在底部多一个「删除」按钮。 */}
       <ScreenStocksDialog
         open={screenOpen}
         onOpenChange={setScreenOpen}
-        initialRequest={screenResult?.request ?? null}
+        initialRequest={screenInitial}
         asof={marketAsof}
+        presetName={screenPresetName}
+        onDeletePreset={name => void handleDeletePreset(name)}
         onResult={(response, request) => setScreenResult({ request, response })}
+      />
+
+      {/* fork：保存条件（名字 = 服务器上的文件名，最长 10 个字符） */}
+      <SaveConditionDialog
+        open={saveOpen}
+        onOpenChange={setSaveOpen}
+        defaultName={presetName ?? ''}
+        onSave={handleSavePreset}
       />
 
       {/* 上游「添加股票 / ETF」弹窗：fork 版已不可达（没有任何按钮会
@@ -2530,21 +2651,9 @@ export default function StocksPage() {
       {viewTab === 'watchlist' && (
         <div data-tour="watchlist" className="card p-4">
           {/* fork：筛选行（板块 + 状态 + 涨跌 + 市值四组）。
-              搜索框不在这一行了 —— 用户要求它跟着分页条走（放在分页条左侧，
-              也就是原来「共 N 条」的位置），顶部与底部两条分页条各一个受控输入框。
+              用户反馈 2026-10-20 第 2 条：整行从「表格上方独立一行」挪到**搜索框后面**，
+              所以它现在通过 filtersSlot 交给表格上方的工具条渲染，这里不再单独排队。
               全部筛选都在前端做（数据是一次全量取回的），不发任何请求。 */}
-          <StockFilterBar
-            className="mb-3"
-            board={stockListFilter}
-            onBoardChange={setStockListFilter}
-            counts={boardCounts}
-            filters={marketFilters}
-            onFiltersChange={setMarketFilters}
-            statusOptions={statusFilterOptions}
-            trailing={
-              <BuildMetaStrip build={buildMeta} />
-            }
-          />
 
           {/* fork：选股结果横幅（需求规格 §5.5）不放这里 —— 用户要求它出现在
               「条件选股」按钮那一行的**下面**，所以经由 belowToolbar 塞进表格里。
@@ -2572,13 +2681,26 @@ export default function StocksPage() {
               onAsof={setMarketAsof}
               toolbarActions={tableToolbarActions}
               searchSlot={<StockSearchBox value={stockQuery} onChange={setStockQuery} />}
+              filtersSlot={
+                <StockFilterBar
+                  board={stockListFilter}
+                  onBoardChange={setStockListFilter}
+                  counts={boardCounts}
+                  filters={marketFilters}
+                  onFiltersChange={setMarketFilters}
+                  statusOptions={statusFilterOptions}
+                  trailing={<BuildMetaStrip build={buildMeta} />}
+                />
+              }
               belowToolbar={
                 screenResult ? (
                   <ScreenResultBanner
                     response={screenResult.response}
                     request={screenResult.request}
                     rerunning={screenRerunning}
-                    onEdit={() => setScreenOpen(true)}
+                    savedName={screenPresetName}
+                    onSave={() => setSaveOpen(true)}
+                    onEdit={() => openScreenDialog()}
                     onRerun={() => void rerunScreen()}
                     onExit={() => setScreenResult(null)}
                   />

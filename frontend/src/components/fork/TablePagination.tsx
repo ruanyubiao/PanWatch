@@ -59,6 +59,11 @@ interface TablePaginationProps {
   actions?: ReactNode
   /** 工具条里的搜索框（只有上方那条分页条传） */
   leading?: ReactNode
+  /**
+   * 搜索框**后面**的筛选控件（用户反馈 2026-10-20 第 2 条：市场 / 状态 / 涨跌 /
+   * 市值 / 清空筛选整体从「表格上方一行」挪到搜索框后面）。只有上方那条分页条传。
+   */
+  filters?: ReactNode
 }
 
 export function TablePagination({
@@ -70,17 +75,26 @@ export function TablePagination({
   disabled = false,
   actions,
   leading,
+  filters,
 }: TablePaginationProps) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const arrowClass =
     'inline-flex h-6 w-6 items-center justify-center rounded border border-border/60 text-muted-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40'
 
-  // 工具条：按钮组 + 50px + 搜索框（两样都传时才有间距，只有一个时不留空）
+  // 工具条：按钮组 + 50px + 搜索框，然后是筛选控件（紧跟搜索框，间距 8px）
   const toolbar =
-    actions || leading ? (
-      <div className="flex items-center" style={actions && leading ? { columnGap: TOOLBAR_GAP_PX } : undefined}>
-        {actions}
-        {leading ? <div className="w-[260px] shrink-0">{leading}</div> : null}
+    actions || leading || filters ? (
+      <div className="flex flex-wrap items-center gap-2">
+        {actions || leading ? (
+          <div
+            className="flex items-center"
+            style={actions && leading ? { columnGap: TOOLBAR_GAP_PX } : undefined}
+          >
+            {actions}
+            {leading ? <div className="w-[260px] shrink-0">{leading}</div> : null}
+          </div>
+        ) : null}
+        {filters}
       </div>
     ) : null
 

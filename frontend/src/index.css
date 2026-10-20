@@ -152,3 +152,34 @@
     display: none;
   }
 }
+
+/*
+ * 按钮是按钮，不是输入框（用户反馈 2026-10-20 第 3 条）。
+ *
+ * 「条件选股」「开始选股」这类按钮上会出现文本光标（竖直的 I 型线），
+ * 因为浏览器对「文字」会自己给出 I 型光标，而按钮里包的正是文字。
+ * 这里给按钮及其子元素一起钉死：光标继承按钮的 pointer，文字也不能被选中
+ * （选中之后点两下会出选区，看起来更像输入框）。
+ * 只写 button 不够 —— 里面那个 span / svg 会各自按自己的默认值渲染。
+ */
+@layer base {
+  button,
+  [role='button'],
+  button *,
+  [role='button'] * {
+    cursor: inherit;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  button,
+  [role='button'] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  button[aria-disabled='true'],
+  [role='button'][aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+}
