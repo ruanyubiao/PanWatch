@@ -421,6 +421,26 @@ describe('fork: 分析页全市场表格', () => {
     expect(toolbarButton.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('筛选控件排在搜索框后面（用户要求把市场/状态/涨跌/市值/清空挪到搜索框后）', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable({
+      toolbarActions: <button type="button">条件选股</button>,
+      searchSlot: <input aria-label="测试搜索" />,
+      filtersSlot: <div data-testid="filter-bar">筛选条</div>,
+    })
+
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    const search = screen.getByLabelText('测试搜索')
+    const filterBar = screen.getByTestId('filter-bar')
+    const screenButton = screen.getByRole('button', { name: '条件选股' })
+
+    // 文档顺序：条件选股 → 搜索框 → 筛选条（三段都在工具条那一行里）
+    expect(screenButton.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(search.compareDocumentPosition(filterBar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // 只有上一条分页条有筛选条（底部那条不该重复渲染）
+    expect(screen.getAllByTestId('filter-bar')).toHaveLength(1)
+  })
+
   it('各板块计数从全量数据里数出来并回传（pill 上的数字）', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response())
     const { onCounts } = renderTable()

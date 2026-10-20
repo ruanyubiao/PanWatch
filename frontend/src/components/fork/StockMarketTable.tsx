@@ -302,6 +302,11 @@ interface StockMarketTableProps {
   /** 搜索框（只在**上**一条分页条里出现，用户要求底部不要） */
   searchSlot?: ReactNode
   /**
+   * 搜索框**后面**的筛选控件（市场 / 状态 / 涨跌 / 市值 / 清空筛选）。
+   * 用户要求把它们从「表格上方独立一行」挪到搜索框后面（2026-10-20 第 2 条）。
+   */
+  filtersSlot?: ReactNode
+  /**
    * 工具条（刷新 / 添加股票 / 条件选股 + 搜索框）那一行的**下一行**内容。
    * 页面把「条件选股结果」横幅放进来 —— 用户要求横幅在按钮那一行的下面，
    * 而不是表格上方（那是按钮行的上面）。
@@ -331,6 +336,7 @@ export function StockMarketTable({
   onAsof,
   toolbarActions,
   searchSlot,
+  filtersSlot,
   belowToolbar,
   renderStatus,
   renderAgentStatus,
@@ -529,6 +535,7 @@ export function StockMarketTable({
       disabled={loading}
       actions={position === 'top' ? toolbarActions : undefined}
       leading={position === 'top' ? searchSlot : undefined}
+      filters={position === 'top' ? filtersSlot : undefined}
     />
   )
 
