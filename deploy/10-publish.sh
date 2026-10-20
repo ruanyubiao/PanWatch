@@ -32,6 +32,9 @@ EXCLUDES=(
   --exclude='./frontend/.vite' --exclude='./frontend/tsconfig.tsbuildinfo'
   --exclude='__pycache__' --exclude='*.pyc' --exclude='*.egg-info'
   --exclude='./data' --exclude='./.env'
+  # 仓库根上曾出现过一个 static -> frontend/dist 的本地符号链接；tar 会把它原样搬到
+  # 服务器，覆盖掉第 1 步建好的 app/static 目录，导致第 3 步无处解包。排除掉更稳。
+  --exclude='./static'
 )
 
 echo "=== 1. 清空远端 app/（保留 data）==="
