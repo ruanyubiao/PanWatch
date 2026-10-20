@@ -129,48 +129,60 @@ export function ScreenParamForm({
 
       {/* 连续阳线：起点（倒数第几个交易日，默认 1）+ 天数（默认 4） */}
       {name === 'consecutive_bullish' ? (
-        <div className="grid grid-cols-2 gap-2">
-          <div className="min-w-0 space-y-1">
-            <Label className="block truncate text-[11px] text-muted-foreground">
-              {`${T.startLabel}（1 – ${maxDays}）`}
-            </Label>
-            <ScreenNumberField
-              paramField="start"
-              ariaLabel={T.startLabel}
-              value={(draft as ConditionParamsMap['consecutive_bullish']).start}
-              min={1}
-              max={maxDays}
-              invalid={invalid}
-              onTouched={markTouched}
-              onChange={next =>
-                setDraft({
-                  ...(draft as ConditionParamsMap['consecutive_bullish']),
-                  start: next,
-                } as ConditionParamsMap[ConditionName])
-              }
-            />
+        <>
+          {/* 输入时就把「从倒数第几日、连续几日」念一遍 —— description 说不清两个参数的关系 */}
+          <div
+            className="text-[11px] leading-4 text-muted-foreground"
+            data-fork-screen-consecutive-hint=""
+          >
+            {T.consecutiveHint(
+              (draft as ConditionParamsMap['consecutive_bullish']).start,
+              (draft as ConditionParamsMap['consecutive_bullish']).days,
+            )}
           </div>
-          <div className="min-w-0 space-y-1">
-            <Label className="block truncate text-[11px] text-muted-foreground">
-              {`${T.daysLabel}（1 – ${maxDays}）`}
-            </Label>
-            <ScreenNumberField
-              paramField="days"
-              ariaLabel={T.daysLabel}
-              value={(draft as ConditionParamsMap['consecutive_bullish']).days}
-              min={1}
-              max={maxDays}
-              invalid={invalid}
-              onTouched={markTouched}
-              onChange={next =>
-                setDraft({
-                  ...(draft as ConditionParamsMap['consecutive_bullish']),
-                  days: next,
-                } as ConditionParamsMap[ConditionName])
-              }
-            />
+          <div className="grid grid-cols-2 gap-2">
+            <div className="min-w-0 space-y-1">
+              <Label className="block truncate text-[11px] text-muted-foreground">
+                {`${T.startLabel}（1 – ${maxDays}）`}
+              </Label>
+              <ScreenNumberField
+                paramField="start"
+                ariaLabel={T.startLabel}
+                value={(draft as ConditionParamsMap['consecutive_bullish']).start}
+                min={1}
+                max={maxDays}
+                invalid={invalid}
+                onTouched={markTouched}
+                onChange={next =>
+                  setDraft({
+                    ...(draft as ConditionParamsMap['consecutive_bullish']),
+                    start: next,
+                  } as ConditionParamsMap[ConditionName])
+                }
+              />
+            </div>
+            <div className="min-w-0 space-y-1">
+              <Label className="block truncate text-[11px] text-muted-foreground">
+                {`${T.daysLabel}（1 – ${maxDays}）`}
+              </Label>
+              <ScreenNumberField
+                paramField="days"
+                ariaLabel={T.daysLabel}
+                value={(draft as ConditionParamsMap['consecutive_bullish']).days}
+                min={1}
+                max={maxDays}
+                invalid={invalid}
+                onTouched={markTouched}
+                onChange={next =>
+                  setDraft({
+                    ...(draft as ConditionParamsMap['consecutive_bullish']),
+                    days: next,
+                  } as ConditionParamsMap[ConditionName])
+                }
+              />
+            </div>
           </div>
-        </div>
+        </>
       ) : null}
 
       {name === 'change_pct' ? (
