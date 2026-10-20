@@ -262,4 +262,54 @@ describe('条件选股弹窗', () => {
     expect(within(radios[0].parentElement as HTMLElement).getAllByRole('radio')).toHaveLength(2)
     expect(radios[1].getAttribute('aria-checked')).toBe('true')
   })
+
+  it('L1 基础筛选三行：标题与控件同一行；ST 开关跟在市场后面', () => {
+    renderDialog()
+
+    // 统计窗口：标题与输入框在同一个 flex 行容器里
+    const days = daysInput()
+    const daysRow = days.parentElement as HTMLElement
+    expect(daysRow.className).toContain('flex')
+    expect(daysRow.textContent).toContain('统计窗口')
+
+    // 总市值：标题与两个输入框同一行
+    const capMin = document.querySelector<HTMLInputElement>('[data-screen-field="market_cap.min_yi"]')!
+    const capRow = capMin.parentElement as HTMLElement
+    expect(capRow.textContent).toContain('总市值（亿元）')
+
+    // 市场 + ST：同一个行容器；「ST 股票」这个单独标题已删除
+    const marketGroup = document.querySelector('[aria-label="市场"]')!
+    const marketRow = marketGroup.parentElement as HTMLElement
+    const stSwitch = document.querySelector<HTMLElement>('[data-screen-field="include_st"]')!
+    expect(marketRow.contains(stSwitch)).toBe(true)
+    expect(marketRow.textContent).toContain('包含 ST / *ST')
+    expect(screen.queryByText('ST 股票')).toBeNull()
+  })
+
+  it('L2 连续阳线两个参数：倒数第几个交易日（默认 1）+ 天数（默认 4）', async () => {
+    renderDialog()
+    await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
+    await userEvent.click(await screen.findByText('连续 N 日阳线'))
+
+    const start = document.querySelector<HTMLInputElement>('[data-screen-param-field="start"]')!
+    const days = document.querySelector<HTMLInputElement>('[data-screen-param-field="days"]')!
+    expect(start.value).toBe('1')
+    expect(days.value).toBe('4')
+
+    // 越界由控件自己夹回（不是填进去再弹红字）
+    await userEvent.clear(start)
+    await userEvent.type(start, '99')
+    expect(start.value).toBe('30')
+    await userEvent.clear(start)
+    await userEvent.type(start, '5')
+
+    await userEvent.click(screen.getByRole('button', { name: '确定' }))
+    await waitFor(() =>
+      expect(document.querySelectorAll('[data-fork-screen-condition]')).toHaveLength(1),
+    )
+    // 起点 1 时才显示成「连续 N 日阳线」，否则点名起点
+    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe(
+      '自倒数第 5 日起连续 4 日阳线',
+    )
+  })
 })
