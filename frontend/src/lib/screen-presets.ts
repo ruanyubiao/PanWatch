@@ -20,6 +20,10 @@ const FORBIDDEN_CHARS = /[\\/:*?"<>|\u0000-\u001f]/
 
 export const SCREEN_PRESET_TEXTS_ZH = {
   save: '保存条件',
+  /** 条件选股弹窗底部那颗「保存」（没保存过 → 弹名字输入框） */
+  dialogSave: '保存',
+  /** 从已保存条件打开时那颗按钮的文案：再点一次就是覆盖原文件 */
+  dialogSaveOverwrite: '覆盖保存',
   saveTitle: '保存条件',
   saveDescription: '保存后可在「已保存条件」下拉里选出来复用或编辑。名字同时是服务器上的文件名。',
   nameLabel: '条件名称',
@@ -40,6 +44,8 @@ export const SCREEN_PRESET_TEXTS_ZH = {
   deleteTitle: '删除条件',
   deleteConfirm: (name: string) => `删除已保存的条件「${name}」？删掉后不可恢复。`,
   delete: '删除',
+  /** 没保存过的条件不能删：按钮禁用 + 悬停说明原因 */
+  deleteDisabled: '当前条件还没有保存过，没有可删除的文件',
   menuPlaceholder: '已保存条件',
   menuEmpty: '暂无已保存条件',
   menuLabel: '已保存条件',

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fetchAPI } from '@panwatch/api'
 import { StockMarketTable, MARKET_FETCH_LIMIT } from '@/components/fork/StockMarketTable'
 import { EMPTY_MARKET_FILTERS } from '@/lib/market-filters'
-import type { MarketRow, MarketTableResponse } from '@/lib/fork-kline-summary'
+import type { MarketRow, MarketRowRaw, MarketTablePayload } from '@/lib/fork-kline-summary'
 
 vi.mock('@panwatch/api', () => ({ fetchAPI: vi.fn() }))
 
@@ -27,15 +27,12 @@ const row = (over: Partial<MarketRow> = {}): MarketRow => ({
   board: 'sh',
   trade_date: '2026-10-14',
   pre_close: 1286.0,
-  open: 1280,
   close: 1290.5,
   high: 1299,
   low: 1276.02,
-  change_amount: 4.5,
   change_pct: 0.35,
   total_market_cap: 1607604938886,
   source: 'sina',
-  adj_factor: 1,
   ma: { ma5: 1280, ma10: 1270, ma20: 1250, ma60: 1200 },
   tech: {
     score: 6,
@@ -81,13 +78,46 @@ const threeRows = (): MarketRow[] => [
   }),
 ]
 
-const response = (items: MarketRow[] = threeRows()): MarketTableResponse => ({
-  asof: '2026-10-14',
-  total: items.length,
-  offset: 0,
-  limit: MARKET_FETCH_LIMIT,
-  counts: { all: items.length, sh: 1, sz: 1, kcb: 0, cyb: 0, st: 0 },
-  items,
+/**
+ * 接口返回的是**短名**行（字段名 1–2 个字母，见 `MarketRowRaw`）。
+ * 这里把测试用的可读行转成线上真实的形状，组件里的解析器才会真的被跑到。
+ */
+const toRaw = (r: MarketRow): MarketRowRaw => ({
+  c: r.code,
+  s: r.symbol,
+  e: r.exchange,
+  n: r.name,
+  b: r.board,
+  d: r.trade_date,
+  pc: r.pre_close,
+  cl: r.close,
+  h: r.high,
+  l: r.low,
+  cp: r.change_pct,
+  mc: r.total_market_cap,
+  so: r.source,
+  sc: r.status_code ?? null,
+  sl: r.status_label ?? null,
+  sg: r.status_group ?? null,
+  m: { '5': r.ma.ma5, '10': r.ma.ma10, '20': r.ma.ma20, '60': r.ma.ma60 },
+  t: r.tech
+    ? {
+        s: r.tech.score,
+        t: r.tech.trend,
+        m: r.tech.macd,
+        r: r.tech.rsi,
+        k: r.tech.kdj,
+        b: r.tech.boll,
+        v: r.tech.volume,
+        su: r.tech.support,
+        re: r.tech.resistance,
+      }
+    : null,
+})
+
+const response = (items: MarketRow[] = threeRows()): MarketTablePayload => ({
+  a: '2026-10-14',
+  i: items.map(toRaw),
 })
 
 const renderTable = (props: Partial<React.ComponentProps<typeof StockMarketTable>> = {}) => {

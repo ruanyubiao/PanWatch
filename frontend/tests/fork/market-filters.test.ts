@@ -62,9 +62,13 @@ const F = (over: Partial<MarketTableFilters> = {}): MarketTableFilters => ({
 const YI = 1e8
 
 describe('fork: 板块选项的顺序', () => {
-  it('全部 / 上证 / 深证 / 创业 / 科创 / ST（「全部」由范围那一格单独渲染）', () => {
-    expect(BOARD_OPTIONS.map(o => o.key)).toEqual(['sh', 'sz', 'cyb', 'kcb', 'st'])
-    expect(BOARD_OPTIONS.map(o => o.label)).toEqual(['上证', '深证', '创业', '科创', 'ST'])
+  it('全部 / 上证 / 深证 / 创业 / 科创（第 8 条把 ST 去掉了：ST 由「全部状态」表达）', () => {
+    const keys: string[] = BOARD_OPTIONS.map(option => String(option.key))
+    const labels: string[] = BOARD_OPTIONS.map(option => option.label)
+    expect(keys).toEqual(['sh', 'sz', 'cyb', 'kcb'])
+    expect(labels).toEqual(['上证', '深证', '创业', '科创'])
+    // 类型上 'st' 仍在（后端与 classifyBoard 还会把 ST 标出来），只是下拉不再给入口
+    expect(keys).not.toContain('st')
   })
 })
 

@@ -70,9 +70,9 @@ def test_map_row带出状态三字段() -> None:
         "status_text": "全天停牌",
     }
     mapped = map_row(row)
-    assert mapped["status_code"] == "SUSPENDED"
-    assert mapped["status_label"] == "停牌"
-    assert mapped["status_group"] == "suspension"
+    assert mapped["sc"] == "SUSPENDED"
+    assert mapped["sl"] == "停牌"
+    assert mapped["sg"] == "suspension"
 
 
 def test_map_row正常与未知状态() -> None:
@@ -88,10 +88,10 @@ def test_map_row正常与未知状态() -> None:
         "traded": 1,
     }
     normal = map_row(dict(base))
-    assert normal["status_code"] == "NORMAL"
-    assert normal["status_label"] == "正常"
+    assert normal["sc"] == "NORMAL"
+    assert normal["sl"] == "正常"
 
     # 库里出现了映射表里没有的新状态码：不冒充「正常」，标签退回「其他」
     unknown = map_row({**base, "status_code": "SOMETHING_NEW"})
-    assert unknown["status_code"] == "SOMETHING_NEW"
-    assert unknown["status_label"] == "其他"
+    assert unknown["sc"] == "SOMETHING_NEW"
+    assert unknown["sl"] == "其他"
