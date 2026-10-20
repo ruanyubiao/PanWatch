@@ -147,7 +147,23 @@ def test_V7_均线周期不在白名单():
 
 def test_V7_连续天数超过30上限():
     req = request(trading_days=60, rule=group(condition("consecutive_bullish", days=31)))
-    assert "连续天数需为 1 至 min(统计窗口, 30) 的整数" in messages(validate_rule(req))
+    assert "连续天数需为 1 至 30 的整数" in messages(validate_rule(req))
+
+
+def test_V7_连续阳线的起点超窗口():
+    """起点是「倒数第几个交易日」，同样不能超出统计窗口。"""
+    req = request(trading_days=10, rule=group(condition("consecutive_bullish", start=11, days=2)))
+    assert "倒数第几个交易日需为 1 至 10 的整数" in messages(validate_rule(req))
+
+
+def test_V7_连续阳线起点加天数超上限():
+    req = request(trading_days=60, rule=group(condition("consecutive_bullish", start=20, days=20)))
+    assert "起点与天数之和不能超过 30" in messages(validate_rule(req))
+
+
+def test_V7_连续阳线起点天数都在窗口内则通过():
+    req = request(trading_days=30, rule=group(condition("consecutive_bullish", start=10, days=5)))
+    assert messages(validate_rule(req)) == ""
 
 
 def test_V7_涨跌幅区间反了():

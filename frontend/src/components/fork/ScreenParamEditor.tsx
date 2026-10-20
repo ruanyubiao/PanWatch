@@ -2,12 +2,14 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@panwatch/base-ui/components/ui/popover'
 import { Button } from '@panwatch/base-ui/components/ui/button'
-import { Input } from '@panwatch/base-ui/components/ui/input'
 import { Label } from '@panwatch/base-ui/components/ui/label'
+import { ScreenNumberField } from '@/components/fork/ScreenNumberField'
 import {
   CONDITION_DEFS_ZH,
   MA_PERIODS,
+  MAX_CHANGE_PCT,
   MAX_CONSECUTIVE_DAYS,
+  MIN_CHANGE_PCT,
   SCREEN_TEXTS_ZH,
   type ConditionName,
   type ConditionParamsMap,
@@ -23,9 +25,15 @@ import {
  *
  * 表单内部持有 draft，点「确定」才把参数抛出去 —— 「取消」必须不修改任何东西，
  * 否则用户会看到「我明明点了取消，条件却变了」。
+ *
+ * 数字框统一用 `ScreenNumberField`：控件自己挡住非法输入（只吃数字/小数点/负号，
+ * 越界立刻夹到边界），不再靠「填错了再弹红字」—— 之前 N 填 -1 会把浮层顶成
+ * 两行、参数表单被裁掉一截（用户反馈截图 1）。
  */
 
 const T = SCREEN_TEXTS_ZH
+
+// ---------------------------------------------------------------- 表单
 
 export function ScreenParamForm({
   name,
@@ -54,8 +62,8 @@ export function ScreenParamForm({
   const issues = def.validate(draft as never, tradingDays)
   const maxDays = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
 
-  const fieldClass = (invalid: boolean) =>
-    `h-7 text-[12px] font-mono ${invalid && touched ? 'border-destructive' : ''}`
+  const markTouched = () => setTouched(true)
+  const invalid = touched && issues.length > 0
 
   return (
     <div className="space-y-2" data-fork-screen-param={name}>
@@ -119,53 +127,124 @@ export function ScreenParamForm({
         </div>
       ) : null}
 
+      {/* 连续阳线：起点（倒数第几个交易日，默认 1）+ 天数（默认 4） */}
       {name === 'consecutive_bullish' ? (
-        <div className="space-y-1.5">
-          <Label className="text-[11px] text-muted-foreground">{`${T.daysLabel}（1 – ${maxDays}）`}</Label>
-          <Input
-            type="number"
-            min={1}
-            max={maxDays}
-            className={fieldClass(issues.length > 0)}
-            value={String((draft as ConditionParamsMap['consecutive_bullish']).days)}
-            onBlur={() => setTouched(true)}
-            onChange={event =>
-              setDraft({ days: Number(event.target.value) } as ConditionParamsMap[ConditionName])
-            }
-          />
+        <div className="grid grid-cols-2 gap-2">
+          <div className="min-w-0 space-y-1">
+            <Label className="block truncate text-[11px] text-muted-foreground">
+              {`${T.startLabel}（1 – ${maxDays}）`}
+            </Label>
+            <ScreenNumberField
+              paramField="start"
+              ariaLabel={T.startLabel}
+              value={(draft as ConditionParamsMap['consecutive_bullish']).start}
+              min={1}
+              max={maxDays}
+              invalid={invalid}
+              onTouched={markTouched}
+              onChange={next =>
+                setDraft({
+                  ...(draft as ConditionParamsMap['consecutive_bullish']),
+                  start: next,
+                } as ConditionParamsMap[ConditionName])
+              }
+            />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <Label className="block truncate text-[11px] text-muted-foreground">
+              {`${T.daysLabel}（1 – ${maxDays}）`}
+            </Label>
+            <ScreenNumberField
+              paramField="days"
+              ariaLabel={T.daysLabel}
+              value={(draft as ConditionParamsMap['consecutive_bullish']).days}
+              min={1}
+              max={maxDays}
+              invalid={invalid}
+              onTouched={markTouched}
+              onChange={next =>
+                setDraft({
+                  ...(draft as ConditionParamsMap['consecutive_bullish']),
+                  days: next,
+                } as ConditionParamsMap[ConditionName])
+              }
+            />
+          </div>
         </div>
       ) : null}
 
       {name === 'change_pct' ? (
-        <div className="grid grid-cols-3 gap-1.5">
-          {(
-            [
-              ['n', T.nLabel],
-              ['min', T.pctMinLabel],
-              ['max', T.pctMaxLabel],
-            ] as const
-          ).map(([key, label]) => (
-            <div key={key} className="space-y-1">
-              <Label className="text-[11px] text-muted-foreground">{label}</Label>
-              <Input
-                type="number"
-                className={fieldClass(issues.length > 0)}
-                value={String((draft as ConditionParamsMap['change_pct'])[key])}
-                onBlur={() => setTouched(true)}
-                onChange={event =>
+        <div className="space-y-1.5">
+          {/* 三列放不下「N（倒数第几个交易日）」这种长标题，所以标题只留 N，
+              完整含义写在上面这行提示里（用户反馈截图 1：长标题把浮层顶到裁切） */}
+          <div className="text-[11px] text-muted-foreground">{T.changePctHint(Math.max(1, tradingDays))}</div>
+          <div className="grid grid-cols-3 gap-2">
+            <div className="min-w-0 space-y-1">
+              <Label className="block text-[11px] text-muted-foreground">{T.nShortLabel}</Label>
+              <ScreenNumberField
+                paramField="n"
+                ariaLabel={T.nLabel}
+                value={(draft as ConditionParamsMap['change_pct']).n}
+                min={1}
+                max={Math.max(1, tradingDays)}
+                invalid={invalid}
+                onTouched={markTouched}
+                onChange={next =>
                   setDraft({
                     ...(draft as ConditionParamsMap['change_pct']),
-                    [key]: Number(event.target.value),
+                    n: next,
                   } as ConditionParamsMap[ConditionName])
                 }
               />
             </div>
-          ))}
+            <div className="min-w-0 space-y-1">
+              <Label className="block text-[11px] text-muted-foreground">{T.pctMinLabel}</Label>
+              <ScreenNumberField
+                paramField="min"
+                ariaLabel={T.pctMinLabel}
+                value={(draft as ConditionParamsMap['change_pct']).min}
+                min={MIN_CHANGE_PCT}
+                max={MAX_CHANGE_PCT}
+                integer={false}
+                invalid={invalid}
+                onTouched={markTouched}
+                onChange={next =>
+                  setDraft({
+                    ...(draft as ConditionParamsMap['change_pct']),
+                    min: next,
+                  } as ConditionParamsMap[ConditionName])
+                }
+              />
+            </div>
+            <div className="min-w-0 space-y-1">
+              <Label className="block text-[11px] text-muted-foreground">{T.pctMaxLabel}</Label>
+              <ScreenNumberField
+                paramField="max"
+                ariaLabel={T.pctMaxLabel}
+                value={(draft as ConditionParamsMap['change_pct']).max}
+                min={MIN_CHANGE_PCT}
+                max={MAX_CHANGE_PCT}
+                integer={false}
+                invalid={invalid}
+                onTouched={markTouched}
+                onChange={next =>
+                  setDraft({
+                    ...(draft as ConditionParamsMap['change_pct']),
+                    max: next,
+                  } as ConditionParamsMap[ConditionName])
+                }
+              />
+            </div>
+          </div>
         </div>
       ) : null}
 
-      {touched && issues.length > 0 ? (
-        <div className="text-[11px] text-destructive">{issues.join('；')}</div>
+      {invalid ? (
+        <div className="space-y-0.5 text-[11px] leading-snug text-destructive" data-fork-screen-param-issue>
+          {issues.map(issue => (
+            <div key={issue}>{issue}</div>
+          ))}
+        </div>
       ) : null}
 
       <div className="flex justify-end gap-1.5 pt-1">
@@ -208,7 +287,8 @@ export function ScreenParamEditor({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      <PopoverContent align="end" className="w-64 p-3" data-fork-screen-param-popover>
+      {/* w-80：三列输入（N / 下限 / 上限）要放得下，窄了会把文字挤成两行 */}
+      <PopoverContent align="end" className="w-80 p-3" data-fork-screen-param-popover>
         <ScreenParamForm
           key={key}
           name={name}
