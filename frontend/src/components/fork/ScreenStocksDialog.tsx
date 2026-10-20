@@ -41,6 +41,12 @@ import {
   type ValidationIssue,
 } from '@/lib/screen-rule'
 import { cleanNumeric } from '@/components/fork/ScreenNumberField'
+import {
+  ScreenStepButtons,
+  STEP_INPUT_CLASSES,
+  stepValue,
+  type StepDirection,
+} from '@/components/fork/ScreenStepButtons'
 import { ScreenConditionGroup, type ScreenTreeHandlers } from '@/components/fork/ScreenConditionGroup'
 import { screenStocks } from '@/lib/screen-api'
 
@@ -57,12 +63,23 @@ import { screenStocks } from '@/lib/screen-api'
  *
  * 基础筛选的三个字段都是「标题 + 控件同一行」（用户反馈），且控件自身限死取值
  * 范围（`BaseNumberInput`：越界当场夹回边界，非法字符敲不进去）。
+ *
+ * 宽度：`max-w-[968px]`，比上游默认的 768px 宽 200px（用户反馈，条件树 + 参数浮层
+ * 在 768px 里太挤）。
  */
 
 const T = SCREEN_TEXTS_ZH
 
 /** 总市值默认范围（亿元）：与后端 `validate_params` 的 [0, 1e6] 一致。 */
 const DEFAULT_CAP = { min_yi: 1, max_yi: 100000 }
+
+/**
+ * 统计窗口默认值（交易日）。
+ *
+ * 用户要求恢复成 30，但**不要让它看起来像「已选中」**：值照填，焦点不给它
+ * （见渲染处 `onOpenAutoFocus`），否则输入框一带上焦点描边，视觉上就是「选中的控件」。
+ */
+const DEFAULT_TRADING_DAYS = 30
 
 interface DraftForm {
   daysText: string
@@ -76,14 +93,15 @@ interface DraftForm {
 /**
  * 打开时的草稿。
  *
- * `request === null` 表示「第一次打开」：**统计窗口不预填**（用户明确要求这个
- * 界面不要有默认选中值），其余保持可用状态（四个市场全选、不含 ST、空根组）。
+ * `request === null` 表示「第一次打开」：统计窗口预填 30（默认值），但弹窗打开时
+ * **不把焦点交给它**（见渲染处的 `onOpenAutoFocus`），所以它只是一格填好的数字，
+ * 不会带着焦点描边出现。其余保持可用状态（四个市场全选、不含 ST、空根组）。
  * 「修改条件」传回上次的请求时按请求原样回填。
  */
 function toDraft(request: ScreenRequest | null): DraftForm {
   if (!request) {
     return {
-      daysText: '',
+      daysText: String(DEFAULT_TRADING_DAYS),
       capMinText: String(DEFAULT_CAP.min_yi),
       capMaxText: String(DEFAULT_CAP.max_yi),
       markets: [...SCREEN_MARKETS],
@@ -131,6 +149,8 @@ function toRequest(form: DraftForm): ScreenRequest {
  *
  * 只吃数字（整数场不吃小数点、负数只在 min < 0 时吃一个开头的负号），越界
  * 立刻夹回边界 —— 「由条件的限制，最好控件直接有限制，不让输入」。
+ * 右侧带一对加减按钮（用户反馈：参照原生 number 的上下箭头），点一次 ±1，
+ * 走的是同一条夹取逻辑；↑/↓ 键等价。
  */
 function BaseNumberInput({
   text,
@@ -153,44 +173,68 @@ function BaseNumberInput({
   className?: string
   onText: (text: string) => void
 }) {
+  const parsed = text.trim() === '' ? Number.NaN : Number(text)
+  const stepBase = Number.isFinite(parsed) ? parsed : min
+
+  const applyStep = (direction: StepDirection) => {
+    onText(String(stepValue(parsed, direction, min, max, integer)))
+  }
+
   return (
-    <input
-      type="text"
-      inputMode={integer ? 'numeric' : 'decimal'}
-      role="spinbutton"
-      aria-label={ariaLabel}
-      aria-valuemin={min}
-      aria-valuemax={max}
-      data-screen-field={screenField}
-      value={text}
-      onChange={event => {
-        const cleaned = cleanNumeric(event.target.value, integer, min < 0)
-        // 空串 / 孤立负号：先留着（allowEmpty 时提交会被校验拦住）
-        if (cleaned === '' || cleaned === '-' || cleaned === '.') {
+    <span className={`relative flex items-stretch ${className}`}>
+      <input
+        type="text"
+        inputMode={integer ? 'numeric' : 'decimal'}
+        role="spinbutton"
+        aria-label={ariaLabel}
+        aria-valuemin={min}
+        aria-valuemax={max}
+        data-screen-field={screenField}
+        value={text}
+        onChange={event => {
+          const cleaned = cleanNumeric(event.target.value, integer, min < 0)
+          // 空串 / 孤立负号：先留着（allowEmpty 时提交会被校验拦住）
+          if (cleaned === '' || cleaned === '-' || cleaned === '.') {
+            onText(cleaned)
+            return
+          }
+          const parsedValue = Number(cleaned)
+          if (!Number.isFinite(parsedValue)) {
+            onText(cleaned)
+            return
+          }
+          if (parsedValue < min) {
+            onText(String(min))
+            return
+          }
+          if (parsedValue > max) {
+            onText(String(max))
+            return
+          }
           onText(cleaned)
-          return
-        }
-        const parsed = Number(cleaned)
-        if (!Number.isFinite(parsed)) {
-          onText(cleaned)
-          return
-        }
-        if (parsed < min) {
-          onText(String(min))
-          return
-        }
-        if (parsed > max) {
-          onText(String(max))
-          return
-        }
-        onText(cleaned)
-      }}
-      onBlur={() => {
-        if (allowEmpty) return
-        if (text.trim() === '' || text === '-' || text === '.') onText(String(min))
-      }}
-      className={`h-7 rounded-md border border-input bg-background px-2 text-[12px] font-mono text-foreground outline-none transition-colors focus:border-primary ${className}`}
-    />
+        }}
+        onBlur={() => {
+          if (allowEmpty) return
+          if (text.trim() === '' || text === '-' || text === '.') onText(String(min))
+        }}
+        onKeyDown={event => {
+          if (event.key === 'ArrowUp' && stepBase < max) {
+            event.preventDefault()
+            applyStep(1)
+          } else if (event.key === 'ArrowDown' && stepBase > min) {
+            event.preventDefault()
+            applyStep(-1)
+          }
+        }}
+        className={STEP_INPUT_CLASSES}
+      />
+      <ScreenStepButtons
+        onStep={applyStep}
+        canStepUp={stepBase < max}
+        canStepDown={stepBase > min}
+        label={ariaLabel}
+      />
+    </span>
   )
 }
 
@@ -215,6 +259,7 @@ export function ScreenStocksDialog({
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
 
   // 每次打开都用最新的 initialRequest（「修改条件」要把上次的请求原样带回）
   useEffect(() => {
@@ -344,7 +389,24 @@ export function ScreenStocksDialog({
 
   return (
     <Dialog open={open} onOpenChange={next => (next ? onOpenChange(true) : handleCancel())}>
-      <DialogContent className="max-w-3xl" data-fork-screen-dialog>
+      <DialogContent
+        ref={contentRef}
+        className="max-w-[968px]"
+        data-fork-screen-dialog
+        tabIndex={-1}
+        /**
+         * 打开时不把焦点交给第一个输入框。
+         *
+         * 统计窗口带默认值 30，而 Radix 的默认行为是聚焦第一个可聚焦元素 ——
+         * 正好是那个数字框，于是它一打开就带着焦点描边和光标，看起来像「已选中」。
+         * 这里把焦点留在弹窗容器自身：仍在对话框内部（可访问性），但没有输入框
+         * 呈现选中态。
+         */
+        onOpenAutoFocus={event => {
+          event.preventDefault()
+          contentRef.current?.focus()
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{T.title}</DialogTitle>
           <DialogDescription>{T.description}</DialogDescription>
