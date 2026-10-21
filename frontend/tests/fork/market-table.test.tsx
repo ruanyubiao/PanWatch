@@ -31,6 +31,9 @@ const row = (over: Partial<MarketRow> = {}): MarketRow => ({
   high: 1299,
   low: 1276.02,
   change_pct: 0.35,
+  volume: 58855939,
+  amount: 15252457670,
+  turnover_rate: 1.3814,
   total_market_cap: 1607604938886,
   source: 'sina',
   ma: { ma5: 1280, ma10: 1270, ma20: 1250, ma60: 1200 },
@@ -95,6 +98,9 @@ const toRaw = (r: MarketRow): MarketRowRaw => ({
   l: r.low,
   cp: r.change_pct,
   mc: r.total_market_cap,
+  v: r.volume,
+  am: r.amount,
+  tr: r.turnover_rate,
   so: r.source,
   sc: r.status_code ?? null,
   sl: r.status_label ?? null,
@@ -182,6 +188,9 @@ describe('fork: 分析页全市场表格', () => {
       '涨跌',
       '最高价',
       '最低价',
+      '成交量',
+      '成交额',
+      '换手率',
       '总市值',
       '状态',
       '指标',
@@ -189,6 +198,56 @@ describe('fork: 分析页全市场表格', () => {
       '来源',
       '操作',
     ])
+  })
+
+  it('成交量/成交额/换手率：排在总市值前面，成交量折成万手、成交额折成亿、换手率补 %', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(
+      response([row({ code: '600519', volume: 58855939, amount: 15252457670, turnover_rate: 1.3814 })]),
+    )
+    renderTable()
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+
+    const table = screen.getByRole('table')
+    const headers = within(table)
+      .getAllByRole('columnheader')
+      .map(node => node.textContent?.trim())
+    // 「放总市值前面」= 三列都排在总市值之前，且顺序是成交量 → 成交额 → 换手率
+    expect(headers.indexOf('成交量')).toBeLessThan(headers.indexOf('总市值'))
+    expect(headers.indexOf('成交额')).toBe(headers.indexOf('成交量') + 1)
+    expect(headers.indexOf('换手率')).toBe(headers.indexOf('成交额') + 1)
+    expect(headers.indexOf('总市值')).toBe(headers.indexOf('换手率') + 1)
+
+    // 58,855,939 股 = 588,559.39 手 = 58.86 万手
+    expect(screen.getByText('58.86万手')).toBeTruthy()
+    expect(screen.getByText('152.52亿')).toBeTruthy()
+    expect(screen.getByText('1.38%')).toBeTruthy()
+    // 原始股数在 title 里（用户能核对单位）
+    expect(screen.getByText('58.86万手').getAttribute('title')).toContain('58,855,939 股')
+  })
+
+  it('成交额列可排序（三态循环作用在全量上）', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(
+      response([
+        row({ code: '000001', name: '平安银行', amount: 3e9 }),
+        row({ code: '600519', name: '贵州茅台', amount: 1.5e10 }),
+        row({ code: '920000', name: '安徽凤凰', amount: 2e7 }),
+      ]),
+    )
+    renderTable()
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+
+    const codesInOrder = () =>
+      Array.from(screen.getByRole('table').querySelectorAll('tbody tr')).map(tr =>
+        tr.querySelector('td:nth-child(2)')?.textContent?.trim(),
+      )
+
+    const sortBtn = screen.getByRole('button', { name: '按成交额排序' })
+    await userEvent.click(sortBtn) // 未排序 → 降序
+    expect(codesInOrder()).toEqual(['600519', '000001', '920000'])
+    await userEvent.click(sortBtn) // 降序 → 升序
+    expect(codesInOrder()).toEqual(['920000', '000001', '600519'])
+    await userEvent.click(sortBtn) // 升序 → 取消（回到代码升序）
+    expect(codesInOrder()).toEqual(['000001', '600519', '920000'])
   })
 
   it('状态列：跟在总市值后面、固定 68px；没注入渲染器时直接显示短标签', async () => {

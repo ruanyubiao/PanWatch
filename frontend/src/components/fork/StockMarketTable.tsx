@@ -39,7 +39,8 @@ import {
  * 「市场」列不给排序（用户明确说不需要）。「指标」列按库里的 ``tech_score`` 排，
  * 无分的新股恒排最后；「状态」列是交易日状态，固定列宽、不给排序。
  *
- * 列宽（用户逐列指定）：市场 60 / 代码 80 / 名称 140 / 总市值之后紧跟**状态 68**
+ * 列宽（用户逐列指定）：市场 60 / 代码 80 / 名称 140 / 成交量 96 / 成交额 104 /
+ * 换手率 84（这三列排在**总市值前面**）/ 总市值之后紧跟**状态 68**
  * （停牌 / 正常 / ST 这类 2–3 字标签）/ 指标 200（左内边距 40，免得紧挨着右对齐的
  * 总市值）/ Agent 状态 120 / 来源 200 / 操作 220；
  * 其余数值列只给最小列宽，宽屏时摊开剩余空间。
@@ -62,6 +63,9 @@ const MARKET_TABLE_TEXTS_ZH = {
   colChange: '涨跌',
   colHigh: '最高价',
   colLow: '最低价',
+  colVolume: '成交量',
+  colAmount: '成交额',
+  colTurnover: '换手率',
   colMarketCap: '总市值',
   /** 交易日状态（停牌 / 正常 / ST …）。第 4 条把原来的「状态」标题让给了这一列。 */
   colTradeStatus: '状态',
@@ -73,6 +77,9 @@ const MARKET_TABLE_TEXTS_ZH = {
   sortBy: (label: string) => `按${label}排序`,
   /** 状态列的兜底文案：库里没有状态行 = 正常交易 */
   statusNormal: '正常',
+  /** 成交量/成交额的悬停说明（单位与被换算法，表格里显示的是「手」「亿」） */
+  volumeHint: (shares: number) => `${shares.toLocaleString('zh-CN')} 股（1 手 = 100 股）`,
+  amountHint: (yuan: number) => `${yuan.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} 元`,
   // 表头排序提示：说的是「下一次点击会发生什么」（与截图一致）
   sortToDesc: '点击降序',
   sortToAsc: '点击升序',
@@ -132,6 +139,35 @@ export function formatMarketCap(value: number | null | undefined): string {
   return `${(value / 1e8).toFixed(2)}亿`
 }
 
+/**
+ * 成交量：库里是**股**，表格按 A 股习惯折成**手**（1 手 = 100 股）显示，
+ * 万手以上折成「N.NN万手」（全市场最大约 357 万手，见云端实测）。
+ * 原始股数在单元格 `title` 里给（`volumeHint`）。
+ */
+export function formatVolume(shares: number | null | undefined): string {
+  if (shares == null || shares <= 0) return '--'
+  const lots = shares / 100
+  if (lots >= 1e4) return `${(lots / 1e4).toFixed(2)}万手`
+  return `${Math.round(lots)}手`
+}
+
+/** 成交额：库里是**元**，按「亿 / 万」折算（与总市值同一套写法）。 */
+export function formatAmount(yuan: number | null | undefined): string {
+  if (yuan == null || yuan <= 0) return '--'
+  if (yuan >= 1e8) return `${(yuan / 1e8).toFixed(2)}亿`
+  if (yuan >= 1e4) return `${(yuan / 1e4).toFixed(2)}万`
+  return `${Math.round(yuan)}`
+}
+
+/**
+ * 换手率：库里**已经是百分数**（1.3814 = 1.38%），直接补 `%`，不要再乘 100。
+ * 停牌日库里是 0 → 显示 0.00%（不是「--」：它有确定的含义）。
+ */
+export function formatTurnoverRate(rate: number | null | undefined): string {
+  if (rate == null) return '--'
+  return `${rate.toFixed(2)}%`
+}
+
 // ------------------------------------------------------------------ 排序
 
 export type SortKey =
@@ -142,6 +178,9 @@ export type SortKey =
   | 'change_pct'
   | 'high'
   | 'low'
+  | 'volume'
+  | 'amount'
+  | 'turnover_rate'
   | 'total_market_cap'
   | 'score'
 
@@ -169,6 +208,12 @@ function sortValue(row: MarketRow, key: SortKey): number | string | null {
       return row.high
     case 'low':
       return row.low
+    case 'volume':
+      return row.volume
+    case 'amount':
+      return row.amount
+    case 'turnover_rate':
+      return row.turnover_rate
     case 'total_market_cap':
       return row.total_market_cap
     default:
@@ -231,6 +276,11 @@ const COLUMNS: ColumnDef[] = [
   { key: 'change_pct', label: MARKET_TABLE_TEXTS_ZH.colChange, sortKey: 'change_pct', align: 'right', minWidth: 84 },
   { key: 'high', label: MARKET_TABLE_TEXTS_ZH.colHigh, sortKey: 'high', align: 'right', minWidth: 84 },
   { key: 'low', label: MARKET_TABLE_TEXTS_ZH.colLow, sortKey: 'low', align: 'right', minWidth: 84 },
+  // 成交量 / 成交额 / 换手率：三列都紧跟「最低价」、**排在总市值前面**（用户指定）。
+  // 换手率靠成交额最右侧，与右对齐的总市值之间由状态列的 40px 左内边距隔开（原有约定不变）。
+  { key: 'volume', label: MARKET_TABLE_TEXTS_ZH.colVolume, sortKey: 'volume', align: 'right', minWidth: 96 },
+  { key: 'amount', label: MARKET_TABLE_TEXTS_ZH.colAmount, sortKey: 'amount', align: 'right', minWidth: 104 },
+  { key: 'turnover_rate', label: MARKET_TABLE_TEXTS_ZH.colTurnover, sortKey: 'turnover_rate', align: 'right', minWidth: 84 },
   { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', minWidth: 104 },
   // 状态列（交易日状态）：固定 68px —— 「停牌」「正常」「*ST」「待摘牌」都在 3 个字以内，
   // 68 = 3 个字（约 36px）+ 左右内边距，再宽就是白占地方。紧跟在总市值后面（用户指定）。
@@ -519,6 +569,20 @@ export function StockMarketTable({
         return <span className="font-mono">{formatPrice(row.high)}</span>
       case 'low':
         return <span className="font-mono">{formatPrice(row.low)}</span>
+      case 'volume':
+        return (
+          <span className="font-mono" title={row.volume != null ? MARKET_TABLE_TEXTS_ZH.volumeHint(row.volume) : undefined}>
+            {formatVolume(row.volume)}
+          </span>
+        )
+      case 'amount':
+        return (
+          <span className="font-mono" title={row.amount != null ? MARKET_TABLE_TEXTS_ZH.amountHint(row.amount) : undefined}>
+            {formatAmount(row.amount)}
+          </span>
+        )
+      case 'turnover_rate':
+        return <span className="font-mono">{formatTurnoverRate(row.turnover_rate)}</span>
       case 'total_market_cap':
         return <span className="font-mono">{formatMarketCap(row.total_market_cap)}</span>
       case 'trade_status':
@@ -594,8 +658,9 @@ export function StockMarketTable({
       ) : (
         <div className="overflow-x-auto scrollbar">
           {/* 表格最小宽度 = 固定列之和 + 各列最小宽，窄屏横向滚动而不是把列挤烂
-              （第 4 条把名称/Agent 状态/操作/指标共收窄 150px，这里同步 1598 → 1448） */}
-          <table className="w-full min-w-[1448px] table-fixed text-[12px]">
+              （第 4 条把名称/Agent 状态/操作/指标共收窄 150px，这里同步 1598 → 1448；
+              新增成交量 96 + 成交额 104 + 换手率 84 三列后 1448 → 1732） */}
+          <table className="w-full min-w-[1732px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col
