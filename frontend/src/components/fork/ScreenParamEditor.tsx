@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@panwatch/base-ui/components/ui/popover'
 import { Button } from '@panwatch/base-ui/components/ui/button'
+import { Input } from '@panwatch/base-ui/components/ui/input'
 import { Label } from '@panwatch/base-ui/components/ui/label'
 import { ScreenNumberField } from '@/components/fork/ScreenNumberField'
 import {
@@ -9,11 +10,15 @@ import {
   MA_PERIODS,
   MAX_CHANGE_PCT,
   MAX_CONSECUTIVE_DAYS,
+  METRIC_TEXTS_ZH,
   MIN_CHANGE_PCT,
   SCREEN_TEXTS_ZH,
+  metricBounds,
+  metricOf,
   type ConditionName,
   type ConditionParamsMap,
   type MaPeriod,
+  type ParamEditorKind,
 } from '@/lib/screen-rule'
 
 /**
@@ -257,6 +262,23 @@ export function ScreenParamForm({
         </div>
       ) : null}
 
+      {def.editor ? (
+        <MetricParamFields
+          name={name}
+          editor={def.editor}
+          draft={draft as unknown as Record<string, number | string>}
+          tradingDays={tradingDays}
+          invalid={invalid}
+          onTouched={markTouched}
+          onPatch={patch =>
+            setDraft({
+              ...(draft as Record<string, unknown>),
+              ...patch,
+            } as ConditionParamsMap[ConditionName])
+          }
+        />
+      ) : null}
+
       {invalid ? (
         <div className="space-y-0.5 text-[11px] leading-snug text-destructive" data-fork-screen-param-issue>
           {issues.map(issue => (
@@ -325,4 +347,187 @@ export function ScreenParamEditor({
 
 function clone<P>(value: P): P {
   return JSON.parse(JSON.stringify(value)) as P
+}
+
+// ---------------------------------------------------------------- 量价条件的表单
+
+/**
+ * 量价 / 第二批条件的参数表单。
+ *
+ * 以前每个条件在 `ScreenParamForm` 里各写一段 JSX（新增 27 条就得写 27 段）。
+ * 现在按 `def.editor`（single / range / consecutive / lookback / ma-cross / text）
+ * 渲染 —— 形状只有五种，指标只影响单位与上下限。
+ */
+function MetricParamFields({
+  name,
+  editor,
+  draft,
+  tradingDays,
+  invalid,
+  onTouched,
+  onPatch,
+}: {
+  name: ConditionName
+  editor: ParamEditorKind
+  draft: Record<string, number | string>
+  tradingDays: number
+  invalid: boolean
+  onTouched: () => void
+  onPatch: (patch: Record<string, number | string>) => void
+}) {
+  const M = METRIC_TEXTS_ZH
+  const spec = metricOf(name)
+  const defaults = CONDITION_DEFS_ZH[name].defaults as unknown as Record<string, number | string>
+  const limit = Number.isFinite(tradingDays) && tradingDays >= 1 ? Math.trunc(tradingDays) : 250
+  const consecutiveLimit = Math.min(limit, MAX_CONSECUTIVE_DAYS)
+  const isRatio = spec?.metric === 'vol_ratio'
+  const [lo, hi] = spec ? metricBounds(spec.metric) : ([0, 1e9] as [number, number])
+  const unitText = spec ? METRIC_TEXTS_ZH.unit[spec.metric] : ''
+
+  const num = (key: string): number => {
+    const parsed = Number(draft[key])
+    if (Number.isFinite(parsed)) return parsed
+    const fallback = Number(defaults[key])
+    return Number.isFinite(fallback) ? fallback : 0
+  }
+
+  const field = (key: string, label: string, min: number, max: number, integer = true) => (
+    <div key={key} className="min-w-0 space-y-1">
+      <Label className="block truncate text-[11px] text-muted-foreground">{label}</Label>
+      <ScreenNumberField
+        paramField={key}
+        ariaLabel={label}
+        value={num(key)}
+        min={min}
+        max={max}
+        integer={integer}
+        invalid={invalid}
+        onTouched={onTouched}
+        onChange={next => onPatch({ [key]: next })}
+      />
+    </div>
+  )
+
+  const rangeFields = (minField: number, maxField: number, integer: boolean) => (
+    <div className="space-y-1">
+      <div className="grid grid-cols-2 gap-2">
+        {field('min', M.minLabel, minField, maxField, integer)}
+        {field('max', M.maxLabel, minField, maxField, integer)}
+      </div>
+      <div className="text-[11px] text-muted-foreground">
+        {M.unitSuffix(unitText)}
+      </div>
+    </div>
+  )
+
+  if (editor === 'text') {
+    return (
+      <div className="space-y-1.5" data-fork-screen-metric-editor="text">
+        <Label className="text-[11px] text-muted-foreground">{M.stockLabel}</Label>
+        <Input
+          className="h-7 text-[12px]"
+          aria-label={M.stockLabel}
+          placeholder={M.stockPlaceholder}
+          value={String(draft.text ?? '')}
+          onChange={event => onPatch({ text: event.target.value })}
+          data-fork-screen-param-field="text"
+        />
+        <div className="text-[11px] text-muted-foreground">{M.stockHint}</div>
+      </div>
+    )
+  }
+
+  if (editor === 'lookback') {
+    return (
+      <div className="space-y-2" data-fork-screen-metric-editor="lookback">
+        <div className="text-[11px] leading-4 text-muted-foreground">{M.lookbackHint(limit)}</div>
+        <div className="grid grid-cols-3 gap-2">{field('m', M.lookbackLabel, 1, limit)}</div>
+      </div>
+    )
+  }
+
+  if (editor === 'ma-cross') {
+    return (
+      <div className="space-y-2" data-fork-screen-metric-editor="ma-cross">
+        {(['fast', 'slow'] as const).map(key => (
+          <div key={key} className="space-y-1">
+            <Label className="text-[11px] text-muted-foreground">
+              {key === 'fast' ? M.crossFast : M.crossSlow}
+            </Label>
+            <div className="flex flex-wrap gap-1">
+              {MA_PERIODS.map(period => {
+                const selected = Number(draft[key]) === period
+                return (
+                  <button
+                    key={period}
+                    type="button"
+                    aria-pressed={selected}
+                    data-fork-screen-cross-period={`${key}-${period}`}
+                    onClick={() => onPatch({ [key]: period })}
+                    className={`rounded border px-1.5 py-0.5 text-[11px] font-mono transition-colors ${
+                      selected
+                        ? 'border-primary/60 bg-primary/10 text-primary'
+                        : 'border-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {`MA${period}`}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ))}
+        <div className="text-[11px] text-muted-foreground">{M.crossHint}</div>
+      </div>
+    )
+  }
+
+  const hint =
+    editor === 'metric-consecutive'
+      ? M.hintConsecutive
+      : editor === 'metric-single'
+        ? M.hintSingle(limit)
+        : M.hintRange(limit)
+
+  return (
+    <div className="space-y-2" data-fork-screen-metric-editor={editor}>
+      <div className="text-[11px] leading-4 text-muted-foreground">{hint}</div>
+      {editor === 'metric-single' ? (
+        <div className="space-y-1">
+          <div className="grid grid-cols-3 gap-2">
+            {field('n', M.nShortLabel, 1, limit)}
+            {field('min', M.minLabel, lo, hi, false)}
+            {field('max', M.maxLabel, lo, hi, false)}
+          </div>
+          <div className="text-[11px] text-muted-foreground">{M.unitSuffix(unitText)}</div>
+        </div>
+      ) : null}
+      {editor === 'metric-range' ? (
+        <div className="space-y-1">
+          <div className="grid grid-cols-2 gap-2">
+            {field('n', M.startLabel, 1, limit)}
+            {field('m', M.endLabel, 1, limit)}
+          </div>
+          {rangeFields(lo, hi, false)}
+        </div>
+      ) : null}
+      {editor === 'metric-consecutive' ? (
+        <div className="space-y-1">
+          <div className="grid grid-cols-2 gap-2">
+            {field('start', M.consecutiveStartLabel, 1, consecutiveLimit)}
+            {field('days', M.consecutiveDaysLabel, 1, consecutiveLimit)}
+          </div>
+          {rangeFields(lo, hi, false)}
+        </div>
+      ) : null}
+      {isRatio ? (
+        <div className="grid grid-cols-3 gap-2">
+          {field('window', M.windowLabel, 1, 60)}
+          <div className="col-span-2 flex items-end pb-1 text-[11px] leading-4 text-muted-foreground">
+            {M.hintVolRatio}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  )
 }

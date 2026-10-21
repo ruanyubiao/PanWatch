@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from .conditions import (
     Bar,
+    BarExtras,
     ConditionSpec,
     CONDITIONS,
     EvalContext,
@@ -313,14 +314,19 @@ def evaluate_node_or_condition(node: Any, series: StockSeries, ctx: EvalContext)
 def build_series(
     symbol: str,
     rows: Iterable[Sequence[Any]],
+    with_extras: bool = False,
 ) -> StockSeries | None:
     """库行 → ``StockSeries``。
 
-    ``rows`` 每行是 ``(trade_date, open, close, pre_close, adj_factor)``。
+    ``rows`` 每行是 ``(trade_date, open, close, pre_close, adj_factor)``；带量价列时
+    是 ``(trade_date, open, close, pre_close, adj_factor, high, low, volume, amount,
+    turnover_rate)``（见 ``repository.bars_sql``，按 ``needs_extras`` 选列）。
     无效记录（``open``/``close`` 为空或 ≤ 0）等同于缺失，直接丢弃。
     """
     bars: list[Bar] = []
-    for trade_date, open_, close, pre_close, adj_factor in rows:
+    extras = BarExtras.empty() if with_extras else None
+    for row in rows:
+        trade_date, open_, close, pre_close, adj_factor = row[:5]
         if open_ is None or close is None:
             continue
         open_f = float(open_)
@@ -339,9 +345,12 @@ def build_series(
                 c_adj=close_f * factor,
             )
         )
+        if extras is not None:
+            high, low, volume, amount, turnover = (row[5], row[6], row[7], row[8], row[9])
+            extras.append(volume, amount, turnover, high, low)
     if not bars:
         return None
-    return StockSeries.build(symbol, bars)
+    return StockSeries.build(symbol, bars, extras)
 
 
 def _as_date(value: Any) -> _dt.date:
@@ -387,7 +396,13 @@ def evaluate_candidates(
             # ③ 里没有任何记录，或最后一根不是 asof：所有条件都判 false
             outcome.insufficient += 1
             continue
-        ctx = EvalContext(calendar=calendar, trading_days=trading_days)
+        ctx = EvalContext(
+            calendar=calendar,
+            trading_days=trading_days,
+            # 「股票代码或名称完整匹配」读这两项（其他条件不读）
+            code=str(row.get("code") or ""),
+            name=str(row.get("name") or ""),
+        )
         outcome.evaluated += 1
         hit = evaluate_node(rule, series, ctx)
         if hit:
