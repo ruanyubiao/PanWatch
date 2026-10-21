@@ -21,8 +21,6 @@ screen_eval_failed     500  求值时出现非预期异常
 from __future__ import annotations
 
 import logging
-import threading
-import time
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -33,125 +31,55 @@ from ..fork_screen import presets
 from ..fork_screen.evaluator import (
     ScreenEvalError,
     ScreenRuleInvalid,
-    compile_rule,
-    evaluate_candidates,
-    is_empty_rule,
-    required_bars_of_group,
     validate_params,
     validate_rule,
 )
 from ..fork_screen.models import ScreenRequest
-from ..fork_screen.repository import ScreenData, fetch_screen_data
+from ..fork_screen.service import (
+    ScreenBusy,
+    ScreenDataStale,
+    ScreenNoData,
+    ScreenParamsInvalid,
+    run_screen,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-#: 规格 §8.3-2：模块级并发闸，最多 2 个选股任务同时在跑（单进程 uvicorn，
-#: 所以模块级就够了；多 worker 时要换成跨进程的锁）。
-_SCREEN_SLOTS = threading.BoundedSemaphore(2)
 
 
 def _bad(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
 
 
-def _screen_response(req: ScreenRequest, rule, data: ScreenData, k: int, elapsed_ms: int) -> dict[str, Any]:
-    """求值 + 组装响应（``items`` 与 ``market-table`` 逐字段同形）。"""
-    calendar = data.calendar
-    trading_days = int(req.trading_days)
-    outcome = evaluate_candidates(
-        rule,
-        data.candidates,
-        data.series,
-        calendar,
-        trading_days,
-        data.asof,
-    )
-    items = [fork_market.map_row(row) for row in outcome.hit_rows]
-    items.sort(key=lambda item: str(item.get("c") or ""))
-    return {
-        "asof": str(data.asof) if data.asof is not None else None,
-        "total": len(items),
-        "items": items,
-        "window": {
-            "trading_days": trading_days,
-            "fetched_bars": int(k),
-            "start_date": str(calendar[-1]) if calendar else None,
-        },
-        "stats": {
-            "candidates": outcome.candidates,
-            "evaluated": outcome.evaluated,
-            "insufficient": outcome.insufficient,
-            "elapsed_ms": elapsed_ms,
-        },
-    }
-
-
 @router.post("/screen")
 def screen(payload: ScreenRequest) -> dict[str, Any]:
-    """按基础范围 + 技术条件筛选 A 股。结果直接替换分析页的表格数据源。"""
-    started = time.perf_counter()
+    """按基础范围 + 技术条件筛选 A 股。结果直接替换分析页的表格数据源。
 
-    param_issues = validate_params(payload)
-    if param_issues:
-        raise _bad(
-            status=400,
-            code="screen_invalid_params",
-            message="；".join(issue.describe() for issue in param_issues),
-        )
-    rule_issues = validate_rule(payload)
-    if rule_issues:
-        raise _bad(
-            status=400,
-            code="screen_invalid_rule",
-            message="；".join(issue.describe() for issue in rule_issues),
-        )
+    业务全在 ``fork_screen.service.run_screen``（同一入口给脚本/cron 复用），
+    这里只把它的异常翻译成 §8 的错误码。
+    """
     try:
-        rule = compile_rule(payload)
-    except ScreenRuleInvalid as exc:  # 防御性：上面两步已经拦过
+        return run_screen(payload)
+    except ScreenParamsInvalid as exc:
+        raise _bad(status=400, code="screen_invalid_params", message=str(exc)) from exc
+    except ScreenRuleInvalid as exc:
         raise _bad(status=400, code="screen_invalid_rule", message=str(exc)) from exc
-
-    k = required_bars_of_group(rule, int(payload.trading_days))
-
-    if not _SCREEN_SLOTS.acquire(blocking=False):
-        raise _bad(status=429, code="screen_busy", message="选股任务繁忙，请稍后重试")
-    try:
-        try:
-            data = fetch_screen_data(payload, k)
-        except fork_market.ForkDbUnavailable as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-        if data.stale_date is not None:
-            raise _bad(
-                status=503,
-                code="screen_data_stale",
-                message=f"近期行情表未更新到 {data.asof}（最新 {data.stale_date}），暂不能选股",
-            )
-
-        try:
-            body = _screen_response(payload, rule, data, k, int((time.perf_counter() - started) * 1000))
-        except ScreenEvalError as exc:
-            logger.exception("条件选股求值失败：%s", exc)
-            raise _bad(
-                status=500,
-                code="screen_eval_failed",
-                message=f"条件计算失败（{exc.condition}），请联系管理员",
-            ) from exc
-    finally:
-        _SCREEN_SLOTS.release()
-
-    body["stats"]["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
-    logger.info(
-        "条件选股：candidates=%s K=%s rows=%s 空树=%s 命中=%s 耗时=%sms",
-        body["stats"]["candidates"],
-        k,
-        data.fetched_bars,
-        is_empty_rule(rule),
-        body["total"],
-        body["stats"]["elapsed_ms"],
-    )
-    return body
+    except ScreenNoData as exc:
+        raise _bad(status=400, code="screen_no_data", message=str(exc)) from exc
+    except ScreenBusy as exc:
+        raise _bad(status=429, code="screen_busy", message=str(exc)) from exc
+    except ScreenDataStale as exc:
+        raise _bad(status=503, code="screen_data_stale", message=str(exc)) from exc
+    except fork_market.ForkDbUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ScreenEvalError as exc:
+        logger.exception("条件选股求值失败：%s", exc)
+        raise _bad(
+            status=500,
+            code="screen_eval_failed",
+            message=f"条件计算失败（{exc.condition}），请联系管理员",
+        ) from exc
 
 
 # --------------------------------------------------------------------------

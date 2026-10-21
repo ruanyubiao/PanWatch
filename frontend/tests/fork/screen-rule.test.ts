@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CONDITION_CATEGORIES,
   CONDITION_DEFS_ZH,
   MAX_CONDITIONS,
   SCREEN_MARKETS,
@@ -372,7 +373,7 @@ describe('条件选股 / 注册表', () => {
     expect(messages(validateScreenRequest(req(fixed)))).toHaveLength(0)
   })
 
-  it('八个条件齐全，分类与默认值符合规格', () => {
+  it('条件齐全（8 条原有 + 20 条量价 + 7 条第二批），分类与默认值符合规格', () => {
     expect(Object.keys(CONDITION_DEFS_ZH)).toEqual([
       'ma_bullish',
       'ma_bearish',
@@ -382,7 +383,35 @@ describe('条件选股 / 注册表', () => {
       'consecutive_bullish',
       'consecutive_rising',
       'change_pct',
+      'change_pct_all',
+      'change_pct_any',
+      'change_pct_span',
+      'turnover_single',
+      'turnover_all',
+      'turnover_any',
+      'turnover_span',
+      'volume_single',
+      'volume_all',
+      'volume_any',
+      'volume_span',
+      'amount_single',
+      'amount_all',
+      'amount_any',
+      'amount_span',
+      'vol_ratio_single',
+      'vol_ratio_all',
+      'vol_ratio_any',
+      'vol_ratio_avg',
+      'vol_ratio_consecutive',
+      'consecutive_shrinking',
+      'consecutive_falling',
+      'new_high',
+      'new_low',
+      'ma_golden_cross',
+      'ma_dead_cross',
+      'stock_match',
     ])
+    expect(Object.keys(CONDITION_DEFS_ZH)).toHaveLength(35)
     expect(CONDITION_DEFS_ZH.ma_bullish.defaults).toEqual({ periods: [5, 10, 20, 60] })
     expect(CONDITION_DEFS_ZH.close_above_ma.defaults).toEqual({ period: 5 })
     expect(CONDITION_DEFS_ZH.consecutive_bullish.defaults).toEqual({ start: 1, days: 4 })
@@ -390,6 +419,36 @@ describe('条件选股 / 注册表', () => {
     expect(CONDITION_DEFS_ZH.ma_bullish.category).toBe('均线')
     expect(CONDITION_DEFS_ZH.more_bearish_candles.category).toBe('K 线')
     expect(CONDITION_DEFS_ZH.change_pct.category).toBe('涨跌幅')
+
+    // 量价：默认区间按指标走，量比多一个回看天数
+    expect(CONDITION_DEFS_ZH.turnover_single.defaults).toEqual({ n: 1, min: 0, max: 30 })
+    expect(CONDITION_DEFS_ZH.volume_span.defaults).toEqual({ n: 1, m: 5, min: 0, max: 100000 })
+    expect(CONDITION_DEFS_ZH.amount_span.defaults).toEqual({ n: 1, m: 5, min: 0, max: 100 })
+    expect(CONDITION_DEFS_ZH.vol_ratio_single.defaults).toEqual({
+      n: 1,
+      min: 0,
+      max: 10,
+      window: 5,
+    })
+    expect(CONDITION_DEFS_ZH.consecutive_shrinking.defaults).toEqual({
+      start: 1,
+      days: 4,
+      min: 0,
+      max: 1,
+      window: 5,
+    })
+    expect(CONDITION_DEFS_ZH.turnover_all.category).toBe('换手率')
+    expect(CONDITION_DEFS_ZH.amount_all.category).toBe('成交额')
+    expect(CONDITION_DEFS_ZH.vol_ratio_avg.category).toBe('量比')
+
+    // 第二批
+    expect(CONDITION_DEFS_ZH.new_high.defaults).toEqual({ m: 20 })
+    expect(CONDITION_DEFS_ZH.ma_golden_cross.defaults).toEqual({ fast: 5, slow: 10 })
+    expect(CONDITION_DEFS_ZH.stock_match.defaults).toEqual({ text: '' })
+    // 分类顺序覆盖全部分类，选择列表不会漏掉一整组
+    expect(new Set(CONDITION_CATEGORIES)).toEqual(
+      new Set(Object.values(CONDITION_DEFS_ZH).map(def => (def as { category: string }).category)),
+    )
   })
 
   it('摘要按周期升序显示', () => {
@@ -433,3 +492,127 @@ describe('条件选股 / 注册表', () => {
 })
 
 // 类型别名在文件顶部（RuleNode = GroupNode['children'][number]）
+
+// ------------------------------------------------------------------ 量价条件
+
+describe('量价条件（指标 × 形状）', () => {
+  it('摘要把「倒数第 M～N 日」和单位写清楚', () => {
+    expect(
+      CONDITION_DEFS_ZH.turnover_single.summary({ n: 1, min: 5, max: 10 }),
+    ).toBe('第 1 日换手率 ∈ (5%, 10%)')
+    expect(
+      CONDITION_DEFS_ZH.amount_all.summary({ n: 1, m: 5, min: 1, max: 3 }),
+    ).toBe('倒数第5～1日每天成交额 ∈ (1亿元, 3亿元)')
+    expect(
+      CONDITION_DEFS_ZH.volume_any.summary({ n: 2, m: 6, min: 10, max: 20 }),
+    ).toBe('倒数第6～2日任意一天成交量 ∈ (10万手, 20万手)')
+    expect(
+      CONDITION_DEFS_ZH.change_pct_span.summary({ n: 1, m: 10, min: 20, max: 60 }),
+    ).toBe('倒数第10～1日涨跌幅 ∈ (20%, 60%)')
+    expect(
+      CONDITION_DEFS_ZH.turnover_span.summary({ n: 1, m: 30, min: 50, max: 120 }),
+    ).toBe('倒数第30～1日累计换手率 ∈ (50%, 120%)')
+    // 连续形状沿用「倒数第7～4天连续4日」的写法
+    expect(
+      CONDITION_DEFS_ZH.consecutive_shrinking.summary({
+        start: 4,
+        days: 4,
+        min: 0,
+        max: 1,
+        window: 5,
+      }),
+    ).toBe('倒数第7～4天连续4日量比 ∈ (0倍, 1倍)，量比回看 5 日')
+  })
+
+  it('K 跟着条件和形状走（量比要多取回看天数）', () => {
+    expect(CONDITION_DEFS_ZH.turnover_single.requiredBars({ n: 1, min: 0, max: 1 })).toBe(1)
+    expect(CONDITION_DEFS_ZH.turnover_all.requiredBars({ n: 1, m: 5, min: 0, max: 1 })).toBe(5)
+    // 涨跌幅要多取一根做 pre_close 回退
+    expect(
+      CONDITION_DEFS_ZH.change_pct_span.requiredBars({ n: 1, m: 5, min: 0, max: 1 }),
+    ).toBe(6)
+    expect(
+      CONDITION_DEFS_ZH.vol_ratio_single.requiredBars({ n: 1, min: 0, max: 1, window: 5 }),
+    ).toBe(6)
+    expect(
+      CONDITION_DEFS_ZH.consecutive_shrinking.requiredBars({
+        start: 1,
+        days: 4,
+        min: 0,
+        max: 1,
+        window: 5,
+      }),
+    ).toBe(9)
+  })
+
+  it('区间形状的校验：M ≥ N、跨度 ≤ 30、下限 < 上限', () => {
+    const issues = (params: object, tradingDays = 30) =>
+      CONDITION_DEFS_ZH.turnover_all.validate(params as never, tradingDays)
+
+    expect(issues({ n: 5, m: 3, min: 0, max: 1 }).join()).toContain('M ≥ N')
+    // 窗口给到 250 才可能触发「跨度」这条（窗口 30 时 M 先被上界拦住）
+    expect(issues({ n: 1, m: 31, min: 0, max: 1 }, 250).join()).toContain('区间跨度不能超过 30')
+    expect(issues({ n: 1, m: 5, min: 9, max: 1 }).join()).toContain('下限必须小于上限')
+    // 换手率不能为负（与后端 `_METRIC_BOUNDS` 一致）
+    expect(issues({ n: 1, m: 5, min: -3, max: 1 }).join()).toContain('需在 0 至 1000 之间')
+  })
+
+  it('量比回看天数的边界是 1–60', () => {
+    const issues = CONDITION_DEFS_ZH.vol_ratio_single.validate(
+      { n: 1, min: 0, max: 10, window: 0 } as never,
+      30,
+    )
+    expect(issues.join()).toContain('量比回看天数')
+  })
+
+  it('提交时每个键都要在，量比带 window、其余不带', () => {
+    const withRatio = toApiRequest(
+      req(group([cond('vol_ratio_single', { n: 2, min: 1.5, max: 4, window: 10 })])),
+    )
+    expect(withRatio.rule.children[0]).toMatchObject({
+      params: { n: 2, min: 1.5, max: 4, window: 10 },
+    })
+
+    const plain = toApiRequest(
+      req(group([cond('turnover_all', { n: 1, m: 5, min: 0, max: 3 })])),
+    )
+    expect(plain.rule.children[0]).toMatchObject({
+      params: { n: 1, m: 5, min: 0, max: 3 },
+    })
+
+    // 字符串字段原样保留（后端 extra=forbid，键必须对得上）
+    const stock = toApiRequest(req(group([cond('stock_match', { text: '600519' })])))
+    expect(stock.rule.children[0]).toMatchObject({ params: { text: '600519' } })
+  })
+
+  it('空参数不会把 NaN 提交上去（回落到条件默认值）', () => {
+    const submitted = toApiRequest(
+      req(group([cond('turnover_single', { n: 1, min: Number.NaN, max: Number.NaN })])),
+    )
+    const params = submitted.rule.children[0] as { params: Record<string, number> }
+    expect(Number.isFinite(params.params.min)).toBe(true)
+    expect(Number.isFinite(params.params.max)).toBe(true)
+  })
+})
+
+describe('数据截至（指定窗口结束日）', () => {
+  it('留空按 null 提交，填了原样带上', () => {
+    expect(toApiRequest(req(group([]))).asof).toBeNull()
+    expect(toApiRequest(req(group([]), { asof: '2026-09-01' })).asof).toBe('2026-09-01')
+    // 前后空格要走掉，否则后端 422
+    expect(toApiRequest(req(group([]), { asof: ' 2026-09-01 ' })).asof).toBe('2026-09-01')
+  })
+
+  it('格式不对时前端就拦住', () => {
+    expect(messages(validateScreenRequest(req(group([]), { asof: '2026/09/01' })))).toContain(
+      'YYYY-MM-DD',
+    )
+    expect(messages(validateScreenRequest(req(group([]), { asof: '2026-09-01' })))).toBe('')
+  })
+
+  it('非交易日回退时横幅两种日期都写出来', () => {
+    // 实际用 09-04、请求 09-05（周六）→ 文案里两个日期都在，用户不会以为没生效
+    expect(SCREEN_TEXTS_ZH.asofFallback('2026-09-04', '2026-09-05')).toContain('2026-09-04')
+    expect(SCREEN_TEXTS_ZH.asofFallback('2026-09-04', '2026-09-05')).toContain('2026-09-05')
+  })
+})

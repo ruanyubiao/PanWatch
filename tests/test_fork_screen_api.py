@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from src.modules.market.api import fork_market, fork_screen
+from src.modules.market.fork_screen import service as screen_service
 from src.modules.market.fork_screen.evaluator import build_series
 from src.modules.market.fork_screen.models import ScreenRequest
 from src.modules.market.fork_screen.repository import (
@@ -179,11 +180,12 @@ def test_A3_白名单之外的市场进不了SQL():
 def _patch_fetch(monkeypatch, data: ScreenData):
     calls: list[tuple[ScreenRequest, int]] = []
 
-    def fake_fetch(req: ScreenRequest, k: int) -> ScreenData:
+    def fake_fetch(req: ScreenRequest, k: int, **kwargs) -> ScreenData:
         calls.append((req, k))
         return data
 
-    monkeypatch.setattr(fork_screen, "fetch_screen_data", fake_fetch)
+    # 取数发生在 service 里（端点只是异常翻译层），所以替换点也在 service
+    monkeypatch.setattr(screen_service, "fetch_screen_data", fake_fetch)
     return calls
 
 
@@ -212,10 +214,10 @@ def test_A4_日历没更新到asof时返回503(monkeypatch):
 
 
 def test_A5_连不上库时返回503且带原因(monkeypatch):
-    def boom(req, k):
+    def boom(req, k, **kwargs):
         raise fork_market.ForkDbUnavailable("连接行情库失败：拒绝连接")
 
-    monkeypatch.setattr(fork_screen, "fetch_screen_data", boom)
+    monkeypatch.setattr(screen_service, "fetch_screen_data", boom)
     with pytest.raises(HTTPException) as info:
         fork_screen.screen(make_request())
     assert info.value.status_code == 503
@@ -348,7 +350,7 @@ def test_A8_同一天重复行只计一次():
 def test_A9_并发超过两个时返回429(monkeypatch):
     data = ScreenData(asof=ASOF, candidates=[db_row()], calendar=calendar_of(30), series={})
     _patch_fetch(monkeypatch, data)
-    slots = fork_screen._SCREEN_SLOTS
+    slots = screen_service._SLOTS
     assert slots.acquire(blocking=False)
     assert slots.acquire(blocking=False)
     try:
