@@ -1849,9 +1849,12 @@ export default function StocksPage() {
       <span
         data-fork-trade-status={code}
         title={row.status_group ? TRADE_STATUS_TEXTS_ZH.group(label, row.status_group) : label}
-        className={`inline-flex items-center whitespace-nowrap rounded px-1 py-0.5 text-[10px] font-medium ${tone}`}
+        className={`inline-flex max-w-full items-center whitespace-nowrap rounded px-0.5 py-0.5 text-[10px] font-medium ${tone}`}
       >
-        {label}
+        {/* 状态列收窄到 48px（左间距 20 + 右内边距 2，标签只剩 26px）：2 字标签（正常/停牌）
+            与 ST/*ST 都装得下；「待摘牌」「已退市」这类 3 字标签极少数（当前线上 0 只）
+            才会在这里截断，完整文案仍在悬停 title 里 */}
+        <span className="min-w-0 truncate">{label}</span>
       </span>
     )
   }
