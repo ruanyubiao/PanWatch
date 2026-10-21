@@ -57,6 +57,12 @@ export interface MarketRow {
   high: number | null
   low: number | null
   change_pct: number | null
+  /** 成交量（股） */
+  volume: number | null
+  /** 成交额（元） */
+  amount: number | null
+  /** 换手率（百分数：1.38 就是 1.38%），管道已按流通股本算好 */
+  turnover_rate: number | null
   total_market_cap: number | null
   source: string | null
   /**
@@ -108,6 +114,9 @@ export interface MarketRowRaw {
   l: number | null
   cp: number | null
   mc: number | null
+  v?: number | null
+  am?: number | null
+  tr?: number | null
   so: string | null
   sc?: string | null
   sl?: string | null
@@ -153,6 +162,9 @@ export function parseMarketRow(raw: MarketRowRaw): MarketRow {
     high: raw.h ?? null,
     low: raw.l ?? null,
     change_pct: raw.cp ?? null,
+    volume: raw.v ?? null,
+    amount: raw.am ?? null,
+    turnover_rate: raw.tr ?? null,
     total_market_cap: raw.mc ?? null,
     source: raw.so ?? null,
     status_code: raw.sc ?? null,
