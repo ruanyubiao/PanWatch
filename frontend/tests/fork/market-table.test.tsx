@@ -278,7 +278,7 @@ describe('fork: 分析页全市场表格', () => {
     expect(screen.getByText('ST')).toBeTruthy()
   })
 
-  it('列宽：名称 80 / 指标 180（左内边距 20）/ Agent 状态 90 / 操作 180', async () => {
+  it('列宽：市场～总市值一律固定宽（各 −10）、名称 60 / 指标 160（左内边距 20）/ Agent 90 / 操作 180', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response([row({ code: '600519' })]))
     renderTable()
     await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
@@ -290,14 +290,37 @@ describe('fork: 分析页全市场表格', () => {
     const widthOf = (label: string) =>
       (table.querySelectorAll('colgroup col')[headers.indexOf(label)] as HTMLElement).style.width
 
-    expect(widthOf('名称')).toBe('80px')
-    expect(widthOf('指标')).toBe('180px')
+    // 市场 → 总市值：全部从「最小宽/固定宽」改成固定宽 −10px（名称再 −20）
+    expect(widthOf('市场')).toBe('50px')
+    expect(widthOf('代码')).toBe('70px')
+    expect(widthOf('名称')).toBe('60px')
+    expect(widthOf('昨收价')).toBe('74px')
+    expect(widthOf('现价')).toBe('74px')
+    expect(widthOf('涨跌')).toBe('74px')
+    expect(widthOf('最高价')).toBe('74px')
+    expect(widthOf('最低价')).toBe('74px')
+    expect(widthOf('成交量')).toBe('86px')
+    expect(widthOf('成交额')).toBe('94px')
+    expect(widthOf('换手率')).toBe('74px')
+    expect(widthOf('总市值')).toBe('94px')
+    // 指标列再 −20；其余不在这次的收窄范围里
+    expect(widthOf('指标')).toBe('160px')
     expect(widthOf('Agent 状态')).toBe('90px')
     expect(widthOf('操作')).toBe('180px')
+
+    // 市场～总市值不再留 minWidth（否则浏览器会按内容撑开，固定宽失效）
+    const cols = table.querySelectorAll('colgroup col')
+    for (const label of ['市场', '代码', '名称', '昨收价', '现价', '涨跌', '最高价', '最低价', '成交量', '成交额', '换手率', '总市值']) {
+      expect((cols[headers.indexOf(label)] as HTMLElement).style.minWidth).toBe('')
+    }
 
     // 指标列前面 20px 间距（表头与单元格共用 paddingLeft，否则对不齐）
     const indicatorHeader = within(table).getAllByRole('columnheader')[headers.indexOf('指标')]
     expect((indicatorHeader as HTMLElement).style.paddingLeft).toBe('20px')
+    // 名称列收窄到 60 后左右内边距改成 4px，否则四字名会被截成省略号
+    const nameHeader = within(table).getAllByRole('columnheader')[headers.indexOf('名称')]
+    expect((nameHeader as HTMLElement).style.paddingLeft).toBe('4px')
+    expect((nameHeader as HTMLElement).style.paddingRight).toBe('4px')
   })
 
   it('belowToolbar 渲染在工具条那一行的下面、表格之前', async () => {

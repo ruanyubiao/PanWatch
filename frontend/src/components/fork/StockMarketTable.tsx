@@ -263,33 +263,40 @@ interface ColumnDef {
   minWidth?: number
   /** 左内边距（px）——表头与单元格共用，否则表头与内容对不齐 */
   padLeft?: number
+  /** 左右内边距同时覆盖（px）——名称列收窄后靠它把 px-2 的 8px 改成 4px，四字名才装得下 */
+  padX?: number
 }
 
 const COLUMNS: ColumnDef[] = [
   // 市场列不参与排序（用户明确说不需要）
-  { key: 'market', label: MARKET_TABLE_TEXTS_ZH.colMarket, width: 60 },
-  { key: 'code', label: MARKET_TABLE_TEXTS_ZH.colCode, sortKey: 'code', width: 80 },
-  // 名称列 140 → 80（用户第 4 条）；A 股名称最长 4 个汉字（约 48px）+ 左右内边距 16px 仍装得下
-  { key: 'name', label: MARKET_TABLE_TEXTS_ZH.colName, sortKey: 'name', width: 80 },
-  { key: 'pre_close', label: MARKET_TABLE_TEXTS_ZH.colPreClose, sortKey: 'pre_close', align: 'right', minWidth: 84 },
-  { key: 'close', label: MARKET_TABLE_TEXTS_ZH.colPrice, sortKey: 'close', align: 'right', minWidth: 84 },
-  { key: 'change_pct', label: MARKET_TABLE_TEXTS_ZH.colChange, sortKey: 'change_pct', align: 'right', minWidth: 84 },
-  { key: 'high', label: MARKET_TABLE_TEXTS_ZH.colHigh, sortKey: 'high', align: 'right', minWidth: 84 },
-  { key: 'low', label: MARKET_TABLE_TEXTS_ZH.colLow, sortKey: 'low', align: 'right', minWidth: 84 },
+  // 市场 → 总市值 这 12 列一律改成**固定宽度**（用户：固定宽度的各减 10px；原来只给
+  // 最小宽度的也设成固定值 = 原最小宽 − 10），这样整表列宽由本表说了算，不再随视口摊开。
+  { key: 'market', label: MARKET_TABLE_TEXTS_ZH.colMarket, width: 50 },
+  { key: 'code', label: MARKET_TABLE_TEXTS_ZH.colCode, sortKey: 'code', width: 70 },
+  // 名称列 80 → 60（市场～总市值 −10，再按用户第 2 条再 −20）。
+  // 60px 里再留 8px×2 的 px-2 只剩 44px，装不下 4 个汉字（48px）—— 名称列单独把左右内边距
+  // 收到 4px（padX: 4），内容区回到 52px，四字名（平安银行/贵州茅台）不省略号，
+  // 只有 *ST 开头的长名才 truncate（悬停有 title 显示原名）。
+  { key: 'name', label: MARKET_TABLE_TEXTS_ZH.colName, sortKey: 'name', width: 60, padX: 4 },
+  { key: 'pre_close', label: MARKET_TABLE_TEXTS_ZH.colPreClose, sortKey: 'pre_close', align: 'right', width: 74 },
+  { key: 'close', label: MARKET_TABLE_TEXTS_ZH.colPrice, sortKey: 'close', align: 'right', width: 74 },
+  { key: 'change_pct', label: MARKET_TABLE_TEXTS_ZH.colChange, sortKey: 'change_pct', align: 'right', width: 74 },
+  { key: 'high', label: MARKET_TABLE_TEXTS_ZH.colHigh, sortKey: 'high', align: 'right', width: 74 },
+  { key: 'low', label: MARKET_TABLE_TEXTS_ZH.colLow, sortKey: 'low', align: 'right', width: 74 },
   // 成交量 / 成交额 / 换手率：三列都紧跟「最低价」、**排在总市值前面**（用户指定）。
   // 换手率靠成交额最右侧，与右对齐的总市值之间由状态列的 40px 左内边距隔开（原有约定不变）。
-  { key: 'volume', label: MARKET_TABLE_TEXTS_ZH.colVolume, sortKey: 'volume', align: 'right', minWidth: 96 },
-  { key: 'amount', label: MARKET_TABLE_TEXTS_ZH.colAmount, sortKey: 'amount', align: 'right', minWidth: 104 },
-  { key: 'turnover_rate', label: MARKET_TABLE_TEXTS_ZH.colTurnover, sortKey: 'turnover_rate', align: 'right', minWidth: 84 },
-  { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', minWidth: 104 },
+  { key: 'volume', label: MARKET_TABLE_TEXTS_ZH.colVolume, sortKey: 'volume', align: 'right', width: 86 },
+  { key: 'amount', label: MARKET_TABLE_TEXTS_ZH.colAmount, sortKey: 'amount', align: 'right', width: 94 },
+  { key: 'turnover_rate', label: MARKET_TABLE_TEXTS_ZH.colTurnover, sortKey: 'turnover_rate', align: 'right', width: 74 },
+  { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', width: 94 },
   // 状态列（交易日状态）：固定 68px —— 「停牌」「正常」「*ST」「待摘牌」都在 3 个字以内，
   // 68 = 3 个字（约 36px）+ 左右内边距，再宽就是白占地方。紧跟在总市值后面（用户指定）。
   // 左内边距 40px 在**这一列**（用户第 9 条：原来加在「指标」列前面的间距挪到状态列，
   // 指标列不再留白）—— 总市值是右对齐的，紧贴一个状态标签会糊成一片。
   { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 68, padLeft: 40 },
-  // 指标列：左内边距 20px（用户最新第 1 条：指标列前面加 20px 间距），列宽同步 200 → 180
-  // （第 4 条：指标列减少 20px）—— 内边距吃掉的宽度从列宽里扣回来，方格总宽不变。
-  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 180, padLeft: 20 },
+  // 指标列：左内边距 20px（用户最新第 1 条：指标列前面加 20px 间距），列宽 200 → 180 → 160
+  // （第 4 条：指标列减少 20px；本轮用户再要求减少 20px）
+  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 160, padLeft: 20 },
   // Agent 状态列 120 → 90（第 4 条）
   { key: 'agent', label: MARKET_TABLE_TEXTS_ZH.colAgent, width: 90 },
   { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 200 },
@@ -657,10 +664,11 @@ export function StockMarketTable({
         <div className="py-10 text-center text-[12px] text-muted-foreground">{emptyText}</div>
       ) : (
         <div className="overflow-x-auto scrollbar">
-          {/* 表格最小宽度 = 固定列之和 + 各列最小宽，窄屏横向滚动而不是把列挤烂
-              （第 4 条把名称/Agent 状态/操作/指标共收窄 150px，这里同步 1598 → 1448；
-              新增成交量 96 + 成交额 104 + 换手率 84 三列后 1448 → 1732） */}
-          <table className="w-full min-w-[1732px] table-fixed text-[12px]">
+          {/* 表格最小宽 = 各列固定宽之和 1596px（市场～总市值各 −10、名称再 −20、指标再 −20，1746 → 1596）。
+              保留 w-full：容器比 1596 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
+              窄到不够就横向滚动；只有容器比 1596 还宽时 table-fixed 才会把余量按比例摊给各列——
+              这是原来就有的行为（宽屏铺满），本次不动 */}
+          <table className="w-full min-w-[1596px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col
@@ -679,6 +687,9 @@ export function StockMarketTable({
                       style={{
                         ...(column.minWidth ? { minWidth: column.minWidth } : {}),
                         ...(column.padLeft ? { paddingLeft: column.padLeft } : {}),
+                        ...(column.padX
+                          ? { paddingLeft: column.padX, paddingRight: column.padX }
+                          : {}),
                       }}
                       className={`whitespace-nowrap px-2 py-2 font-normal ${
                         column.align === 'right' ? 'text-right' : 'text-left'
@@ -727,6 +738,9 @@ export function StockMarketTable({
                           style={{
                             ...(column.minWidth ? { minWidth: column.minWidth } : {}),
                             ...(column.padLeft ? { paddingLeft: column.padLeft } : {}),
+                            ...(column.padX
+                              ? { paddingLeft: column.padX, paddingRight: column.padX }
+                              : {}),
                           }}
                           className={`py-2 px-2 ${column.align === 'right' ? 'text-right' : 'text-left'} ${
                             column.key === 'source' || column.key === 'agent'
