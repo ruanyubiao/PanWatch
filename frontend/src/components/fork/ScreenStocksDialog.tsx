@@ -654,7 +654,9 @@ export function ScreenStocksDialog({
               data-fork-screen-save-preset
             >
               <Save className="h-3.5 w-3.5" />
-              {presetName ? SCREEN_PRESET_TEXTS_ZH.dialogSaveOverwrite : SCREEN_PRESET_TEXTS_ZH.dialogSave}
+              {/* 文案永远是「保存」（用户第 2 条）：覆盖保存时行为仍是覆盖，只是不再换词 —— 
+                  同一个按钮一会儿叫保存一会儿叫覆盖保存，看着像两个功能。 */}
+              {SCREEN_PRESET_TEXTS_ZH.dialogSave}
             </Button>
             <Button
               type="button"

@@ -20,10 +20,9 @@ const FORBIDDEN_CHARS = /[\\/:*?"<>|\u0000-\u001f]/
 
 export const SCREEN_PRESET_TEXTS_ZH = {
   save: '保存条件',
-  /** 条件选股弹窗底部那颗「保存」（没保存过 → 弹名字输入框） */
+  /** 条件选股弹窗底部那颗「保存」：没保存过 → 弹名字输入框；已保存过 → 直接覆盖原文件。
+   *  文案始终是「保存」（用户要求：所有状态下都叫保存）。 */
   dialogSave: '保存',
-  /** 从已保存条件打开时那颗按钮的文案：再点一次就是覆盖原文件 */
-  dialogSaveOverwrite: '覆盖保存',
   saveTitle: '保存条件',
   saveDescription: '保存后可在「已保存条件」下拉里选出来复用或编辑。名字同时是服务器上的文件名。',
   nameLabel: '条件名称',
