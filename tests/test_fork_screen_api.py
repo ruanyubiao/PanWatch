@@ -159,9 +159,23 @@ def test_A2_市值亿元换算成元_含ST开关():
 
 
 def test_A2_市值上下限严格开区间():
-    sql = candidate_sql()
+    # 老请求（带基础市值区间）仍然在 SQL 里先过滤，且是严格开区间
+    sql = candidate_sql(with_cap=True)
     assert "> %(cap_min)s" in sql
     assert "< %(cap_max)s" in sql
+
+
+def test_A2_没有基础市值区间时SQL不带市值条件():
+    """2026-10-21：市值搬进条件列表后，新请求不带 market_cap，SQL 里就不该有它。"""
+    sql = candidate_sql()
+    assert "cap_min" not in sql
+    assert "cap_max" not in sql
+    assert "market_board IN %(markets)s" in sql
+
+    # 参数同理：不传就不会有占位符对不上的情况
+    req = make_request()
+    req.market_cap = None
+    assert "cap_min" not in candidate_params(req)
 
 
 # ---------------------------------------------------------------- A3 市场白名单

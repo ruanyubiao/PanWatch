@@ -5,7 +5,7 @@ import { Input } from '@panwatch/base-ui/components/ui/input'
 import {
   CONDITION_CATEGORIES,
   CONDITION_DEFS_ZH,
-  CONDITION_NAMES,
+  PICKABLE_CONDITION_NAMES,
   SCREEN_TEXTS_ZH,
   type ConditionName,
   type ConditionParamsMap,
@@ -79,8 +79,8 @@ export function ScreenConditionPicker({
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    if (!needle) return CONDITION_NAMES
-    return CONDITION_NAMES.filter(name => {
+    if (!needle) return PICKABLE_CONDITION_NAMES
+    return PICKABLE_CONDITION_NAMES.filter(name => {
       const def = CONDITION_DEFS_ZH[name]
       return (
         def.label.toLowerCase().includes(needle) ||

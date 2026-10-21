@@ -3,6 +3,7 @@ import {
   CONDITION_CATEGORIES,
   CONDITION_DEFS_ZH,
   MAX_CONDITIONS,
+  PICKABLE_CONDITION_NAMES,
   SCREEN_MARKETS,
   SCREEN_TEXTS_ZH,
   addChild,
@@ -14,6 +15,7 @@ import {
   fillDefaultParams,
   findNode,
   formatRule,
+  migrateLegacyMarketCap,
   removeNode,
   requiredBarsOf,
   toApiRequest,
@@ -81,7 +83,7 @@ describe('条件选股 / 规则预览', () => {
 })
 
 describe('条件选股 / 校验（规格 §10）', () => {
-  it('F2 统计窗口、市场、市值', () => {
+  it('F2 统计窗口、市场（市值已搬进条件列表）', () => {
     expect(messages(validateScreenRequest(req(createGroup(), { trading_days: 0 })))).toContain(
       '统计窗口需为 1–250 的整数',
     )
@@ -94,27 +96,14 @@ describe('条件选股 / 校验（规格 §10）', () => {
     expect(messages(validateScreenRequest(req(createGroup(), { markets: [] })))).toContain(
       '至少选择一个市场',
     )
+    // 基础市值区间已经不是界面字段：老请求带着也不拦（语义由 market_cap 条件表达）
     expect(
-      messages(
-        validateScreenRequest(
-          req(createGroup(), { market_cap: { min_yi: 100, max_yi: 100 } }),
-        ),
-      ),
-    ).toContain('下限必须小于上限')
+      messages(validateScreenRequest(req(createGroup(), { market_cap: { min_yi: 100, max_yi: 100 } }))),
+    ).toBe('')
+    // 市值条件的校验在条件自己身上
     expect(
-      messages(
-        validateScreenRequest(
-          req(createGroup(), { market_cap: { min_yi: -1, max_yi: 10 } }),
-        ),
-      ),
-    ).toContain('总市值下限需为 ≥ 0 的数字')
-    expect(
-      messages(
-        validateScreenRequest(
-          req(createGroup(), { market_cap: { min_yi: 1, max_yi: 1_000_001 } }),
-        ),
-      ),
-    ).toContain('总市值上限不能超过 1,000,000 亿')
+      CONDITION_DEFS_ZH.market_cap.validate({ op: 'gte', value: -1 }, 30),
+    ).not.toEqual([])
   })
 
   it('F2 条件树结构（深度 / 空组 / 规模）', () => {
@@ -267,13 +256,13 @@ describe('条件选股 / K 与提交', () => {
       ...createDefaultRequest(),
       trading_days: '45' as unknown as number,
       markets: [...SCREEN_MARKETS],
-      market_cap: { min_yi: '2' as unknown as number, max_yi: '500' as unknown as number },
       rule: { ...collapsed, children: [condition] },
     } as ScreenRequest
 
     const payload = toApiRequest(state)
     expect(payload.trading_days).toBe(45)
-    expect(payload.market_cap).toEqual({ min_yi: 2, max_yi: 500 })
+    // 市值不再作为基础参数提交（是条件列表里的一条条件）
+    expect(payload.market_cap).toBeUndefined()
     expect('collapsed' in payload.rule).toBe(false)
     expect((payload.rule.children[0] as ConditionNode).params).toEqual({ period: 20 })
     // 请求里不该出现 id 之外的多余键（后端 extra="forbid"）
@@ -373,7 +362,7 @@ describe('条件选股 / 注册表', () => {
     expect(messages(validateScreenRequest(req(fixed)))).toHaveLength(0)
   })
 
-  it('条件齐全（8 条原有 + 20 条量价 + 7 条第二批），分类与默认值符合规格', () => {
+  it('条件齐全（8 条原有 + 20 条量价 + 3 条总市值区间 + 7 条第二批 + 3 条新增），分类与默认值符合规格', () => {
     expect(Object.keys(CONDITION_DEFS_ZH)).toEqual([
       'ma_bullish',
       'ma_bearish',
@@ -404,14 +393,20 @@ describe('条件选股 / 注册表', () => {
       'vol_ratio_avg',
       'vol_ratio_consecutive',
       'consecutive_shrinking',
+      'market_cap_single',
+      'market_cap_all',
+      'market_cap_any',
       'consecutive_falling',
       'new_high',
       'new_low',
       'ma_golden_cross',
       'ma_dead_cross',
       'stock_match',
+      'stock_code',
+      'stock_name',
+      'market_cap',
     ])
-    expect(Object.keys(CONDITION_DEFS_ZH)).toHaveLength(35)
+    expect(Object.keys(CONDITION_DEFS_ZH)).toHaveLength(41)
     expect(CONDITION_DEFS_ZH.ma_bullish.defaults).toEqual({ periods: [5, 10, 20, 60] })
     expect(CONDITION_DEFS_ZH.close_above_ma.defaults).toEqual({ period: 5 })
     expect(CONDITION_DEFS_ZH.consecutive_bullish.defaults).toEqual({ start: 1, days: 4 })
@@ -614,5 +609,84 @@ describe('数据截至（指定窗口结束日）', () => {
     // 实际用 09-04、请求 09-05（周六）→ 文案里两个日期都在，用户不会以为没生效
     expect(SCREEN_TEXTS_ZH.asofFallback('2026-09-04', '2026-09-05')).toContain('2026-09-04')
     expect(SCREEN_TEXTS_ZH.asofFallback('2026-09-04', '2026-09-05')).toContain('2026-09-05')
+  })
+})
+
+describe('总市值条件（2026-10-22 从基础筛选搬进条件列表）', () => {
+  it('四个比较符的摘要写法', () => {
+    const def = CONDITION_DEFS_ZH.market_cap
+    expect(def.summary({ op: 'gt', value: 100 })).toBe('总市值 > 100 亿元')
+    expect(def.summary({ op: 'gte', value: 100 })).toBe('总市值 ≥ 100 亿元')
+    expect(def.summary({ op: 'lt', value: 200 })).toBe('总市值 < 200 亿元')
+    expect(def.summary({ op: 'lte', value: 200 })).toBe('总市值 ≤ 200 亿元')
+  })
+
+  it('阈值越界 / 非数字都被拦；只取窗口末日那一根', () => {
+    const def = CONDITION_DEFS_ZH.market_cap
+    expect(def.validate({ op: 'gte', value: 100 }, 30)).toEqual([])
+    expect(def.validate({ op: 'gte', value: -1 }, 30)).not.toEqual([])
+    expect(def.validate({ op: 'gte', value: Number.NaN }, 30)).not.toEqual([])
+    expect(def.requiredBars({ op: 'gte', value: 100 })).toBe(1)
+  })
+
+  it('三个历史市值条件都在「总市值」分类下，单位亿元', () => {
+    for (const name of ['market_cap_single', 'market_cap_all', 'market_cap_any'] as const) {
+      expect(CONDITION_DEFS_ZH[name].category).toBe('总市值')
+    }
+    expect(CONDITION_DEFS_ZH.market_cap_single.summary({ n: 1, min: 100, max: 200 })).toContain(
+      '亿元',
+    )
+  })
+
+  it('老条件文件里的基础市值区间翻译成两条条件（严格开区间）', () => {
+    const legacy = req(group([cond('consecutive_bullish', { start: 1, days: 4 })]), {
+      market_cap: { min_yi: 100, max_yi: 200 },
+    })
+    const migrated = migrateLegacyMarketCap(legacy)
+    expect(migrated.children).toHaveLength(3)
+    expect(formatRule(migrated)).toBe(
+      '倒数第4～1天连续4日阳线 AND 总市值 > 100 亿元 AND 总市值 < 200 亿元',
+    )
+    const added = migrated.children.slice(1) as ConditionNode[]
+    expect(added.every(node => node.name === 'market_cap')).toBe(true)
+  })
+
+  it('老默认区间 {1, 100000} 等于不限：不额外加条件', () => {
+    const legacy = req(group([]), { market_cap: { min_yi: 1, max_yi: 100000 } })
+    expect(migrateLegacyMarketCap(legacy).children).toHaveLength(0)
+  })
+
+  it('根组是 OR 时，市值条件套一层 AND（老区间与条件树是「且」）', () => {
+    const legacy = req(
+      { type: 'group', id: 'g', operator: 'OR', children: [cond('new_high', { m: 20 })] },
+      { market_cap: { min_yi: 100, max_yi: 200 } },
+    )
+    const migrated = migrateLegacyMarketCap(legacy)
+    const tail = migrated.children[1]
+    expect(tail.type).toBe('group')
+    if (tail.type === 'group') {
+      expect(tail.operator).toBe('AND')
+      expect(tail.children).toHaveLength(2)
+    }
+  })
+})
+
+describe('股票代码 / 股票名称（两个独立条件）', () => {
+  it('注册表里有两条；老的 stock_match 仍在但不在可选列表里', () => {
+    expect(CONDITION_DEFS_ZH.stock_code.label).toContain('股票代码')
+    expect(CONDITION_DEFS_ZH.stock_name.label).toContain('股票名称')
+    expect(CONDITION_DEFS_ZH.stock_match.hidden).toBe(true)
+    expect(PICKABLE_CONDITION_NAMES).not.toContain('stock_match')
+    expect(PICKABLE_CONDITION_NAMES).toContain('stock_code')
+    expect(PICKABLE_CONDITION_NAMES).toContain('stock_name')
+  })
+
+  it('名称的说明写清了「不用带 ST 前缀」', () => {
+    expect(CONDITION_DEFS_ZH.stock_name.description).toContain('ST')
+  })
+
+  it('提交时名称/代码的 text 原样保留（不做 trim 以外的加工）', () => {
+    const payload = toApiRequest(req(group([cond('stock_code', { text: '600000,000001' })])))
+    expect((payload.rule.children[0] as ConditionNode).params).toEqual({ text: '600000,000001' })
   })
 })

@@ -497,6 +497,9 @@ export default function StocksPage() {
   /* 要保存的那份请求：弹窗底部「保存」交出的是**当前草稿**（第 5 条），
      所以不能再像横幅时代那样直接读 screenResult.request。 */
   const [saveRequest, setSaveRequest] = useState<ScreenRequest | null>(null)
+  /* 保存弹窗打开时预填的名字：已保存过的条件 = 它当前的名字（允许直接改名），
+     没保存过 = 空（用户第 6 条）。 */
+  const [saveDefaultName, setSaveDefaultName] = useState('')
   const [marketAsof, setMarketAsof] = useState<string | null>(null)
   /* fork：搜索词由页面持有，StockMarketTable 受控（搜索框在分页条左侧，上下各一个）。 */
   const [stockQuery, setStockQuery] = useState('')
@@ -982,13 +985,22 @@ export default function StocksPage() {
     [presets, screenResult],
   )
 
-  /** 「保存条件」：同名先问一句「覆盖？」，存成功后在下拉里选中它。 */
+  /**
+   * 保存条件（名字就是服务器上的文件名）。
+   *
+   * - 名字没被占用：直接写；
+   * - 名字被占用：先问一句「覆盖？」（同一个条件原名重存时**不再问** —— 那就是
+   *   用户自己点「保存」想覆盖的那份）；
+   * - 从已保存条件打开、名字改了：写完新文件后删掉旧文件 —— 相当于重命名。
+   */
   const handleSavePreset = useCallback(
     async (name: string): Promise<boolean> => {
       const request = saveRequest ?? screenResult?.request
       if (!request) return false
+      const oldName = screenPresetName
+      const renaming = Boolean(oldName) && oldName !== name
       const exists = presets.some(item => item.name === name)
-      if (exists) {
+      if (exists && renaming) {
         const ok = await confirmAction(SCREEN_PRESET_TEXTS_ZH.overwriteConfirm(name), {
           destructive: true,
           title: SCREEN_PRESET_TEXTS_ZH.overwriteTitle,
@@ -997,41 +1009,34 @@ export default function StocksPage() {
         if (!ok) return false
       }
       await savePreset(name, request, exists)
+      if (renaming && oldName) {
+        // 改名：旧文件不再需要（删失败不影响新文件已保存）
+        await deletePreset(oldName).catch(() => undefined)
+      }
       await reloadPresets()
       setPresetName(name)
-      // 弹窗还开着时把它切成「已保存」状态：按钮变「覆盖保存」、删除可用
+      // 弹窗还开着时把它切成「已保存」状态：删除可用、下次保存预填这个名字
       setScreenPresetName(name)
       toast(SCREEN_PRESET_TEXTS_ZH.saved(name), 'success')
       return true
     },
-    [confirmAction, presets, reloadPresets, saveRequest, screenResult, toast],
+    [confirmAction, deletePreset, presets, reloadPresets, savePreset, saveRequest, screenPresetName, screenResult, toast],
   )
 
   /**
-   * 条件选股弹窗底部的「保存」（第 5 条）。
+   * 条件选股弹窗底部的「保存」（第 5 条 + 2026-10-22 第 6 条）。
    *
-   * 有名字（从已保存条件打开）= 直接覆盖那个文件，不再弹名字、也不再问一遍「覆盖？」——
-   * 用户点的就是「覆盖保存」。没名字 = 弹输入框（名字即文件名）。
+   * 不管有没有保存过，**都弹输入文件名的小窗**：
+   * - 已保存过 → 名字预填当前名字，改了就按新名字保存并删掉旧文件（相当于重命名）；
+   * - 没保存过 → 名字为空。
    */
   const handleSaveFromDialog = useCallback(
     async (request: ScreenRequest, name: string | null) => {
       setSaveRequest(request)
-      if (!name) {
-        setSaveOpen(true)
-        return
-      }
-      try {
-        await savePreset(name, request, true)
-        await reloadPresets()
-        setPresetName(name)
-        setScreenPresetName(name)
-        toast(SCREEN_PRESET_TEXTS_ZH.saved(name), 'success')
-      } catch (exc) {
-        const message = exc instanceof Error ? exc.message : String(exc)
-        toast(SCREEN_PRESET_TEXTS_ZH.saveFailed(message), 'error')
-      }
+      setSaveDefaultName(name ?? '')
+      setSaveOpen(true)
     },
-    [reloadPresets, toast],
+    [],
   )
 
   /** 弹窗里的「删除」：按钮一直在，没保存过时禁用（第 5 条），点了先确认。 */
@@ -2305,7 +2310,7 @@ export default function StocksPage() {
       <SaveConditionDialog
         open={saveOpen}
         onOpenChange={setSaveOpen}
-        defaultName={presetName ?? ''}
+        defaultName={saveDefaultName}
         onSave={handleSavePreset}
       />
 

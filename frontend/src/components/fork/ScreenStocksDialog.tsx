@@ -12,7 +12,6 @@ import {
 import { useConfirm } from '@panwatch/base-ui/components/ui/confirm-dialog'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import {
-  MAX_MARKET_CAP_YI,
   MAX_TRADING_DAYS,
   MIN_TRADING_DAYS,
   SCREEN_MARKETS,
@@ -26,6 +25,7 @@ import {
   findConflictGroup,
   findNode,
   formatRule,
+  migrateLegacyMarketCap,
   removeNode,
   requiredBarsOf,
   toApiRequest,
@@ -71,9 +71,6 @@ import { SCREEN_PRESET_TEXTS_ZH } from '@/lib/screen-presets'
 
 const T = SCREEN_TEXTS_ZH
 
-/** 总市值默认范围（亿元）：与后端 `validate_params` 的 [0, 1e6] 一致。 */
-const DEFAULT_CAP = { min_yi: 1, max_yi: 100000 }
-
 /**
  * 统计窗口默认值（交易日）。
  *
@@ -84,13 +81,19 @@ const DEFAULT_TRADING_DAYS = 30
 
 interface DraftForm {
   daysText: string
-  capMinText: string
-  capMaxText: string
   markets: ScreenMarket[]
   includeSt: boolean
   rule: GroupNode
   /** 窗口结束日（`YYYY-MM-DD`）；空 = 库里最新交易日 */
   asofText: string
+  /**
+   * 是否启用「窗口截止日」。
+   *
+   * 用户 2026-10-21 第 2 条：日期输入框后面加一个复选框 —— 不勾 = 不指定日期
+   * （沿用「库里最新交易日」的规则），勾上才把填的日期交给后端推导交易日。
+   * 不勾时输入框禁用、值清空（不参与校验、也不会提交）。
+   */
+  asofEnabled: boolean
 }
 
 /**
@@ -105,22 +108,23 @@ function toDraft(request: ScreenRequest | null): DraftForm {
   if (!request) {
     return {
       daysText: String(DEFAULT_TRADING_DAYS),
-      capMinText: String(DEFAULT_CAP.min_yi),
-      capMaxText: String(DEFAULT_CAP.max_yi),
       markets: [...SCREEN_MARKETS],
       includeSt: false,
       rule: createGroup('AND'),
       asofText: '',
+      asofEnabled: false,
     }
   }
   return {
     daysText: String(request.trading_days),
-    capMinText: String(request.market_cap.min_yi),
-    capMaxText: String(request.market_cap.max_yi),
-    markets: [...request.markets],
+    // 市场至少留一个（老请求里如果空着，退回「全部」）
+    markets: request.markets.length ? [...request.markets] : [...SCREEN_MARKETS],
     includeSt: request.include_st,
-    rule: stripCollapsed(request.rule),
+    // 老条件文件里的基础市值区间 → 两条市值条件（见 migrateLegacyMarketCap）
+    rule: migrateLegacyMarketCap({ ...request, rule: stripCollapsed(request.rule) }),
     asofText: request.asof ?? '',
+    // 老请求带日期 = 用户当时指定过 → 勾上
+    asofEnabled: Boolean(request.asof),
   }
 }
 
@@ -144,9 +148,9 @@ function toRequest(form: DraftForm): ScreenRequest {
     trading_days: daysOf(form),
     markets: [...form.markets],
     include_st: form.includeSt,
-    market_cap: { min_yi: Number(form.capMinText), max_yi: Number(form.capMaxText) },
+    // 总市值是条件列表里的一条条件，不再是基础筛选参数
     rule: form.rule,
-    asof: form.asofText.trim() === '' ? null : form.asofText.trim(),
+    asof: form.asofEnabled && form.asofText.trim() !== '' ? form.asofText.trim() : null,
   }
 }
 
@@ -355,9 +359,21 @@ export function ScreenStocksDialog({
     [askConfirm, form.rule, setRule],
   )
 
+  /**
+   * 市场选择是「全部 / 其它」二选一的组（用户第 3 条）：
+   *
+   * - 点「全部」→ 四个市场全选（已经全选时再点也不清空）；
+   * - 点某个市场 → 该市场加入 / 退出；退出后自然就不再是「全部」；
+   * - **不允许一个都不选**（最后一个市场不能被取消）。
+   */
   const toggleMarket = (market: ScreenMarket) => {
     setForm(current => {
+      // 「全部」状态下点某个市场 → 只保留它（全部被取消选中）
+      if (current.markets.length === SCREEN_MARKETS.length) {
+        return { ...current, markets: [market] }
+      }
       const selected = current.markets.includes(market)
+      if (selected && current.markets.length === 1) return current
       const next = selected
         ? current.markets.filter(item => item !== market)
         : [...current.markets, market]
@@ -481,7 +497,7 @@ export function ScreenStocksDialog({
                 <span className="text-[11px] text-muted-foreground">{T.tradingDaysSuffix}</span>
               </div>
 
-              {/* 窗口结束日（可选）：留空就用库里最新交易日。
+              {/* 窗口结束日（可选）：勾上「启用」才指定日期，不勾就用库里最新交易日。
                   非交易日（周末/长假）由后端落到 ≤ 它的最大交易日，所以这里不拦。 */}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.asofLabel}</span>
@@ -490,39 +506,33 @@ export function ScreenStocksDialog({
                   aria-label={T.asofLabel}
                   data-screen-field="asof"
                   value={form.asofText}
+                  disabled={!form.asofEnabled}
                   onChange={event =>
                     setForm(current => ({ ...current, asofText: event.target.value }))
                   }
-                  className="h-7 rounded-md border border-input bg-background px-2 text-[12px] text-foreground"
+                  className="h-7 rounded-md border border-input bg-background px-2 text-[12px] text-foreground disabled:cursor-not-allowed disabled:opacity-50"
                 />
+                <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 accent-primary"
+                    checked={form.asofEnabled}
+                    aria-label={T.asofEnable}
+                    data-screen-field="asof_enabled"
+                    onChange={event => {
+                      const enabled = event.target.checked
+                      // 勾上时给一个能直接改的起点：优先当前数据日期，其次今天
+                      const fallback = asof ?? new Date().toISOString().slice(0, 10)
+                      setForm(current => ({
+                        ...current,
+                        asofEnabled: enabled,
+                        asofText: enabled ? current.asofText || fallback : '',
+                      }))
+                    }}
+                  />
+                  {T.asofEnable}
+                </label>
                 <span className="text-[11px] text-muted-foreground">{T.asofHint}</span>
-              </div>
-
-              {/* 总市值：标题与控件同一行 */}
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.marketCap}</span>
-                <span className="text-[11px] text-muted-foreground">{T.capMin}</span>
-                <BaseNumberInput
-                  screenField="market_cap.min_yi"
-                  ariaLabel={T.capMinLabel}
-                  text={form.capMinText}
-                  min={0}
-                  max={MAX_MARKET_CAP_YI}
-                  integer={false}
-                  className="w-24"
-                  onText={next => setForm(current => ({ ...current, capMinText: next }))}
-                />
-                <span className="text-[11px] text-muted-foreground">{T.capMax}</span>
-                <BaseNumberInput
-                  screenField="market_cap.max_yi"
-                  ariaLabel={T.capMaxLabel}
-                  text={form.capMaxText}
-                  min={0}
-                  max={MAX_MARKET_CAP_YI}
-                  integer={false}
-                  className="w-24"
-                  onText={next => setForm(current => ({ ...current, capMaxText: next }))}
-                />
               </div>
             </div>
 
@@ -537,7 +547,8 @@ export function ScreenStocksDialog({
                   onClick={() =>
                     setForm(current => ({
                       ...current,
-                      markets: allSelected ? [] : [...SCREEN_MARKETS],
+                      // 「全部」只能选中，不能取消（取消要逐个点掉其他市场）
+                      markets: [...SCREEN_MARKETS],
                     }))
                   }
                   className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ${
