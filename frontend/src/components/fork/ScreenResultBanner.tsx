@@ -59,6 +59,7 @@ export function ScreenResultBanner({
           {T.bannerMeta(
             response.asof ?? '—',
             response.stats.candidates,
+            response.stats.evaluated,
             response.stats.insufficient,
             seconds,
           )}

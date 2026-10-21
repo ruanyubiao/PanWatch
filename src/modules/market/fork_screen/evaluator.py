@@ -389,8 +389,13 @@ def evaluate_candidates(
             continue
         ctx = EvalContext(calendar=calendar, trading_days=trading_days)
         outcome.evaluated += 1
-        if evaluate_node(rule, series, ctx):
+        hit = evaluate_node(rule, series, ctx)
+        if hit:
             outcome.hit_rows.append(row)
-        if ctx.insufficient:
+        elif ctx.insufficient:
+            # 只统计「因缺数据判否、**并且**最终没命中」的股票。
+            # OR 组里某条支路缺数据、另一条支路命中时，这只票已经在结果里 —— 计进去
+            # 会让「缺数据排除 N 只」读成「少算了 N 只」（实测全市场 OR(站上MA250, 站上MA5)
+            # 有 52 只这种重叠）。
             outcome.insufficient += 1
     return outcome
