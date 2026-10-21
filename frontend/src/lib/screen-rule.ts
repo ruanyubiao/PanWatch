@@ -488,9 +488,9 @@ export const METRIC_TEXTS_ZH = {
   // ---- 股票代码 / 股票名称（拆成两个条件）
   labelStockCode: '股票代码（完整匹配）',
   labelStockName: '股票名称（完整匹配）',
-  descStockCode: '按 6 位代码完整相等筛选，不做模糊匹配；多个用逗号或空格分隔',
+  descStockCode: '按 6 位代码完整相等筛选，不做模糊匹配；多个用逗号或空格分隔，彼此是「或」的关系',
   descStockName:
-    '按股票名称完整相等筛选，不做模糊匹配；不用写 ST / *ST 前缀（写了也认），多个用逗号或空格分隔',
+    '按股票名称完整相等筛选，不做模糊匹配；不用写 ST / *ST 前缀（写了也认），多个用逗号或空格分隔；多条代码/名称条件之间也是「或」',
   stockCodePlaceholder: '600519',
   stockNamePlaceholder: '贵州茅台',
   stockCodeRequired: '请填写股票代码',
@@ -1175,6 +1175,12 @@ export const PICKABLE_CONDITION_NAMES = CONDITION_NAMES.filter(
   name => !CONDITION_DEFS_ZH[name].hidden,
 )
 
+/**
+ * 身份条件：只比代码 / 名称，不读日线。
+ * 同一个 AND 组里出现多条时后端按「或」合并（见 formatGroup），画摘要时也要跟着走。
+ */
+export const IDENTITY_CONDITIONS = new Set<ConditionName>(['stock_code', 'stock_name', 'stock_match'])
+
 export function metricOf(name: ConditionName): { metric: MetricKey; shape: MetricShape } | null {
   const seed = METRIC_SEEDS_ZH[name]
   return seed ? { metric: seed.metric, shape: seed.shape } : null
@@ -1484,10 +1490,28 @@ export function formatRule(rule: GroupNode): string {
 
 function formatGroup(node: GroupNode, isRoot: boolean): string {
   if (node.children.length === 0) return isRoot ? T.previewEmptyRoot : T.previewEmptyGroup
+  // AND 组里多条「股票代码 / 名称」按「或」显示 —— 后端编译期也是这么合并的
+  // （一只股票只有一个代码，AND 起来永远为空）。显示与执行必须一致，否则横幅在说谎。
+  const mergeIdentity = node.operator === 'AND' && node.children.filter(isIdentityNode).length > 1
+  const parts: string[] = []
+  let identityDone = false
+  for (const child of node.children) {
+    if (mergeIdentity && isIdentityNode(child)) {
+      if (identityDone) continue
+      identityDone = true
+      parts.push(`( ${node.children.filter(isIdentityNode).map(c => formatNode(c)).join(' OR ')} )`)
+      continue
+    }
+    parts.push(formatNode(child))
+  }
   const joiner = node.operator === 'AND' ? ' AND ' : ' OR '
-  const inner = node.children.map(child => formatNode(child)).join(joiner)
+  const inner = parts.join(joiner)
   if (isRoot || node.children.length < 2) return inner
   return `( ${inner} )`
+}
+
+function isIdentityNode(node: RuleNode): boolean {
+  return node.type === 'condition' && IDENTITY_CONDITIONS.has(node.name)
 }
 
 export function formatNode(node: RuleNode): string {

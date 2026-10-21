@@ -80,6 +80,27 @@ describe('条件选股 / 规则预览', () => {
     const emptySub = group([cond('more_bullish_candles'), group([])])
     expect(formatRule(emptySub)).toBe('阳线多于阴线（统计窗口内） AND ( 空组 )')
   })
+
+  it('F1b 同组多条「代码 / 名称」按「或」显示（与后端编译期合并一致）', () => {
+    const twoIdentity = group([
+      cond('stock_code', { text: '600933' }),
+      cond('stock_name', { text: '锦江航运' }),
+    ])
+    expect(formatRule(twoIdentity)).toBe('( 代码 ∈ { 600933 } OR 名称 ∈ { 锦江航运 } )')
+
+    // 混进非身份条件：身份几条合成一组，其余仍按 AND
+    const mixed = group([
+      cond('stock_name', { text: '爱柯迪' }),
+      cond('close_above_ma', { period: 5 }),
+      cond('stock_name', { text: '锦江航运' }),
+    ])
+    expect(formatRule(mixed)).toBe(
+      '( 名称 ∈ { 爱柯迪 } OR 名称 ∈ { 锦江航运 } ) AND 收盘价站上 MA5',
+    )
+
+    // 单独一条不加括号、不加「或」
+    expect(formatRule(group([cond('stock_name', { text: '爱柯迪' })]))).toBe('名称 ∈ { 爱柯迪 }')
+  })
 })
 
 describe('条件选股 / 校验（规格 §10）', () => {

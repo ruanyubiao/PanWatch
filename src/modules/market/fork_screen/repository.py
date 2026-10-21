@@ -25,7 +25,7 @@ from typing import Any, Iterable
 
 from ..api import fork_market
 from .conditions import StockSeries
-from .evaluator import build_series
+from .evaluator import IdentityFilter, build_series
 from .models import ScreenRequest
 
 logger = logging.getLogger(__name__)
@@ -61,12 +61,42 @@ def cap_prefilter_sql(predicates: "Iterable[tuple[str, float]]") -> str:
     ]
     return "".join("\n" + line for line in lines)
 
+
+def _like_escape(text: str) -> str:
+    """``%`` / ``_`` / ``\\`` 在 LIKE 里是元字符，按字面量转义（MySQL 默认转义符是 ``\\``）。"""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def identity_prefilter_sql(groups: "Iterable[IdentityFilter]") -> str:
+    """把身份条件（代码 / 名称）拼成候选 WHERE 片段（见 ``evaluator.identity_filter_groups``）。
+
+    每组是一串「或」：``AND (code IN (...) OR name LIKE '%词' OR ...)``。
+    名称用**后缀** LIKE（只加前导通配符）而不是 ``%词%``：
+    ``ST爱柯迪`` / ``*ST爱柯迪`` / ``XD爱柯迪`` 都能被 ``'%爱柯迪'`` 命中，
+    而 ``%词%`` 会把「某某爱柯迪」这类无关行也拉进来。两者都只是**超集**，
+    精确判定仍在 Python（``stock_name``）—— 所以这里宁可宽一点，也绝不漏。
+
+    代码比对的是 ``code``（6 位，如 ``600933``）而**不是** ``symbol``：
+    库里 symbol 是 ``sh600933`` 这种带交易所前缀的形式（实测 2026-10-21），
+    拿 6 位代码去比 symbol 会一行都匹配不到 —— 是个静默返回空结果的坑。
+    """
+    lines: list[str] = []
+    for group_index, group in enumerate(groups):
+        clauses: list[str] = []
+        if group.codes:
+            clauses.append(f"code IN %(id_c_{group_index})s")
+        for token_index in range(len(group.names)):
+            clauses.append(f"name LIKE %(id_n_{group_index}_{token_index})s")
+        if clauses:
+            lines.append(f"  AND ({' OR '.join(clauses)})")
+    return "".join("\n" + line for line in lines)
+
 _CANDIDATE_SQL = (
     fork_market._WITH_UNI
     + fork_market._PAGE_SELECT
     + """
 WHERE market_board IN %(markets)s
-  AND (%(include_st)s = 1 OR is_st = 0){cap}{extra}
+  AND (%(include_st)s = 1 OR is_st = 0){cap}{extra}{ident}
 ORDER BY code"""
 )
 
@@ -124,16 +154,20 @@ def candidate_sql(
     asof: _dt.date | None = None,
     with_cap: bool = False,
     predicates: "Iterable[tuple[str, float]]" = (),
+    identities: "Iterable[IdentityFilter]" = (),
 ) -> str:
     """① 候选 SQL。``asof`` 给了就把「最新交易日」固定成那一天。
 
     ``with_cap``：是否把基础市值区间拼进 WHERE（老请求才带区间）。
     ``predicates``：AND 分支里必然成立的总市值条件（``(op, 亿元)``），下推成 SQL。
+    ``identities``：AND 分支里必然成立的「代码 / 名称」条件，下推成 SQL ——
+    只给一只股票时能把候选从 5 千降到 1，W=250 的 20 秒因此降到 1 秒级。
     """
     preds = tuple(predicates)
     sql = _CANDIDATE_SQL.format(
         cap=_CAP_FILTER if with_cap else "",
         extra=cap_prefilter_sql(preds),
+        ident=identity_prefilter_sql(tuple(identities)),
     )
     if asof is None:
         return sql
@@ -164,12 +198,15 @@ def bars_sql(extras: "Iterable[str]" = ()) -> str:
 
 
 def candidate_params(
-    req: ScreenRequest, predicates: "Iterable[tuple[str, float]]" = ()
+    req: ScreenRequest,
+    predicates: "Iterable[tuple[str, float]]" = (),
+    identities: "Iterable[IdentityFilter]" = (),
 ) -> dict[str, Any]:
     """① 的参数。市值单位是**元**（库里口径），界面输入是亿元。
 
     没有基础市值区间（新请求）时不带 ``cap_min`` / ``cap_max`` —— SQL 里也没有
-    对应的占位符（见 ``candidate_sql``）。``cap_pre_N`` 来自市值条件下推。
+    对应的占位符（见 ``candidate_sql``）。``cap_pre_N`` 来自市值条件下推，
+    ``id_c_N`` / ``id_n_N_M`` 来自身份条件下推。
     """
     params: dict[str, Any] = {
         "markets": tuple(req.markets),
@@ -181,6 +218,11 @@ def candidate_params(
         params["cap_max"] = float(cap.max_yi) * _YI
     for index, (_op, value) in enumerate(predicates):
         params[f"cap_pre_{index}"] = float(value) * _YI
+    for group_index, group in enumerate(identities):
+        if group.codes:
+            params[f"id_c_{group_index}"] = tuple(group.codes)
+        for token_index, name in enumerate(group.names):
+            params[f"id_n_{group_index}_{token_index}"] = f"%{_like_escape(name)}"
     return params
 
 
@@ -250,6 +292,7 @@ def fetch_screen_data(
     asof: _dt.date | None = None,
     extras: Iterable[str] = (),
     predicates: Iterable[tuple[str, float]] = (),
+    identities: "Iterable[IdentityFilter]" = (),
 ) -> ScreenData:
     """执行 ①②③ 并构建 ``StockSeries``。连接/查询失败抛 ``ForkDbUnavailable``。
 
@@ -260,6 +303,7 @@ def fetch_screen_data(
     「市值 ≥ 100 亿」这类条件因此不用把全市场 250 根日线都读进内存。
     """
     preds = tuple(predicates)
+    idents = tuple(identities)
     columns = extras_select(extras)
     data = ScreenData(asof=asof)
     conn = fork_market._connect()
@@ -267,8 +311,13 @@ def fetch_screen_data(
         # ① 候选
         with conn.cursor() as cursor:
             cursor.execute(
-                candidate_sql(asof, with_cap=req.market_cap is not None, predicates=preds),
-                candidate_params(req, preds),
+                candidate_sql(
+                    asof,
+                    with_cap=req.market_cap is not None,
+                    predicates=preds,
+                    identities=idents,
+                ),
+                candidate_params(req, preds, idents),
             )
             data.candidates = list(cursor.fetchall() or [])
         if data.asof is None and data.candidates:
