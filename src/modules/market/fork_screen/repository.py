@@ -45,12 +45,28 @@ _CAP_FILTER = """
   AND COALESCE(total_market_cap, info_market_cap) > %(cap_min)s
   AND COALESCE(total_market_cap, info_market_cap) < %(cap_max)s"""
 
+#: 「总市值」条件 → SQL 比较符（AND 分支里的市值条件可以下推成候选过滤）
+_CAP_OPERATORS = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+
+
+def cap_prefilter_sql(predicates: "Iterable[tuple[str, float]]") -> str:
+    """把 AND 分支里的市值条件拼成 WHERE 片段（见 ``evaluator.required_market_cap_filters``）。
+
+    空集 → 空串。占位符叫 ``cap_pre_0`` / ``cap_pre_1`` …（同一条条件可能出现两次，
+    比如「≥ 50 亿」且「< 200 亿」，所以要按序号区分）。
+    """
+    lines = [
+        f"  AND COALESCE(total_market_cap, info_market_cap) {_CAP_OPERATORS[op]} %(cap_pre_{index})s"
+        for index, (op, _value) in enumerate(predicates)
+    ]
+    return "".join("\n" + line for line in lines)
+
 _CANDIDATE_SQL = (
     fork_market._WITH_UNI
     + fork_market._PAGE_SELECT
     + """
 WHERE market_board IN %(markets)s
-  AND (%(include_st)s = 1 OR is_st = 0){cap}
+  AND (%(include_st)s = 1 OR is_st = 0){cap}{extra}
 ORDER BY code"""
 )
 
@@ -104,12 +120,21 @@ ORDER BY symbol, trade_date
 _LATEST_ANCHOR = "latest AS (SELECT MAX(trade_date) AS asof FROM stock_daily)"
 
 
-def candidate_sql(asof: _dt.date | None = None, with_cap: bool = False) -> str:
+def candidate_sql(
+    asof: _dt.date | None = None,
+    with_cap: bool = False,
+    predicates: "Iterable[tuple[str, float]]" = (),
+) -> str:
     """① 候选 SQL。``asof`` 给了就把「最新交易日」固定成那一天。
 
     ``with_cap``：是否把基础市值区间拼进 WHERE（老请求才带区间）。
+    ``predicates``：AND 分支里必然成立的总市值条件（``(op, 亿元)``），下推成 SQL。
     """
-    sql = _CANDIDATE_SQL.format(cap=_CAP_FILTER if with_cap else "")
+    preds = tuple(predicates)
+    sql = _CANDIDATE_SQL.format(
+        cap=_CAP_FILTER if with_cap else "",
+        extra=cap_prefilter_sql(preds),
+    )
     if asof is None:
         return sql
     anchored = f"latest AS (SELECT DATE '{asof.isoformat()}' AS asof)"
@@ -138,11 +163,13 @@ def bars_sql(extras: "Iterable[str]" = ()) -> str:
     return _BARS_SQL.format(columns=", ".join(columns), table=_BARS_TABLE)
 
 
-def candidate_params(req: ScreenRequest) -> dict[str, Any]:
+def candidate_params(
+    req: ScreenRequest, predicates: "Iterable[tuple[str, float]]" = ()
+) -> dict[str, Any]:
     """① 的参数。市值单位是**元**（库里口径），界面输入是亿元。
 
     没有基础市值区间（新请求）时不带 ``cap_min`` / ``cap_max`` —— SQL 里也没有
-    对应的占位符（见 ``candidate_sql``）。
+    对应的占位符（见 ``candidate_sql``）。``cap_pre_N`` 来自市值条件下推。
     """
     params: dict[str, Any] = {
         "markets": tuple(req.markets),
@@ -152,6 +179,8 @@ def candidate_params(req: ScreenRequest) -> dict[str, Any]:
     if cap is not None:
         params["cap_min"] = float(cap.min_yi) * _YI
         params["cap_max"] = float(cap.max_yi) * _YI
+    for index, (_op, value) in enumerate(predicates):
+        params[f"cap_pre_{index}"] = float(value) * _YI
     return params
 
 
@@ -220,13 +249,17 @@ def fetch_screen_data(
     k: int,
     asof: _dt.date | None = None,
     extras: Iterable[str] = (),
+    predicates: Iterable[tuple[str, float]] = (),
 ) -> ScreenData:
     """执行 ①②③ 并构建 ``StockSeries``。连接/查询失败抛 ``ForkDbUnavailable``。
 
     ``asof`` 给了就按那一天选股（窗口从它往前数），不给就是库里最新交易日。
     ``extras`` 是条件需要额外取的列（见 ``conditions.extras_columns_of``）：
     空就从 6 列取，非空按并集加上 ``traded`` 与那几列。
+    ``predicates`` 是 AND 分支里必然成立的总市值条件，下推成候选 SQL 的过滤 ——
+    「市值 ≥ 100 亿」这类条件因此不用把全市场 250 根日线都读进内存。
     """
+    preds = tuple(predicates)
     columns = extras_select(extras)
     data = ScreenData(asof=asof)
     conn = fork_market._connect()
@@ -234,8 +267,8 @@ def fetch_screen_data(
         # ① 候选
         with conn.cursor() as cursor:
             cursor.execute(
-                candidate_sql(asof, with_cap=req.market_cap is not None),
-                candidate_params(req),
+                candidate_sql(asof, with_cap=req.market_cap is not None, predicates=preds),
+                candidate_params(req, preds),
             )
             data.candidates = list(cursor.fetchall() or [])
         if data.asof is None and data.candidates:
