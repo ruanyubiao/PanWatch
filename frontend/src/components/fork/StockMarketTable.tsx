@@ -277,18 +277,18 @@ const COLUMNS: ColumnDef[] = [
   // 名称列 80 → 60（60px 里若留 8px×2 的 px-2 只剩 44px，装不下 4 个汉字（48px）——
   // 名称列单独把左右内边距收到 4px（padX: 4），内容区 52px，四字名不省略号）
   { key: 'name', label: MARKET_TABLE_TEXTS_ZH.colName, sortKey: 'name', width: 60, padX: 4 },
-  { key: 'pre_close', label: MARKET_TABLE_TEXTS_ZH.colPreClose, sortKey: 'pre_close', align: 'right', width: 69 },
-  { key: 'close', label: MARKET_TABLE_TEXTS_ZH.colPrice, sortKey: 'close', align: 'right', width: 69 },
-  { key: 'change_pct', label: MARKET_TABLE_TEXTS_ZH.colChange, sortKey: 'change_pct', align: 'right', width: 69 },
-  { key: 'high', label: MARKET_TABLE_TEXTS_ZH.colHigh, sortKey: 'high', align: 'right', width: 69 },
-  { key: 'low', label: MARKET_TABLE_TEXTS_ZH.colLow, sortKey: 'low', align: 'right', width: 69 },
+  { key: 'pre_close', label: MARKET_TABLE_TEXTS_ZH.colPreClose, sortKey: 'pre_close', align: 'right', width: 68 },
+  { key: 'close', label: MARKET_TABLE_TEXTS_ZH.colPrice, sortKey: 'close', align: 'right', width: 68 },
+  { key: 'change_pct', label: MARKET_TABLE_TEXTS_ZH.colChange, sortKey: 'change_pct', align: 'right', width: 68 },
+  { key: 'high', label: MARKET_TABLE_TEXTS_ZH.colHigh, sortKey: 'high', align: 'right', width: 68 },
+  { key: 'low', label: MARKET_TABLE_TEXTS_ZH.colLow, sortKey: 'low', align: 'right', width: 68 },
   // 成交量 / 成交额 / 换手率：三列紧跟「最低价」、**排在总市值前面**（用户指定）。
   // 成交量单独把左右内边距收到 4px：云端全市场最大 864.54 万手（8.65 亿股），
-  // 12px 等宽下这段文字约 67px，若留 px-2 只剩 65px 会溢出 2px。
-  { key: 'volume', label: MARKET_TABLE_TEXTS_ZH.colVolume, sortKey: 'volume', align: 'right', width: 81, padX: 4 },
-  { key: 'amount', label: MARKET_TABLE_TEXTS_ZH.colAmount, sortKey: 'amount', align: 'right', width: 89 },
-  { key: 'turnover_rate', label: MARKET_TABLE_TEXTS_ZH.colTurnover, sortKey: 'turnover_rate', align: 'right', width: 69 },
-  { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', width: 89 },
+  // 12px 等宽下这段文字约 67px，留 px-2 只剩 64px 会溢出，故 padX: 4（内容区 72px）。
+  { key: 'volume', label: MARKET_TABLE_TEXTS_ZH.colVolume, sortKey: 'volume', align: 'right', width: 80, padX: 4 },
+  { key: 'amount', label: MARKET_TABLE_TEXTS_ZH.colAmount, sortKey: 'amount', align: 'right', width: 88 },
+  { key: 'turnover_rate', label: MARKET_TABLE_TEXTS_ZH.colTurnover, sortKey: 'turnover_rate', align: 'right', width: 68 },
+  { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', width: 88 },
   // 状态列（交易日状态）：68 → 48（−20），左侧与总市值之间的间距 40 → 20（−20）。
   // 标签是 2–3 个字的短文案（正常/停牌/ST/*ST/退市），右侧内边距收到 2px 全给标签：
   // 48 − 20（左间距）− 2（右内边距）= 26px 给标签，「停牌」这类 2 字标签正好 24px。
@@ -657,11 +657,11 @@ export function StockMarketTable({
         <div className="py-10 text-center text-[12px] text-muted-foreground">{emptyText}</div>
       ) : (
         <div className="overflow-x-auto scrollbar">
-          {/* 表格最小宽 = 各列固定宽之和 1451px（1506 − 市场 10 − 9 列 × 5 − 状态 20 + 指标 20）。
-              保留 w-full：容器比 1451 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
-              窄到不够就横向滚动；只有容器比 1451 还宽时 table-fixed 才会把余量按比例摊给各列——
+          {/* 表格最小宽 = 各列固定宽之和 1442px（1451 − 5 列 × 1 − 成交量 1 − 成交额/总市值/换手率 3）。
+              保留 w-full：容器比 1442 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
+              窄到不够就横向滚动；只有容器比 1442 还宽时 table-fixed 才会把余量按比例摊给各列——
               这是原来就有的行为（宽屏铺满），本次不动 */}
-          <table className="w-full min-w-[1451px] table-fixed text-[12px]">
+          <table className="w-full min-w-[1442px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col
