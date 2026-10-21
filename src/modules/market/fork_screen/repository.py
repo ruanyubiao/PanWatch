@@ -70,11 +70,11 @@ def _like_escape(text: str) -> str:
 def identity_prefilter_sql(groups: "Iterable[IdentityFilter]") -> str:
     """把身份条件（代码 / 名称）拼成候选 WHERE 片段（见 ``evaluator.identity_filter_groups``）。
 
-    每组是一串「或」：``AND (code IN (...) OR name LIKE '%词' OR ...)``。
-    名称用**后缀** LIKE（只加前导通配符）而不是 ``%词%``：
-    ``ST爱柯迪`` / ``*ST爱柯迪`` / ``XD爱柯迪`` 都能被 ``'%爱柯迪'`` 命中，
-    而 ``%词%`` 会把「某某爱柯迪」这类无关行也拉进来。两者都只是**超集**，
-    精确判定仍在 Python（``stock_name``）—— 所以这里宁可宽一点，也绝不漏。
+    每组是一串「或」：``AND (code IN (...) OR name LIKE '%词%' OR ...)``。
+    名称两边都加通配符，**只求是超集**：``ST爱柯迪`` / ``*ST爱柯迪`` / ``XD爱柯迪``
+    都命中，名称前后多出任何装饰（含末尾空格）也不会漏；精确判定仍在 Python
+    （``stock_name`` 会剥掉 ST/XD/XR/DR 前缀后整体相等才为真），多放进来的几行
+    由求值阶段判掉 —— 候选最多也就 5 千行，代价可以忽略。
 
     代码比对的是 ``code``（6 位，如 ``600933``）而**不是** ``symbol``：
     库里 symbol 是 ``sh600933`` 这种带交易所前缀的形式（实测 2026-10-21），
@@ -222,7 +222,7 @@ def candidate_params(
         if group.codes:
             params[f"id_c_{group_index}"] = tuple(group.codes)
         for token_index, name in enumerate(group.names):
-            params[f"id_n_{group_index}_{token_index}"] = f"%{_like_escape(name)}"
+            params[f"id_n_{group_index}_{token_index}"] = f"%{_like_escape(name)}%"
     return params
 
 
