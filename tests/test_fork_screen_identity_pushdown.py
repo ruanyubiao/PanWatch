@@ -190,7 +190,7 @@ def test_下推的SQL片段与参数():
         (IdentityFilter(codes=("600933",), names=("爱柯迪",)),),
     )
     assert params["id_c_0"] == ("600933",)
-    assert params["id_n_0_0"] == "%爱柯迪"
+    assert params["id_n_0_0"] == "%爱柯迪%"
     assert "code IN %(id_c_0)s" in candidate_sql(
         identities=(IdentityFilter(codes=("600933",), names=()),)
     )
@@ -202,4 +202,4 @@ def test_名称里的LIKE元字符被转义():
     params = candidate_params(
         request_of([]), (), (IdentityFilter(names=("50%_测试",),),)
     )
-    assert params["id_n_0_0"] == "%50\\%\\_测试"
+    assert params["id_n_0_0"] == "%50\\%\\_测试%"
