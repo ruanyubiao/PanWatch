@@ -186,3 +186,57 @@ def test_每个条件都有自己的模块级函数():
             "不满足「一个条件一个函数」"
         )
         seen[fn.__name__] = name
+
+
+# ---------------------------------------------------------------- 候选 SQL 下推
+
+
+def test_AND分支的市值条件下推成候选过滤():
+    """W=250 时全市场取 250 根 = 1.3M 行；把「市值 ≥ 100 亿」下推能省掉大半。"""
+    from src.modules.market.fork_screen.evaluator import compile_rule, required_market_cap_filters
+    from src.modules.market.fork_screen.models import ScreenRequest
+
+    def req(operator, children):
+        return ScreenRequest.model_validate(
+            {
+                "trading_days": 30,
+                "markets": ["sh"],
+                "include_st": False,
+                "rule": {"type": "group", "id": "g", "operator": operator, "children": children},
+            }
+        )
+
+    cap = {"type": "condition", "id": "c1", "name": "market_cap", "params": {"op": "gte", "value": 100}}
+    other = {"type": "condition", "id": "c2", "name": "new_high", "params": {"m": 20}}
+
+    assert required_market_cap_filters(compile_rule(req("AND", [cap, other]))) == (("gte", 100.0),)
+    # OR 里的市值条件不能下推（另一条支路可能成立）
+    assert required_market_cap_filters(compile_rule(req("OR", [cap, other]))) == ()
+    # 嵌套 AND 里的也算
+    nested = req("AND", [{"type": "group", "id": "g2", "operator": "AND", "children": [cap]}, other])
+    assert required_market_cap_filters(compile_rule(nested)) == (("gte", 100.0),)
+
+
+def test_下推的SQL片段与参数():
+    from src.modules.market.fork_screen.repository import (
+        candidate_params,
+        candidate_sql,
+        cap_prefilter_sql,
+    )
+    from src.modules.market.fork_screen.models import ScreenRequest
+
+    assert cap_prefilter_sql(()) == ""
+    sql = candidate_sql(predicates=(("gte", 100.0), ("lt", 200.0)))
+    assert "COALESCE(total_market_cap, info_market_cap) >= %(cap_pre_0)s" in sql
+    assert "COALESCE(total_market_cap, info_market_cap) < %(cap_pre_1)s" in sql
+
+    payload = ScreenRequest.model_validate(
+        {
+            "trading_days": 30,
+            "markets": ["sh"],
+            "include_st": False,
+            "rule": {"type": "group", "id": "g", "operator": "AND", "children": []},
+        }
+    )
+    params = candidate_params(payload, (("gte", 100.0),))
+    assert params["cap_pre_0"] == 100.0 * 1e8

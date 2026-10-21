@@ -270,6 +270,32 @@ def tree_depth(node: CompiledGroup) -> int:
     return 1 + deepest
 
 
+def required_market_cap_filters(node: CompiledGroup) -> tuple[tuple[str, float], ...]:
+    """树里**必然成立**的总市值阈值（可在 SQL 里先过滤，等价于缩小候选）。
+
+    只看 AND 分支：AND 的每个子节点都必须成立，所以「总市值 ≥ 100 亿」这类条件
+    可以在候选 SQL 里先筛掉一大批股票；OR 分支里的条件**不**能这样用（另一条
+    支路可能成立）。
+
+    语义等价性：条件求值用 ``stock_daily.total_market_cap``（窗口末日那根），
+    这里用 ``COALESCE(total_market_cap, info_market_cap)`` —— 后者在当日市值为
+    NULL 时回退到 stock_info，只会**多**放进来几只（求值时仍判数据不足 → 不命中），
+    不会漏掉本该命中的股票。
+    """
+    found: list[tuple[str, float]] = []
+    if node.operator != "AND":
+        return ()
+    for child in node.children:
+        if isinstance(child, CompiledGroup):
+            found.extend(required_market_cap_filters(child))
+        elif child.name == "market_cap":
+            op = getattr(child.params, "op", None)
+            value = getattr(child.params, "value", None)
+            if op in ("gt", "gte", "lt", "lte") and isinstance(value, (int, float)):
+                found.append((op, float(value)))
+    return tuple(found)
+
+
 # ---------------------------------------------------------------- 求值
 
 
