@@ -262,44 +262,42 @@ interface ColumnDef {
   minWidth?: number
   /** 左内边距（px）——表头与单元格共用，否则表头与内容对不齐 */
   padLeft?: number
+  /** 右内边距（px）——单独覆盖右侧（状态列靠它把标签右边缘贴紧，省下的宽度全给标签） */
+  padRight?: number
   /** 左右内边距同时覆盖（px）——名称列收窄后靠它把 px-2 的 8px 改成 4px，四字名才装得下 */
   padX?: number
 }
 
 const COLUMNS: ColumnDef[] = [
   // 市场列不参与排序（用户明确说不需要）
-  // 市场 → 总市值 这 12 列一律改成**固定宽度**（用户：固定宽度的各减 10px；原来只给
-  // 最小宽度的也设成固定值 = 原最小宽 − 10），这样整表列宽由本表说了算，不再随视口摊开。
-  { key: 'market', label: MARKET_TABLE_TEXTS_ZH.colMarket, width: 50 },
+  // 市场 → 总市值 这 12 列一律**固定宽度**（这样整表列宽由本表说了算，不随视口摊开）。
+  // 本轮（宽度微调）再收一轮：市场 −10，昨收价～总市值每列 −5。
+  { key: 'market', label: MARKET_TABLE_TEXTS_ZH.colMarket, width: 40 },
   { key: 'code', label: MARKET_TABLE_TEXTS_ZH.colCode, sortKey: 'code', width: 70 },
-  // 名称列 80 → 60（市场～总市值 −10，再按用户第 2 条再 −20）。
-  // 60px 里再留 8px×2 的 px-2 只剩 44px，装不下 4 个汉字（48px）—— 名称列单独把左右内边距
-  // 收到 4px（padX: 4），内容区回到 52px，四字名（平安银行/贵州茅台）不省略号，
-  // 只有 *ST 开头的长名才 truncate（悬停有 title 显示原名）。
+  // 名称列 80 → 60（60px 里若留 8px×2 的 px-2 只剩 44px，装不下 4 个汉字（48px）——
+  // 名称列单独把左右内边距收到 4px（padX: 4），内容区 52px，四字名不省略号）
   { key: 'name', label: MARKET_TABLE_TEXTS_ZH.colName, sortKey: 'name', width: 60, padX: 4 },
-  { key: 'pre_close', label: MARKET_TABLE_TEXTS_ZH.colPreClose, sortKey: 'pre_close', align: 'right', width: 74 },
-  { key: 'close', label: MARKET_TABLE_TEXTS_ZH.colPrice, sortKey: 'close', align: 'right', width: 74 },
-  { key: 'change_pct', label: MARKET_TABLE_TEXTS_ZH.colChange, sortKey: 'change_pct', align: 'right', width: 74 },
-  { key: 'high', label: MARKET_TABLE_TEXTS_ZH.colHigh, sortKey: 'high', align: 'right', width: 74 },
-  { key: 'low', label: MARKET_TABLE_TEXTS_ZH.colLow, sortKey: 'low', align: 'right', width: 74 },
-  // 成交量 / 成交额 / 换手率：三列都紧跟「最低价」、**排在总市值前面**（用户指定）。
-  // 换手率靠成交额最右侧，与右对齐的总市值之间由状态列的 40px 左内边距隔开（原有约定不变）。
-  { key: 'volume', label: MARKET_TABLE_TEXTS_ZH.colVolume, sortKey: 'volume', align: 'right', width: 86 },
-  { key: 'amount', label: MARKET_TABLE_TEXTS_ZH.colAmount, sortKey: 'amount', align: 'right', width: 94 },
-  { key: 'turnover_rate', label: MARKET_TABLE_TEXTS_ZH.colTurnover, sortKey: 'turnover_rate', align: 'right', width: 74 },
-  { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', width: 94 },
-  // 状态列（交易日状态）：固定 68px —— 「停牌」「正常」「*ST」「待摘牌」都在 3 个字以内，
-  // 68 = 3 个字（约 36px）+ 左右内边距，再宽就是白占地方。紧跟在总市值后面（用户指定）。
-  // 左内边距 40px 在**这一列**（用户第 9 条：原来加在「指标」列前面的间距挪到状态列，
-  // 指标列不再留白）—— 总市值是右对齐的，紧贴一个状态标签会糊成一片。
-  { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 68, padLeft: 40 },
-  // 指标列：左内边距 20px（用户最新第 1 条：指标列前面加 20px 间距），列宽 200 → 180 → 160 → 120
-  // （第 4 条 −20；本轮再 −20；最新一轮「减少 40px」，同时把空态文案从
-  // 「暂无技术面/AI 分析」缩成「暂无」——字数少了，列宽才敢压到 120）
-  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 120, padLeft: 20 },
+  { key: 'pre_close', label: MARKET_TABLE_TEXTS_ZH.colPreClose, sortKey: 'pre_close', align: 'right', width: 69 },
+  { key: 'close', label: MARKET_TABLE_TEXTS_ZH.colPrice, sortKey: 'close', align: 'right', width: 69 },
+  { key: 'change_pct', label: MARKET_TABLE_TEXTS_ZH.colChange, sortKey: 'change_pct', align: 'right', width: 69 },
+  { key: 'high', label: MARKET_TABLE_TEXTS_ZH.colHigh, sortKey: 'high', align: 'right', width: 69 },
+  { key: 'low', label: MARKET_TABLE_TEXTS_ZH.colLow, sortKey: 'low', align: 'right', width: 69 },
+  // 成交量 / 成交额 / 换手率：三列紧跟「最低价」、**排在总市值前面**（用户指定）。
+  // 成交量单独把左右内边距收到 4px：云端全市场最大 864.54 万手（8.65 亿股），
+  // 12px 等宽下这段文字约 67px，若留 px-2 只剩 65px 会溢出 2px。
+  { key: 'volume', label: MARKET_TABLE_TEXTS_ZH.colVolume, sortKey: 'volume', align: 'right', width: 81, padX: 4 },
+  { key: 'amount', label: MARKET_TABLE_TEXTS_ZH.colAmount, sortKey: 'amount', align: 'right', width: 89 },
+  { key: 'turnover_rate', label: MARKET_TABLE_TEXTS_ZH.colTurnover, sortKey: 'turnover_rate', align: 'right', width: 69 },
+  { key: 'total_market_cap', label: MARKET_TABLE_TEXTS_ZH.colMarketCap, sortKey: 'total_market_cap', align: 'right', width: 89 },
+  // 状态列（交易日状态）：68 → 48（−20），左侧与总市值之间的间距 40 → 20（−20）。
+  // 标签是 2–3 个字的短文案（正常/停牌/ST/*ST/退市），右侧内边距收到 2px 全给标签：
+  // 48 − 20（左间距）− 2（右内边距）= 26px 给标签，「停牌」这类 2 字标签正好 24px。
+  { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 48, padLeft: 20, padRight: 2 },
+  // 指标列：左内边距 20px，列宽 200 → 180 → 160 → 120 → 140（本轮 +20）
+  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 140, padLeft: 20 },
   { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 200 },
-  // 操作列 220 → 180 → 220：Agent 状态列整列删掉，改成操作列里一颗「A」图标
-  // （点击弹「配置监控 Agent」），所以把原来那一个按钮的宽度＋间隔（40px）加回来
+  // 操作列 220：Agent 状态列整列删掉，改成操作列里一颗「A」图标
+  // （点击弹「配置监控 Agent」），把原来那一个按钮的宽度＋间隔（40px）加回来
   { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 220 },
 ]
 
@@ -659,11 +657,11 @@ export function StockMarketTable({
         <div className="py-10 text-center text-[12px] text-muted-foreground">{emptyText}</div>
       ) : (
         <div className="overflow-x-auto scrollbar">
-          {/* 表格最小宽 = 各列固定宽之和 1506px（1596 − 指标 40 − 删掉的 Agent 状态 90 + 操作列 40）。
-              保留 w-full：容器比 1506 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
-              窄到不够就横向滚动；只有容器比 1506 还宽时 table-fixed 才会把余量按比例摊给各列——
+          {/* 表格最小宽 = 各列固定宽之和 1451px（1506 − 市场 10 − 9 列 × 5 − 状态 20 + 指标 20）。
+              保留 w-full：容器比 1451 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
+              窄到不够就横向滚动；只有容器比 1451 还宽时 table-fixed 才会把余量按比例摊给各列——
               这是原来就有的行为（宽屏铺满），本次不动 */}
-          <table className="w-full min-w-[1506px] table-fixed text-[12px]">
+          <table className="w-full min-w-[1451px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col
@@ -682,6 +680,7 @@ export function StockMarketTable({
                       style={{
                         ...(column.minWidth ? { minWidth: column.minWidth } : {}),
                         ...(column.padLeft ? { paddingLeft: column.padLeft } : {}),
+                        ...(column.padRight !== undefined ? { paddingRight: column.padRight } : {}),
                         ...(column.padX
                           ? { paddingLeft: column.padX, paddingRight: column.padX }
                           : {}),
@@ -733,6 +732,7 @@ export function StockMarketTable({
                           style={{
                             ...(column.minWidth ? { minWidth: column.minWidth } : {}),
                             ...(column.padLeft ? { paddingLeft: column.padLeft } : {}),
+                            ...(column.padRight !== undefined ? { paddingRight: column.padRight } : {}),
                             ...(column.padX
                               ? { paddingLeft: column.padX, paddingRight: column.padX }
                               : {}),

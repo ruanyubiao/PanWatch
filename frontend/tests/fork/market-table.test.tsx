@@ -266,9 +266,12 @@ describe('fork: 分析页全市场表格', () => {
     // 紧跟在「总市值」后面
     expect(headers.indexOf('状态')).toBe(headers.indexOf('总市值') + 1)
 
-    // 列宽固定：68px（「停牌 / 正常 / *ST」都在 3 个字以内）
+    // 列宽固定：48px（本轮 68 → 48，左间距 40 → 20）
     const col = table.querySelectorAll('colgroup col')[headers.indexOf('状态')] as HTMLElement
-    expect(col.style.width).toBe('68px')
+    expect(col.style.width).toBe('48px')
+    const statusHeader = within(table).getAllByRole('columnheader')[headers.indexOf('状态')] as HTMLElement
+    expect(statusHeader.style.paddingLeft).toBe('20px')
+    expect(statusHeader.style.paddingRight).toBe('2px')
 
     // 正常（没有状态行）/ 停牌 / ST 三种都出得来
     expect(screen.getAllByText('正常').length).toBeGreaterThan(0)
@@ -276,7 +279,7 @@ describe('fork: 分析页全市场表格', () => {
     expect(screen.getByText('ST')).toBeTruthy()
   })
 
-  it('列宽：市场～总市值一律固定宽（各 −10）、名称 60 / 指标 120（左内边距 20）/ 操作 220', async () => {
+  it('列宽：市场 40、昨收价～总市值各 −5、名称 60、状态 48、指标 140（左内边距 20）、操作 220', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response([row({ code: '600519' })]))
     renderTable()
     await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
@@ -288,24 +291,27 @@ describe('fork: 分析页全市场表格', () => {
     const widthOf = (label: string) =>
       (table.querySelectorAll('colgroup col')[headers.indexOf(label)] as HTMLElement).style.width
 
-    // 市场 → 总市值：全部从「最小宽/固定宽」改成固定宽 −10px（名称再 −20）
-    expect(widthOf('市场')).toBe('50px')
+    // 本轮：市场 −10；昨收价～总市值每列 −5；状态 −20；指标 +20
+    expect(widthOf('市场')).toBe('40px')
     expect(widthOf('代码')).toBe('70px')
     expect(widthOf('名称')).toBe('60px')
-    expect(widthOf('昨收价')).toBe('74px')
-    expect(widthOf('现价')).toBe('74px')
-    expect(widthOf('涨跌')).toBe('74px')
-    expect(widthOf('最高价')).toBe('74px')
-    expect(widthOf('最低价')).toBe('74px')
-    expect(widthOf('成交量')).toBe('86px')
-    expect(widthOf('成交额')).toBe('94px')
-    expect(widthOf('换手率')).toBe('74px')
-    expect(widthOf('总市值')).toBe('94px')
-    // 指标列本轮再 −40（160 → 120）；「Agent 状态」整列删除、图标搬进操作列，
-    // 操作列 180 → 220（多一个按钮的宽度 + 间隔）
-    expect(widthOf('指标')).toBe('120px')
+    expect(widthOf('昨收价')).toBe('69px')
+    expect(widthOf('现价')).toBe('69px')
+    expect(widthOf('涨跌')).toBe('69px')
+    expect(widthOf('最高价')).toBe('69px')
+    expect(widthOf('最低价')).toBe('69px')
+    expect(widthOf('成交量')).toBe('81px')
+    expect(widthOf('成交额')).toBe('89px')
+    expect(widthOf('换手率')).toBe('69px')
+    expect(widthOf('总市值')).toBe('89px')
+    expect(widthOf('状态')).toBe('48px')
+    // 指标列本轮 +20（120 → 140）；「Agent 状态」整列删除、图标搬进操作列，操作列 220
+    expect(widthOf('指标')).toBe('140px')
     expect(widthOf('操作')).toBe('220px')
     expect(headers).not.toContain('Agent 状态')
+
+    // 表宽 = 各列之和 1451（1506 − 10 − 45 − 20 + 20）
+    expect(table.className).toContain('min-w-[1451px]')
 
     // 市场～总市值不再留 minWidth（否则浏览器会按内容撑开，固定宽失效）
     const cols = table.querySelectorAll('colgroup col')
