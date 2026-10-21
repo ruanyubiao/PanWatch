@@ -22,6 +22,42 @@ export type LogicOperator = 'AND' | 'OR'
 export type MaPeriod = 5 | 10 | 20 | 30 | 60 | 120 | 250
 export const MA_PERIODS: MaPeriod[] = [5, 10, 20, 30, 60, 120, 250]
 
+/** 量价指标（后端 `METRICS` 同名）。 */
+export type MetricKey = 'pct' | 'turnover' | 'volume' | 'amount' | 'vol_ratio'
+/** 量价条件的形状：单日 / 每日 / 任意一天 / 累计 / 连续。 */
+export type MetricShape = 'single' | 'all' | 'any' | 'span' | 'consecutive'
+
+/** 单日形状的参数（倒数第 n 日）。 */
+export interface MetricSingleParams {
+  n: number
+  min: number
+  max: number
+}
+/** 区间形状的参数（倒数第 n ～ m 日，n 更近）。 */
+export interface MetricRangeParams {
+  n: number
+  m: number
+  min: number
+  max: number
+}
+/** 连续形状的参数（起点 + 天数）。 */
+export interface MetricConsecutiveParams {
+  start: number
+  days: number
+  min: number
+  max: number
+}
+/** 量比多一个「回看几日均量」。 */
+export interface RatioSingleParams extends MetricSingleParams {
+  window: number
+}
+export interface RatioRangeParams extends MetricRangeParams {
+  window: number
+}
+export interface RatioConsecutiveParams extends MetricConsecutiveParams {
+  window: number
+}
+
 export interface ConditionParamsMap {
   ma_bullish: { periods: MaPeriod[] }
   ma_bearish: { periods: MaPeriod[] }
@@ -31,6 +67,39 @@ export interface ConditionParamsMap {
   consecutive_bullish: { start: number; days: number }
   consecutive_rising: { start: number; days: number }
   change_pct: { n: number; min: number; max: number }
+  // ---- 涨跌幅（第二批：范围内每日 / 任意一天 / 区间）
+  change_pct_all: MetricRangeParams
+  change_pct_any: MetricRangeParams
+  change_pct_span: MetricRangeParams
+  // ---- 换手率
+  turnover_single: MetricSingleParams
+  turnover_all: MetricRangeParams
+  turnover_any: MetricRangeParams
+  turnover_span: MetricRangeParams
+  // ---- 成交量
+  volume_single: MetricSingleParams
+  volume_all: MetricRangeParams
+  volume_any: MetricRangeParams
+  volume_span: MetricRangeParams
+  // ---- 成交额
+  amount_single: MetricSingleParams
+  amount_all: MetricRangeParams
+  amount_any: MetricRangeParams
+  amount_span: MetricRangeParams
+  // ---- 量比（放量 / 缩量）
+  vol_ratio_single: RatioSingleParams
+  vol_ratio_all: RatioRangeParams
+  vol_ratio_any: RatioRangeParams
+  vol_ratio_avg: RatioRangeParams
+  vol_ratio_consecutive: RatioConsecutiveParams
+  // ---- 第二批
+  consecutive_falling: { start: number; days: number }
+  consecutive_shrinking: RatioConsecutiveParams
+  new_high: { m: number }
+  new_low: { m: number }
+  ma_golden_cross: { fast: MaPeriod; slow: MaPeriod }
+  ma_dead_cross: { fast: MaPeriod; slow: MaPeriod }
+  stock_match: { text: string }
 }
 export type ConditionName = keyof ConditionParamsMap
 
@@ -54,6 +123,11 @@ export interface ScreenRequest {
   include_st: boolean
   market_cap: { min_yi: number; max_yi: number }
   rule: GroupNode
+  /**
+   * 统计窗口的**结束日**（`YYYY-MM-DD`）；留空/不传 = 库里最新交易日。
+   * 30 个交易日从这一天往前数，非交易日由后端自动落到 ≤ 它的最大交易日。
+   */
+  asof?: string | null
 }
 
 export interface ScreenStats {
@@ -68,6 +142,8 @@ export interface ScreenStats {
 
 export interface ScreenResponse {
   asof: string | null
+  /** 用户填的日期（可能不是交易日）；没填时是 null */
+  requested_asof?: string | null
   total: number
   /** 与 market-table 的行完全同形（后端 `map_row` 产出），按 code 升序 */
   items: MarketRow[]
@@ -110,6 +186,10 @@ export const SCREEN_TEXTS_ZH = {
   tradingDaysSuffix: '个交易日',
   tradingDaysPlaceholder: '1–250',
   tradingDaysHint: '1–250；均线等指标所需的更早历史自动补足，不计入窗口',
+  asofLabel: '窗口截止日',
+  asofHint: '留空 = 最新交易日；30 个交易日从这天往前数，非交易日自动取之前最近的交易日',
+  asofInvalid: '数据截至需为 YYYY-MM-DD 格式的日期',
+  asofFallback: (actual: string, requested: string) => `${actual}（请求 ${requested}，已回退到之前最近的交易日）`,
   marketCap: '总市值（亿元）',
   capMin: '>',
   capMax: '且 <',
@@ -232,21 +312,497 @@ export const SCREEN_TEXTS_ZH = {
   summaryPeriodsJoin: '/',
 }
 
+/** 参数表单的形态（新增量价条件按这个渲染，不再按条件名写分支）。 */
+export type ParamEditorKind =
+  | 'metric-single'
+  | 'metric-range'
+  | 'metric-consecutive'
+  | 'lookback'
+  | 'ma-cross'
+  | 'text'
+
+/** 条件分类（选择列表按这个分组，顺序见 `CONDITION_CATEGORIES`）。 */
+export type ConditionCategory = '均线' | 'K 线' | '涨跌幅' | '换手率' | '成交量' | '成交额' | '量比'
+
 /** 条件注册表：label / 分类 / 默认值 / 摘要 / 需要的根数 / 校验。 */
 export interface ConditionDef<K extends ConditionName> {
   name: K
   label: string
-  category: '均线' | 'K 线' | '涨跌幅'
+  category: ConditionCategory
   description: string
   defaults: ConditionParamsMap[K]
   summary: (p: ConditionParamsMap[K]) => string
   requiredBars: (p: ConditionParamsMap[K]) => number
   validate: (p: ConditionParamsMap[K], tradingDays: number) => string[]
+  /** 缺省时按条件名走老的专用表单（均线周期 / 连续阳线 / 涨跌幅） */
+  editor?: ParamEditorKind
 }
 
 type ConditionDefMap = { [K in ConditionName]: ConditionDef<K> }
 
 const T = SCREEN_TEXTS_ZH
+
+// ------------------------------------------------------------------ 量价条件
+
+/**
+ * 量价条件的界面文案。
+ *
+ * 变量名以 `_ZH` 结尾是这个仓库的硬约定：`check:i18n` 只放行「最近的 VariableDeclaration
+ * 名字以 ZH/EN 结尾」的中文字面量（见 `scripts/check-i18n-literals.mjs`）。所以所有
+ * 中文都收进这两个常量里，下面的构建函数只调用它们、不写字面量。
+ */
+export const METRIC_TEXTS_ZH = {
+  label: {
+    pct: '涨跌幅',
+    turnover: '换手率',
+    volume: '成交量',
+    amount: '成交额',
+    vol_ratio: '量比',
+  } as Record<MetricKey, string>,
+  unit: {
+    pct: '%',
+    turnover: '%',
+    volume: '万手',
+    amount: '亿元',
+    vol_ratio: '倍',
+  } as Record<MetricKey, string>,
+  singleSummary: (n: number, label: string, unit: string, min: number, max: number) =>
+    `第 ${n} 日${label} ∈ (${min}${unit}, ${max}${unit})`,
+  allSummary: (m: number, n: number, label: string, unit: string, min: number, max: number) =>
+    `倒数第${m}～${n}日每天${label} ∈ (${min}${unit}, ${max}${unit})`,
+  anySummary: (m: number, n: number, label: string, unit: string, min: number, max: number) =>
+    `倒数第${m}～${n}日任意一天${label} ∈ (${min}${unit}, ${max}${unit})`,
+  spanPct: (m: number, n: number, label: string) => `倒数第${m}～${n}日${label}`,
+  spanSum: (m: number, n: number, label: string) => `倒数第${m}～${n}日累计${label}`,
+  spanAvg: (m: number, n: number, label: string) => `倒数第${m}～${n}日平均${label}`,
+  spanSummary: (prefix: string, unit: string, min: number, max: number) =>
+    `${prefix} ∈ (${min}${unit}, ${max}${unit})`,
+  consecutiveSummary: (span: string, days: number, label: string, unit: string, min: number, max: number) =>
+    `${span}连续${days}日${label} ∈ (${min}${unit}, ${max}${unit})`,
+  ratioWindowSuffix: (window: number) => `，量比回看 ${window} 日`,
+  hintSingle: (max: number) => `N = 倒数第几个交易日（1 – ${max}），上下限为开区间`,
+  hintRange: (max: number) =>
+    `N 距今天最近、M 更早（N ≤ M，1 – ${max}），跨度不超过 ${30} 个交易日；上下限为开区间`,
+  hintConsecutive: '自倒数第 X 个交易日起连续 Y 个交易日都落在区间内；缺一根即不成立',
+  hintVolRatio: '量比 = 当日成交量 ÷ 前若干交易日均量（不含当日），1 倍 = 平量',
+  startLabel: '起点 N',
+  endLabel: '终点 M',
+  minLabel: '下限',
+  maxLabel: '上限',
+  windowLabel: '回看天数',
+  lookbackLabel: '回看 M 日',
+  crossFast: '快线',
+  crossSlow: '慢线',
+  stockLabel: '股票代码或名称',
+  stockPlaceholder: '600519 或 贵州茅台',
+  stockHint: '必须完整相等（不做模糊匹配）：代码填 6 位，多个用逗号或空格分隔',
+  summaryLookback: (m: number, label: string) => `${label}（回看 ${m} 日）`,
+  summaryCross: (fast: number, slow: number, label: string) => `${label}：MA${fast} / MA${slow}`,
+  summaryStock: (text: string) => (text.trim() ? `股票 ∈ { ${text.trim()} }` : '股票（未填写）'),
+  nInvalid: (max: number) => `N 需为 1 至 ${max} 之间的整数`,
+  mInvalid: (max: number) => `M 需为 N 至 ${max} 之间的整数（M ≥ N）`,
+  spanTooWide: (max: number) => `区间跨度不能超过 ${max} 个交易日`,
+  rangeInvalid: (label: string) => `${label}下限必须小于上限`,
+  boundsInvalid: (label: string, lo: number, hi: number) => `${label}需在 ${lo} 至 ${hi} 之间`,
+  ratioWindowInvalid: '量比回看天数需为 1 至 60 的整数',
+  lookbackInvalid: (max: number) => `回看天数需为 1 至 ${max} 的整数`,
+  crossInvalid: '快线周期必须小于慢线周期',
+  stockRequired: '请填写股票代码或名称',
+  labelNewHigh: '收盘创 M 日新高',
+  labelNewLow: '收盘创 M 日新低',
+  descNewHigh: '最新收盘价（复权）高于之前 M 个交易日的最高收盘价，不含当日',
+  descNewLow: '最新收盘价（复权）低于之前 M 个交易日的最低收盘价，不含当日',
+  labelCrossUp: '均线金叉',
+  labelCrossDown: '均线死叉',
+  descCrossUp: '快线在上一交易日不高于慢线、今天高于慢线（默认 MA5 上穿 MA10）',
+  descCrossDown: '快线在上一交易日不低于慢线、今天低于慢线（默认 MA5 下穿 MA10）',
+  labelStockMatch: '股票代码或名称（完整匹配）',
+  descStockMatch:
+    '按代码（6 位）或名称完整相等筛选，不做模糊匹配；多个用逗号或空格分隔。名称要带 ST 前缀（如 *ST 康美）',
+  labelFalling: '连续下跌（涨幅 < 0）',
+  descFalling:
+    '两个参数：倒数第几个交易日（默认 1）＋连续天数（默认 3）。每天都收跌（收盘价 < 前收），中途有一天不跌或停牌缺数据就不成立',
+  summaryFalling: (span: string, days: number) => `${span}连续${days}日下跌`,
+  unitSuffix: (unit: string) => `单位：${unit}`,
+  lookbackHint: (max: number) => `回看 1 – ${max} 个交易日（不含当日）`,
+  crossHint: '快线必须小于慢线；金叉 = 快线今天上穿慢线，死叉 = 下穿',
+  nShortLabel: 'N',
+  consecutiveStartLabel: '起点（倒数第几个交易日）',
+  consecutiveDaysLabel: '连续天数',
+} as const
+
+/** 区间形状的跨度上限（与后端 `MAX_VALUE_SPAN` 一致）。 */
+export const MAX_VALUE_SPAN = 30
+
+/** 指标的取值边界（与后端 `_METRIC_BOUNDS` 一致）。 */
+const METRIC_LIMITS: Record<MetricKey, [number, number]> = {
+  pct: [-100, 1000],
+  turnover: [0, 1000],
+  volume: [0, 1e9],
+  amount: [0, 1e9],
+  vol_ratio: [0, 1e6],
+}
+
+/** 指标的默认区间（与后端 `_METRIC_DEFAULTS` 一致）。 */
+const METRIC_DEFAULTS: Record<MetricKey, [number, number]> = {
+  pct: [-30, 30],
+  turnover: [0, 30],
+  volume: [0, 100000],
+  amount: [0, 100],
+  vol_ratio: [0, 10],
+}
+
+/** 指标 → 选择列表里的分组名。 */
+const METRIC_CATEGORY_ZH: Record<MetricKey, ConditionCategory> = {
+  pct: '涨跌幅',
+  turnover: '换手率',
+  volume: '成交量',
+  amount: '成交额',
+  vol_ratio: '量比',
+}
+
+interface MetricSeed {
+  metric: MetricKey
+  shape: MetricShape
+  label: string
+  description: string
+  defaultMin?: number
+  defaultMax?: number
+}
+
+/**
+ * 量价条件的种子表：**指标 + 形状**决定求值循环，这里只给名字与文案。
+ *
+ * 加一条量价条件 = 在这个表里加一行（后端 `_VALUE_CONDITIONS` 同步加一行），
+ * 不再写新的求值器、也不再写新的表单分支。
+ */
+const METRIC_SEEDS_ZH: Record<string, MetricSeed> = {
+  change_pct_all: {
+    metric: 'pct',
+    shape: 'all',
+    label: '涨跌幅 · 范围内每日',
+    description: '倒数第 N ～ M 个交易日的每一天涨跌幅都落在区间内（开区间），任一天不满足即不成立',
+  },
+  change_pct_any: {
+    metric: 'pct',
+    shape: 'any',
+    label: '涨跌幅 · 范围内任意一天',
+    description: '倒数第 N ～ M 个交易日里至少有一天的涨跌幅落在区间内（开区间）',
+  },
+  change_pct_span: {
+    metric: 'pct',
+    shape: 'span',
+    label: '区间涨跌幅',
+    description: '倒数第 N 日相对倒数第 M 日的涨跌幅落在区间内（开区间）。按后复权价计算：N 日 30 元、M 日 20 元 → +50%',
+  },
+  turnover_single: {
+    metric: 'turnover',
+    shape: 'single',
+    label: '第 N 日换手率',
+    description: '倒数第 N 个交易日的换手率落在区间内（开区间，百分数）',
+  },
+  turnover_all: {
+    metric: 'turnover',
+    shape: 'all',
+    label: '换手率 · 范围内每日',
+    description: '倒数第 N ～ M 个交易日每天的换手率都落在区间内（开区间）',
+  },
+  turnover_any: {
+    metric: 'turnover',
+    shape: 'any',
+    label: '换手率 · 范围内任意一天',
+    description: '倒数第 N ～ M 个交易日里至少有一天的换手率落在区间内（开区间）',
+  },
+  turnover_span: {
+    metric: 'turnover',
+    shape: 'span',
+    label: '区间累计换手率',
+    description: '倒数第 N ～ M 个交易日的换手率之和落在区间内（开区间，可理解为这段时间换了多少遍手）',
+  },
+  volume_single: {
+    metric: 'volume',
+    shape: 'single',
+    label: '第 N 日成交量',
+    description: '倒数第 N 个交易日的成交量落在区间内（开区间，单位万手）',
+  },
+  volume_all: {
+    metric: 'volume',
+    shape: 'all',
+    label: '成交量 · 范围内每日',
+    description: '倒数第 N ～ M 个交易日每天的成交量都落在区间内（开区间，单位万手）',
+  },
+  volume_any: {
+    metric: 'volume',
+    shape: 'any',
+    label: '成交量 · 范围内任意一天',
+    description: '倒数第 N ～ M 个交易日里至少有一天的成交量落在区间内（开区间，单位万手）',
+  },
+  volume_span: {
+    metric: 'volume',
+    shape: 'span',
+    label: '区间累计成交量',
+    description: '倒数第 N ～ M 个交易日的成交量合计落在区间内（开区间，单位万手）',
+  },
+  amount_single: {
+    metric: 'amount',
+    shape: 'single',
+    label: '第 N 日成交额',
+    description: '倒数第 N 个交易日的成交额落在区间内（开区间，单位亿元）',
+  },
+  amount_all: {
+    metric: 'amount',
+    shape: 'all',
+    label: '成交额 · 范围内每日',
+    description: '倒数第 N ～ M 个交易日每天的成交额都落在区间内（开区间，单位亿元）',
+  },
+  amount_any: {
+    metric: 'amount',
+    shape: 'any',
+    label: '成交额 · 范围内任意一天',
+    description: '倒数第 N ～ M 个交易日里至少有一天的成交额落在区间内（开区间，单位亿元）',
+  },
+  amount_span: {
+    metric: 'amount',
+    shape: 'span',
+    label: '区间累计成交额',
+    description: '倒数第 N ～ M 个交易日的成交额合计落在区间内（开区间，单位亿元）',
+  },
+  vol_ratio_single: {
+    metric: 'vol_ratio',
+    shape: 'single',
+    label: '某日量比（放量 / 缩量）',
+    description: '倒数第 N 个交易日的量比落在区间内（开区间）。量比 = 当日量 ÷ 前若干日均量，只填下限就是放量、只填上限就是缩量',
+  },
+  vol_ratio_all: {
+    metric: 'vol_ratio',
+    shape: 'all',
+    label: '量比 · 范围内每日',
+    description: '倒数第 N ～ M 个交易日每天的量比都落在区间内（开区间）',
+  },
+  vol_ratio_any: {
+    metric: 'vol_ratio',
+    shape: 'any',
+    label: '量比 · 范围内任意一天',
+    description: '倒数第 N ～ M 个交易日里至少有一天的量比落在区间内（开区间）',
+  },
+  vol_ratio_avg: {
+    metric: 'vol_ratio',
+    shape: 'span',
+    label: '区间平均量比',
+    description: '倒数第 N ～ M 个交易日量比的平均值落在区间内（开区间），用来看「这一段时间整体放量没有」',
+  },
+  vol_ratio_consecutive: {
+    metric: 'vol_ratio',
+    shape: 'consecutive',
+    label: '连续 N 日量比落在区间',
+    description: '自倒数第 M 个交易日起连续 N 个交易日量比都落在区间内（开区间）。留空下限=连续放量的门槛，留空上限=连续缩量',
+    defaultMin: 0,
+    defaultMax: 10,
+  },
+  consecutive_shrinking: {
+    metric: 'vol_ratio',
+    shape: 'consecutive',
+    label: '连续缩量（量比 < 上限）',
+    description: '自倒数第 M 个交易日起连续 N 个交易日量比都小于上限（开区间），与「连续放量」是同一个条件的两侧',
+    defaultMin: 0,
+    defaultMax: 1,
+  },
+}
+
+/** 量价条件的构建器：指标 × 形状 → 完整注册项。 */
+function metricDef<K extends ConditionName>(name: K): ConditionDef<K> {
+  const seed = METRIC_SEEDS_ZH[name]
+  const { metric, shape } = seed
+  const [lo, hi] = METRIC_DEFAULTS[metric]
+  const min = seed.defaultMin ?? lo
+  const max = seed.defaultMax ?? hi
+  const core =
+    shape === 'single'
+      ? { n: 1, min, max }
+      : shape === 'consecutive'
+        ? { start: 1, days: 4, min, max }
+        : { n: 1, m: 5, min, max }
+  const defaults = metric === 'vol_ratio' ? { ...core, window: 5 } : core
+  return {
+    name,
+    label: seed.label,
+    category: METRIC_CATEGORY_ZH[metric],
+    description: seed.description,
+    defaults: defaults as ConditionParamsMap[K],
+    summary: p => metricSummary(metric, shape, p as unknown as Record<string, number>),
+    requiredBars: p => metricRequiredBars(metric, shape, p as unknown as Record<string, number>),
+    validate: (p, tradingDays) =>
+      metricValidate(metric, shape, p as unknown as Record<string, number>, tradingDays),
+    editor:
+      shape === 'single'
+        ? 'metric-single'
+        : shape === 'consecutive'
+          ? 'metric-consecutive'
+          : 'metric-range',
+  }
+}
+
+function metricSummary(
+  metric: MetricKey,
+  shape: MetricShape,
+  p: Record<string, number>,
+): string {
+  const M = METRIC_TEXTS_ZH
+  const label = M.label[metric]
+  const unit = M.unit[metric]
+  const tail = metric === 'vol_ratio' ? M.ratioWindowSuffix(p.window) : ''
+  if (shape === 'single') return M.singleSummary(p.n, label, unit, p.min, p.max) + tail
+  if (shape === 'all') return M.allSummary(p.m, p.n, label, unit, p.min, p.max) + tail
+  if (shape === 'any') return M.anySummary(p.m, p.n, label, unit, p.min, p.max) + tail
+  if (shape === 'consecutive') {
+    const part = consecutiveParts(p.start, p.days, 4)
+    return M.consecutiveSummary(part.span, part.days, label, unit, p.min, p.max) + tail
+  }
+  const prefix =
+    metric === 'pct'
+      ? M.spanPct(p.m, p.n, label)
+      : metric === 'vol_ratio'
+        ? M.spanAvg(p.m, p.n, label)
+        : M.spanSum(p.m, p.n, label)
+  return M.spanSummary(prefix, unit, p.min, p.max) + tail
+}
+
+function metricRequiredBars(
+  metric: MetricKey,
+  shape: MetricShape,
+  p: Record<string, number>,
+): number {
+  const warm =
+    metric === 'pct'
+      ? 1 // pre_close 缺失时回退前一根
+      : metric === 'vol_ratio'
+        ? Math.max(1, Number(p.window) || 5)
+        : 0
+  if (shape === 'single') return Math.max(1, p.n) + warm
+  if (shape === 'consecutive') {
+    return Math.max(1, consecutiveStart(p)) - 1 + consecutiveDays(p, 4) + warm
+  }
+  return Math.max(1, p.m) + warm
+}
+
+function metricValidate(
+  metric: MetricKey,
+  shape: MetricShape,
+  p: Record<string, number>,
+  tradingDays: number,
+): string[] {
+  const M = METRIC_TEXTS_ZH
+  const label = M.label[metric]
+  const limit = Math.max(1, Number.isFinite(tradingDays) ? tradingDays : 1)
+  const [lo, hi] = METRIC_LIMITS[metric]
+  const issues: string[] = []
+
+  if (shape === 'consecutive') {
+    const span = Math.min(limit, MAX_CONSECUTIVE_DAYS)
+    if (!Number.isInteger(p.start) || p.start < 1 || p.start > span) issues.push(T.startInvalid(span))
+    if (!Number.isInteger(p.days) || p.days < 1 || p.days > span) issues.push(T.daysInvalid(span))
+    if (issues.length === 0 && p.start - 1 + p.days > span) issues.push(T.spanInvalid(span))
+  } else {
+    if (!Number.isInteger(p.n) || p.n < 1 || p.n > limit) issues.push(M.nInvalid(limit))
+    if (shape !== 'single') {
+      if (!Number.isInteger(p.m) || p.m < p.n || p.m > limit) issues.push(M.mInvalid(limit))
+      else if (p.m - p.n + 1 > MAX_VALUE_SPAN) issues.push(M.spanTooWide(MAX_VALUE_SPAN))
+    }
+  }
+
+  if (!(p.min < p.max)) issues.push(M.rangeInvalid(label))
+  else if (p.min < lo || p.max > hi) issues.push(M.boundsInvalid(label, lo, hi))
+
+  if (metric === 'vol_ratio' && (!Number.isInteger(p.window) || p.window < 1 || p.window > 60)) {
+    issues.push(M.ratioWindowInvalid)
+  }
+  return issues
+}
+
+/** 第二批：创 M 日新高 / 新低。 */
+function lookbackDef<K extends ConditionName>(name: K, high: boolean): ConditionDef<K> {
+  const M = METRIC_TEXTS_ZH
+  const label = high ? M.labelNewHigh : M.labelNewLow
+  return {
+    name,
+    label,
+    category: 'K 线',
+    description: high ? M.descNewHigh : M.descNewLow,
+    defaults: { m: 20 } as ConditionParamsMap[K],
+    summary: p => M.summaryLookback((p as { m: number }).m, label),
+    requiredBars: p => Math.max(1, (p as { m: number }).m) + 1,
+    validate: (p, tradingDays) => {
+      const m = Number((p as { m: number }).m)
+      const limit = Math.min(Math.max(1, tradingDays || 1), 250)
+      return Number.isInteger(m) && m >= 1 && m <= limit ? [] : [M.lookbackInvalid(limit)]
+    },
+    editor: 'lookback',
+  }
+}
+
+/** 第二批：均线金叉 / 死叉。 */
+function crossDef<K extends ConditionName>(name: K, upward: boolean): ConditionDef<K> {
+  const M = METRIC_TEXTS_ZH
+  const label = upward ? M.labelCrossUp : M.labelCrossDown
+  return {
+    name,
+    label,
+    category: '均线',
+    description: upward ? M.descCrossUp : M.descCrossDown,
+    defaults: { fast: 5, slow: 10 } as ConditionParamsMap[K],
+    summary: p => M.summaryCross((p as { fast: number }).fast, (p as { slow: number }).slow, label),
+    requiredBars: p => Math.max(1, (p as { slow: number }).slow) + 1,
+    validate: p => {
+      const { fast, slow } = p as { fast: MaPeriod; slow: MaPeriod }
+      if (!MA_PERIODS.includes(fast) || !MA_PERIODS.includes(slow)) return [T.periodInvalid]
+      if (fast >= slow) return [M.crossInvalid]
+      return []
+    },
+    editor: 'ma-cross',
+  }
+}
+
+/** 股票代码或名称（完整匹配）。 */
+function stockMatchDef(): ConditionDef<'stock_match'> {
+  const M = METRIC_TEXTS_ZH
+  return {
+    name: 'stock_match',
+    label: M.labelStockMatch,
+    category: 'K 线',
+    description: M.descStockMatch,
+    defaults: { text: '' },
+    summary: p => M.summaryStock(p.text),
+    // 不需要日线，但要 ≥1 让取数层仍然取日历（K=0 会让整段取数被跳过）
+    requiredBars: () => 1,
+    validate: p => (p.text.trim() ? [] : [M.stockRequired]),
+    editor: 'text',
+  }
+}
+
+/** 连续下跌：与「连续上涨」镜像，参数形状一样。 */
+function fallingDef(): ConditionDef<'consecutive_falling'> {
+  const M = METRIC_TEXTS_ZH
+  return {
+    name: 'consecutive_falling',
+    label: M.labelFalling,
+    category: 'K 线',
+    description: M.descFalling,
+    defaults: { start: 1, days: 3 },
+    summary: p => {
+      const part = consecutiveParts(p.start, p.days, 3)
+      return M.summaryFalling(part.span, part.days)
+    },
+    requiredBars: p => Math.max(1, consecutiveStart(p)) - 1 + consecutiveDays(p, 3) + 1,
+    validate: (p, tradingDays) => {
+      const limit = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
+      const issues: string[] = []
+      if (!Number.isInteger(p.start) || p.start < 1 || p.start > limit) issues.push(T.startInvalid(limit))
+      if (!Number.isInteger(p.days) || p.days < 1 || p.days > limit) issues.push(T.daysInvalid(limit))
+      if (issues.length === 0 && p.start - 1 + p.days > limit) issues.push(T.spanInvalid(limit))
+      return issues
+    },
+  }
+}
 
 export const CONDITION_DEFS_ZH: ConditionDefMap = {
   ma_bullish: {
@@ -366,6 +922,37 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
       return issues
     },
   },
+
+  // ---- 量价：指标 × 形状，一行一条（求值器与表单都是共享的）
+  change_pct_all: metricDef('change_pct_all'),
+  change_pct_any: metricDef('change_pct_any'),
+  change_pct_span: metricDef('change_pct_span'),
+  turnover_single: metricDef('turnover_single'),
+  turnover_all: metricDef('turnover_all'),
+  turnover_any: metricDef('turnover_any'),
+  turnover_span: metricDef('turnover_span'),
+  volume_single: metricDef('volume_single'),
+  volume_all: metricDef('volume_all'),
+  volume_any: metricDef('volume_any'),
+  volume_span: metricDef('volume_span'),
+  amount_single: metricDef('amount_single'),
+  amount_all: metricDef('amount_all'),
+  amount_any: metricDef('amount_any'),
+  amount_span: metricDef('amount_span'),
+  vol_ratio_single: metricDef('vol_ratio_single'),
+  vol_ratio_all: metricDef('vol_ratio_all'),
+  vol_ratio_any: metricDef('vol_ratio_any'),
+  vol_ratio_avg: metricDef('vol_ratio_avg'),
+  vol_ratio_consecutive: metricDef('vol_ratio_consecutive'),
+  consecutive_shrinking: metricDef('consecutive_shrinking'),
+
+  // ---- 第二批
+  consecutive_falling: fallingDef(),
+  new_high: lookbackDef('new_high', true),
+  new_low: lookbackDef('new_low', false),
+  ma_golden_cross: crossDef('ma_golden_cross', true),
+  ma_dead_cross: crossDef('ma_dead_cross', false),
+  stock_match: stockMatchDef(),
 }
 
 /** 涨跌幅取值区间（与后端 ``_validate_change_pct`` 一致）。 */
@@ -420,8 +1007,31 @@ function inPctRange(value: number): boolean {
 
 export const CONDITION_NAMES = Object.keys(CONDITION_DEFS_ZH) as ConditionName[]
 
-/** 选择列表按分类分组（顺序：均线 → K 线 → 涨跌幅）。 */
-export const CONDITION_CATEGORIES: Array<ConditionDef<ConditionName>['category']> = ['均线', 'K 线', '涨跌幅']
+export function metricOf(name: ConditionName): { metric: MetricKey; shape: MetricShape } | null {
+  const seed = METRIC_SEEDS_ZH[name]
+  return seed ? { metric: seed.metric, shape: seed.shape } : null
+}
+
+/** 指标的取值边界（参数表单据此限制输入，与后端校验同一套数）。 */
+export function metricBounds(metric: MetricKey): [number, number] {
+  return METRIC_LIMITS[metric]
+}
+
+/** 量价条件的单位（摘要之外的提示文案用）。 */
+export function metricUnit(metric: MetricKey): string {
+  return METRIC_TEXTS_ZH.unit[metric]
+}
+
+/** 选择列表按分类分组（顺序：均线 → K 线 → 涨跌幅 → 量价四项）。 */
+export const CONDITION_CATEGORIES: ConditionCategory[] = [
+  '均线',
+  'K 线',
+  '涨跌幅',
+  '换手率',
+  '成交量',
+  '成交额',
+  '量比',
+]
 
 function validateMaPeriods(periods: MaPeriod[]): string[] {
   if (periods.length !== new Set(periods).size) return [T.periodsInvalid]
@@ -595,6 +1205,12 @@ export function validateScreenRequest(req: ScreenRequest): ValidationIssue[] {
   if (!Number.isInteger(days) || days < MIN_TRADING_DAYS || days > MAX_TRADING_DAYS) {
     issues.push({ path: 'trading_days', message: T.tradingDaysInvalid })
   }
+  // 数据截至：留空 = 最新交易日；填了就必须是 YYYY-MM-DD（日期控件的值一定是这个形状，
+  // 手写或者老条件文件里的脏值要在这里拦住，否则后端 422）
+  const asof = typeof req.asof === 'string' ? req.asof.trim() : ''
+  if (asof !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(asof)) {
+    issues.push({ path: 'asof', message: T.asofInvalid })
+  }
   if (req.markets.length === 0) {
     issues.push({ path: 'markets', message: T.marketRequired })
   } else if (new Set(req.markets).size !== req.markets.length) {
@@ -711,6 +1327,7 @@ function requiredBarsOfGroup(node: GroupNode): number {
 
 /** 提交用：剥掉 `collapsed`、数字字段转 number（输入框里可能是字符串）。 */
 export function toApiRequest(state: ScreenRequest): ScreenRequest {
+  const asof = typeof state.asof === 'string' ? state.asof.trim() : ''
   return {
     trading_days: Number(state.trading_days),
     markets: [...state.markets],
@@ -720,6 +1337,8 @@ export function toApiRequest(state: ScreenRequest): ScreenRequest {
       max_yi: Number(state.market_cap.max_yi),
     },
     rule: stripGroup(state.rule),
+    // 空串按 null 传：后端 `asof` 是可选日期，null / 缺省都表示「最新交易日」
+    asof: asof === '' ? null : asof,
   }
 }
 
@@ -762,7 +1381,26 @@ function normalizeParams<K extends ConditionName>(name: K, params: ConditionPara
     const p = params as ConditionParamsMap['change_pct']
     return { n: Number(p.n), min: Number(p.min), max: Number(p.max) } as ConditionParamsMap[K]
   }
-  return {} as ConditionParamsMap[K]
+
+  // 其余条件（量价与第二批）按**默认值表**通用归一：数字字段转 Number（非有限值
+  // 回落到默认值，避免把空框的 NaN 提交上去），字符串字段原样保留。
+  // 后端是 ``extra="forbid"``，多一个少一个键都是 400，所以这里必须逐键对齐 defaults。
+  const fallback = (CONDITION_DEFS_ZH[name]?.defaults ?? {}) as Record<string, unknown>
+  const current = (params ?? {}) as Record<string, unknown>
+  if (Object.keys(fallback).length === 0) return {} as ConditionParamsMap[K]
+  const out: Record<string, unknown> = {}
+  for (const [key, defaultValue] of Object.entries(fallback)) {
+    const raw = current[key]
+    if (typeof defaultValue === 'number') {
+      const value = Number(raw)
+      out[key] = Number.isFinite(value) ? value : defaultValue
+    } else if (typeof defaultValue === 'string') {
+      out[key] = raw === undefined || raw === null ? defaultValue : String(raw)
+    } else {
+      out[key] = raw === undefined ? defaultValue : raw
+    }
+  }
+  return out as ConditionParamsMap[K]
 }
 
 /**

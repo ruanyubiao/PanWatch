@@ -45,6 +45,13 @@ export function ScreenResultBanner({
 }) {
   const seconds = (response.stats.elapsed_ms / 1000).toFixed(1)
   const line2 = `${summarizeBase(request)} ｜ ${formatRule(request.rule)}`
+  // 指定了「窗口截止日」而它不是交易日时，后端会落到之前最近的交易日 ——
+  // 把用户填的原值一起显示出来，免得以为填的日期没生效
+  const actualAsof = response.asof ?? '—'
+  const asofText =
+    response.requested_asof && response.requested_asof !== response.asof
+      ? T.asofFallback(actualAsof, response.requested_asof)
+      : actualAsof
 
   return (
     <div
@@ -57,7 +64,7 @@ export function ScreenResultBanner({
         </span>
         <span className="text-[11px] text-muted-foreground" data-fork-screen-banner-meta>
           {T.bannerMeta(
-            response.asof ?? '—',
+            asofText,
             response.stats.candidates,
             response.stats.evaluated,
             response.stats.insufficient,

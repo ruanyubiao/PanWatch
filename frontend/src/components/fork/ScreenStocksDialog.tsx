@@ -89,6 +89,8 @@ interface DraftForm {
   markets: ScreenMarket[]
   includeSt: boolean
   rule: GroupNode
+  /** 窗口结束日（`YYYY-MM-DD`）；空 = 库里最新交易日 */
+  asofText: string
 }
 
 /**
@@ -108,6 +110,7 @@ function toDraft(request: ScreenRequest | null): DraftForm {
       markets: [...SCREEN_MARKETS],
       includeSt: false,
       rule: createGroup('AND'),
+      asofText: '',
     }
   }
   return {
@@ -117,6 +120,7 @@ function toDraft(request: ScreenRequest | null): DraftForm {
     markets: [...request.markets],
     includeSt: request.include_st,
     rule: stripCollapsed(request.rule),
+    asofText: request.asof ?? '',
   }
 }
 
@@ -142,6 +146,7 @@ function toRequest(form: DraftForm): ScreenRequest {
     include_st: form.includeSt,
     market_cap: { min_yi: Number(form.capMinText), max_yi: Number(form.capMaxText) },
     rule: form.rule,
+    asof: form.asofText.trim() === '' ? null : form.asofText.trim(),
   }
 }
 
@@ -474,6 +479,23 @@ export function ScreenStocksDialog({
                   onText={next => setForm(current => ({ ...current, daysText: next }))}
                 />
                 <span className="text-[11px] text-muted-foreground">{T.tradingDaysSuffix}</span>
+              </div>
+
+              {/* 窗口结束日（可选）：留空就用库里最新交易日。
+                  非交易日（周末/长假）由后端落到 ≤ 它的最大交易日，所以这里不拦。 */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.asofLabel}</span>
+                <input
+                  type="date"
+                  aria-label={T.asofLabel}
+                  data-screen-field="asof"
+                  value={form.asofText}
+                  onChange={event =>
+                    setForm(current => ({ ...current, asofText: event.target.value }))
+                  }
+                  className="h-7 rounded-md border border-input bg-background px-2 text-[12px] text-foreground"
+                />
+                <span className="text-[11px] text-muted-foreground">{T.asofHint}</span>
               </div>
 
               {/* 总市值：标题与控件同一行 */}
