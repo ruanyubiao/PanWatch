@@ -68,7 +68,9 @@ ORDER BY trade_date DESC
 LIMIT %(k)s
 """
 
-# ③ 日线：只取 6 列，符号用 tuple 参数由 pymysql 展开
+# ③ 日线：默认只取 6 列（``map_row``/均线真正用到的），量价条件才多取 5 列。
+#    多取会让 payload 从 6 列变 11 列（实测 800 只×246 天 9.4MB → 17.3MB，1.84 倍），
+#    所以由 ``with_extras`` 决定，没有量价条件就一分钱不付。
 _BARS_SQL = """
 SELECT symbol, trade_date, open, close, pre_close, adj_factor
 FROM {table}
@@ -76,9 +78,26 @@ WHERE symbol IN %(symbols)s AND trade_date BETWEEN %(start)s AND %(asof)s
 ORDER BY symbol, trade_date
 """
 
+_BARS_SQL_EXTRAS = """
+SELECT symbol, trade_date, open, close, pre_close, adj_factor,
+       high, low, volume, amount, turnover_rate
+FROM {table}
+WHERE symbol IN %(symbols)s AND trade_date BETWEEN %(start)s AND %(asof)s
+ORDER BY symbol, trade_date
+"""
 
-def candidate_sql() -> str:
-    return _CANDIDATE_SQL
+#: ``_WITH_UNI`` 里「最新交易日」那一段。指定 asof 时把它换成固定日期 ——
+#: 用字符串替换而不是复制整段 CTE（``_WITH_UNI`` 属上游共享件，少惹事）。
+#: 替换失败会静默算出「最新日」而不是指定日，所以单测钉住「锚点只出现一次」。
+_LATEST_ANCHOR = "latest AS (SELECT MAX(trade_date) AS asof FROM stock_daily)"
+
+
+def candidate_sql(asof: _dt.date | None = None) -> str:
+    """① 候选 SQL。``asof`` 给了就把「最新交易日」固定成那一天。"""
+    if asof is None:
+        return _CANDIDATE_SQL
+    anchored = f"latest AS (SELECT DATE '{asof.isoformat()}' AS asof)"
+    return _CANDIDATE_SQL.replace(_LATEST_ANCHOR, anchored)
 
 
 def calendar_sql() -> str:
@@ -98,8 +117,8 @@ def calendar_params(asof: _dt.date, k: int) -> dict[str, Any]:
     }
 
 
-def bars_sql() -> str:
-    return _BARS_SQL.format(table=_BARS_TABLE)
+def bars_sql(with_extras: bool = False) -> str:
+    return (_BARS_SQL_EXTRAS if with_extras else _BARS_SQL).format(table=_BARS_TABLE)
 
 
 def candidate_params(req: ScreenRequest) -> dict[str, Any]:
@@ -149,17 +168,49 @@ def _as_date(value: Any) -> _dt.date | None:
     return _dt.date.fromisoformat(str(value)[:10])
 
 
-def fetch_screen_data(req: ScreenRequest, k: int) -> ScreenData:
-    """执行 ①②③ 并构建 ``StockSeries``。连接/查询失败抛 ``ForkDbUnavailable``。"""
-    data = ScreenData()
+def resolve_asof(day: _dt.date) -> _dt.date | None:
+    """把用户给的日期落到 ≤ 该日的**最大交易日**（非交易日自动回退）。
+
+    走 ``idx_trade_date`` 的倒序扫描，实测毫秒级。库里一条数据都没有时返回 None
+    （调用方转成明确错误，不要拿「今天」冒充）。
+    """
+    conn = fork_market._connect()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT MAX(trade_date) AS asof FROM stock_daily WHERE trade_date <= %(day)s",
+                {"day": day},
+            )
+            row = cursor.fetchone() or {}
+            return _as_date(row.get("asof"))
+    except fork_market.ForkDbUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise fork_market.ForkDbUnavailable(f"查询行情库失败：{exc}") from exc
+    finally:
+        conn.close()
+
+
+def fetch_screen_data(
+    req: ScreenRequest,
+    k: int,
+    asof: _dt.date | None = None,
+    with_extras: bool = False,
+) -> ScreenData:
+    """执行 ①②③ 并构建 ``StockSeries``。连接/查询失败抛 ``ForkDbUnavailable``。
+
+    ``asof`` 给了就按那一天选股（窗口从它往前数），不给就是库里最新交易日。
+    ``with_extras`` 决定 ③ 是否多取量价 5 列。
+    """
+    data = ScreenData(asof=asof)
     conn = fork_market._connect()
     try:
         # ① 候选
         with conn.cursor() as cursor:
-            cursor.execute(candidate_sql(), candidate_params(req))
+            cursor.execute(candidate_sql(asof), candidate_params(req))
             data.candidates = list(cursor.fetchall() or [])
-        if data.candidates:
-            # 候选行都贴在「最新交易日」那一行行情上，所以任一行都能给出 asof
+        if data.asof is None and data.candidates:
+            # 候选行都贴在锚点那一行行情上，所以任一行都能给出 asof
             data.asof = _as_date(data.candidates[0].get("trade_date"))
         if k <= 0 or not data.candidates or data.asof is None:
             return data
@@ -195,7 +246,7 @@ def fetch_screen_data(req: ScreenRequest, k: int) -> ScreenData:
         buckets: dict[str, list] = {}
         with _tuple_cursor(conn) as cursor:
             cursor.execute(
-                bars_sql(),
+                bars_sql(with_extras),
                 {"symbols": symbols, "start": start, "asof": data.asof},
             )
             while True:
@@ -203,12 +254,10 @@ def fetch_screen_data(req: ScreenRequest, k: int) -> ScreenData:
                 if not batch:
                     break
                 data.fetched_bars += len(batch)
-                for symbol, trade_date, open_, close, pre_close, adj_factor in batch:
-                    buckets.setdefault(str(symbol), []).append(
-                        (trade_date, open_, close, pre_close, adj_factor)
-                    )
+                for row in batch:
+                    buckets.setdefault(str(row[0]), []).append(tuple(row[1:]))
         for symbol, rows in buckets.items():
-            series = build_series(symbol, rows)
+            series = build_series(symbol, rows, with_extras)
             if series is not None:
                 data.series[symbol] = series
     except fork_market.ForkDbUnavailable:
