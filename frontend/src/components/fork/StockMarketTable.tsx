@@ -224,7 +224,8 @@ const COLUMNS: ColumnDef[] = [
   // 市场列不参与排序（用户明确说不需要）
   { key: 'market', label: MARKET_TABLE_TEXTS_ZH.colMarket, width: 60 },
   { key: 'code', label: MARKET_TABLE_TEXTS_ZH.colCode, sortKey: 'code', width: 80 },
-  { key: 'name', label: MARKET_TABLE_TEXTS_ZH.colName, sortKey: 'name', width: 140 },
+  // 名称列 140 → 80（用户第 4 条）；A 股名称最长 4 个汉字（约 48px）+ 左右内边距 16px 仍装得下
+  { key: 'name', label: MARKET_TABLE_TEXTS_ZH.colName, sortKey: 'name', width: 80 },
   { key: 'pre_close', label: MARKET_TABLE_TEXTS_ZH.colPreClose, sortKey: 'pre_close', align: 'right', minWidth: 84 },
   { key: 'close', label: MARKET_TABLE_TEXTS_ZH.colPrice, sortKey: 'close', align: 'right', minWidth: 84 },
   { key: 'change_pct', label: MARKET_TABLE_TEXTS_ZH.colChange, sortKey: 'change_pct', align: 'right', minWidth: 84 },
@@ -236,11 +237,14 @@ const COLUMNS: ColumnDef[] = [
   // 左内边距 40px 在**这一列**（用户第 9 条：原来加在「指标」列前面的间距挪到状态列，
   // 指标列不再留白）—— 总市值是右对齐的，紧贴一个状态标签会糊成一片。
   { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 68, padLeft: 40 },
-  // 指标列固定 200px，**没有**左内边距（第 9 条把那段间距给了状态列）
-  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 200 },
-  { key: 'agent', label: MARKET_TABLE_TEXTS_ZH.colAgent, width: 120 },
+  // 指标列：左内边距 20px（用户最新第 1 条：指标列前面加 20px 间距），列宽同步 200 → 180
+  // （第 4 条：指标列减少 20px）—— 内边距吃掉的宽度从列宽里扣回来，方格总宽不变。
+  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 180, padLeft: 20 },
+  // Agent 状态列 120 → 90（第 4 条）
+  { key: 'agent', label: MARKET_TABLE_TEXTS_ZH.colAgent, width: 90 },
   { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 200 },
-  { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 220 },
+  // 操作列 220 → 180（第 4 条）
+  { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 180 },
 ]
 
 /** 每个可排序列三种状态的图标（未排序灰 ↕ / 降序蓝 ↓ / 升序蓝 ↑）。 */
@@ -589,8 +593,9 @@ export function StockMarketTable({
         <div className="py-10 text-center text-[12px] text-muted-foreground">{emptyText}</div>
       ) : (
         <div className="overflow-x-auto scrollbar">
-          {/* 表格最小宽度 = 固定列之和 + 各列最小宽，窄屏横向滚动而不是把列挤烂 */}
-          <table className="w-full min-w-[1598px] table-fixed text-[12px]">
+          {/* 表格最小宽度 = 固定列之和 + 各列最小宽，窄屏横向滚动而不是把列挤烂
+              （第 4 条把名称/Agent 状态/操作/指标共收窄 150px，这里同步 1598 → 1448） */}
+          <table className="w-full min-w-[1448px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col

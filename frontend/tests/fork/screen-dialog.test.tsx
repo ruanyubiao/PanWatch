@@ -250,6 +250,15 @@ describe('条件选股弹窗', () => {
     expect(save.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('D6c 从已保存条件打开时，保存按钮文案仍是「保存」而不是「覆盖保存」', () => {
+    renderDialog({ presetName: '四连阳', onSavePreset: vi.fn(), onDeletePreset: vi.fn() })
+    const save = document.querySelector('[data-fork-screen-save-preset]') as HTMLButtonElement
+    expect(save.textContent?.trim()).toBe('保存')
+    // 行为仍是覆盖：删除按钮此时可用
+    const remove = document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement
+    expect(remove.disabled).toBe(false)
+  })
+
   it('「修改条件」把上次的请求原样带回弹窗', () => {
     renderDialog({
       initialRequest: {

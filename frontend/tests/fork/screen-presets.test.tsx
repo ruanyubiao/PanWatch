@@ -209,8 +209,8 @@ describe('条件弹窗：已保存条件模式', () => {
     expect(remove).toBeTruthy()
     expect(remove.textContent).toContain('删除')
     expect(remove.disabled).toBe(false)
-    // 已保存 → 保存按钮变成「覆盖保存」
-    expect(save.textContent).toContain('覆盖保存')
+    // 已保存 → 文案仍是「保存」（覆盖行为不变，只是不再换词）
+    expect(save.textContent?.trim()).toBe('保存')
     // 文档顺序：删除 → 保存
     expect(remove.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     // 顶部说明点名正在编辑哪个条件

@@ -259,6 +259,60 @@ def test_A6b_结果按代码升序(monkeypatch):
     assert [item["c"] for item in body["items"]] == ["000001", "600519"]
 
 
+def test_A6c_OR组里缺数据的那条支路不会把命中的股票算进缺数据(monkeypatch):
+    """OR(站上 MA250, 站上 MA5)：只有 100 根日线 → MA250 缺数据判否，MA5 命中。
+
+    这一只**已经在结果里**，所以「缺数据排除」必须是 0 —— 计成 1 会让摘要
+    读成「少算了 1 只」，与结果表自相矛盾（真实库里 OR(MA250, MA5) 全市场有 52 只这种重叠）。
+    """
+    row = db_row("600519", "sh600519")
+    data = ScreenData(
+        asof=ASOF,
+        candidates=[row],
+        calendar=calendar_of(30),
+        # 100 根：够 MA5，不够 MA250
+        series={"sh600519": series_for("sh600519", [float(i) for i in range(1, 101)])},
+    )
+    _patch_fetch(monkeypatch, data)
+
+    body = fork_screen.screen(
+        make_request(
+            rule=group(
+                condition("close_above_ma", period=250),
+                condition("close_above_ma", period=5),
+                operator="OR",
+            )
+        )
+    )
+    assert body["total"] == 1
+    assert body["stats"]["evaluated"] == 1
+    assert body["stats"]["insufficient"] == 0
+
+
+def test_A6d_缺数据且没命中仍然计入缺数据(monkeypatch):
+    """同一只票换成 AND：MA250 缺数据 → 判否且不在结果里 → 计 1。"""
+    row = db_row("600519", "sh600519")
+    data = ScreenData(
+        asof=ASOF,
+        candidates=[row],
+        calendar=calendar_of(30),
+        series={"sh600519": series_for("sh600519", [float(i) for i in range(1, 101)])},
+    )
+    _patch_fetch(monkeypatch, data)
+
+    body = fork_screen.screen(
+        make_request(
+            rule=group(
+                condition("close_above_ma", period=250),
+                condition("close_above_ma", period=5),
+                operator="AND",
+            )
+        )
+    )
+    assert body["total"] == 0
+    assert body["stats"]["insufficient"] == 1
+
+
 # ---------------------------------------------------------------- A7 空结果
 
 
