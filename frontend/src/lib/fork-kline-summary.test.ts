@@ -8,9 +8,12 @@ import {
 } from '@/lib/fork-kline-summary'
 import {
   exchangeLabel,
+  formatAmount,
   formatChangePct,
   formatMarketCap,
   formatPrice,
+  formatTurnoverRate,
+  formatVolume,
 } from '@/components/fork/StockMarketTable'
 import { BOARD_OPTIONS } from '@/lib/board-classify'
 
@@ -59,6 +62,9 @@ function row(over: Partial<MarketRow> = {}): MarketRow {
     high: 11.89,
     low: 11.58,
     change_pct: -1.61,
+    volume: 58855939,
+    amount: 15252457670,
+    turnover_rate: 1.3814,
     total_market_cap: 224914591914.82,
     source: 'sina',
     ma: { ma5: 11.518, ma10: 11.4623, ma20: 11.4864, ma60: 11.1768 },
@@ -101,6 +107,24 @@ describe('列格式化', () => {
     expect(formatMarketCap(224914591914.82)).toBe('2249.15亿')
     expect(formatMarketCap(3122668557542)).toBe('3.12万亿')
     expect(formatMarketCap(null)).toBe('--')
+  })
+
+  it('成交量 / 成交额 / 换手率（单位与库里一致：股 / 元 / 百分数）', () => {
+    // 58,855,939 股 = 588,559.39 手 = 58.86 万手
+    expect(formatVolume(58855939)).toBe('58.86万手')
+    expect(formatVolume(356785575)).toBe('356.79万手')
+    expect(formatVolume(12000)).toBe('120手')
+    expect(formatVolume(0)).toBe('--')
+    expect(formatVolume(null)).toBe('--')
+
+    expect(formatAmount(15252457670)).toBe('152.52亿')
+    expect(formatAmount(3560000)).toBe('356.00万')
+    expect(formatAmount(8800)).toBe('8800')
+    expect(formatAmount(0)).toBe('--')
+
+    expect(formatTurnoverRate(1.3814)).toBe('1.38%')
+    expect(formatTurnoverRate(0)).toBe('0.00%')
+    expect(formatTurnoverRate(null)).toBe('--')
   })
 })
 
