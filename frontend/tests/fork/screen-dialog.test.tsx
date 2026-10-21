@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '@panwatch/base-ui/components/ui/toast'
@@ -96,26 +96,29 @@ describe('条件选股弹窗', () => {
     expect(screen.getByText(/数据截至 2026-10-16/)).toBeTruthy()
   })
 
-  it('D1 「全部」是三态推导出来的：全选 → 全不选 → mixed → 全选', async () => {
+  it('D1 市场是「全部 / 其他」二选一的组：全选状态不能再点「全部」取消', async () => {
     renderDialog()
 
-    // 全选状态下点「全部」→ 四个都取消
+    // ① 全选状态下点「全部」→ 仍然是全选（不能取消）
     await userEvent.click(marketButton('全部'))
+    expect(marketButton('全部').getAttribute('aria-pressed')).toBe('true')
     for (const name of ['上证', '深证', '创业', '科创']) {
+      expect(marketButton(name).getAttribute('aria-pressed')).toBe('true')
+    }
+
+    // ② 全选状态下点「上证」→ 只剩上证（「全部」被取消选中）
+    await userEvent.click(marketButton('上证'))
+    expect(marketButton('上证').getAttribute('aria-pressed')).toBe('true')
+    for (const name of ['深证', '创业', '科创']) {
       expect(marketButton(name).getAttribute('aria-pressed')).toBe('false')
     }
-    expect(marketButton('全部').getAttribute('aria-pressed')).toBe('false')
-
-    // 一个都没选 → 校验报错「至少选择一个市场」
-    await userEvent.click(submitButton())
-    expect(screen.getByText(/至少选择一个市场/)).toBeTruthy()
-    expect(mocks.screen).not.toHaveBeenCalled()
-
-    // 只选上证 → 「全部」变成 mixed
-    await userEvent.click(marketButton('上证'))
     expect(marketButton('全部').getAttribute('aria-pressed')).toBe('mixed')
 
-    // mixed 状态点「全部」→ 四个全选（不是「全不选」）
+    // ③ 最后一个市场不能取消：再点一次「上证」仍然选中（不会出现一个都没选）
+    await userEvent.click(marketButton('上证'))
+    expect(marketButton('上证').getAttribute('aria-pressed')).toBe('true')
+
+    // ④ 点「全部」→ 四个全选
     await userEvent.click(marketButton('全部'))
     expect(marketButton('全部').getAttribute('aria-pressed')).toBe('true')
     for (const name of ['上证', '深证', '创业', '科创']) {
@@ -265,7 +268,6 @@ describe('条件选股弹窗', () => {
         trading_days: 45,
         markets: ['sh', 'kcb'],
         include_st: true,
-        market_cap: { min_yi: 50, max_yi: 500 },
         rule: {
           type: 'group',
           id: 'g-root',
@@ -294,7 +296,7 @@ describe('条件选股弹窗', () => {
     expect(radios[1].getAttribute('aria-checked')).toBe('true')
   })
 
-  it('L1 基础筛选三行：标题与控件同一行；ST 开关跟在市场后面', () => {
+  it('L1 基础筛选：标题与控件同一行；窗口截止日带「启用」；ST 开关跟在市场后面', () => {
     renderDialog()
 
     // 统计窗口：标题与输入框在同一个 flex 行容器里
@@ -304,10 +306,17 @@ describe('条件选股弹窗', () => {
     expect(daysRow.className).toContain('flex')
     expect(daysRow.textContent).toContain('统计窗口')
 
-    // 总市值：标题与两个输入框同一行
-    const capMin = document.querySelector<HTMLInputElement>('[data-screen-field="market_cap.min_yi"]')!
-    const capRow = capMin.parentElement!.parentElement as HTMLElement
-    expect(capRow.textContent).toContain('总市值（亿元）')
+    // 窗口截止日：日期框 +「启用」复选框同一行；默认不启用（框禁用、不带日期）
+    const asofInput = document.querySelector<HTMLInputElement>('[data-screen-field="asof"]')!
+    const asofToggle = document.querySelector<HTMLInputElement>('[data-screen-field="asof_enabled"]')!
+    expect(asofToggle.checked).toBe(false)
+    expect(asofInput.disabled).toBe(true)
+    expect(asofInput.value).toBe('')
+    expect(asofInput.parentElement!.textContent).toContain('窗口截止日')
+    expect(asofInput.parentElement!.contains(asofToggle)).toBe(true)
+
+    // 总市值已经搬进条件列表：基础筛选里不该再有市值输入框
+    expect(document.querySelector('[data-screen-field="market_cap.min_yi"]')).toBeNull()
 
     // 市场 + ST：同一个行容器；「ST 股票」这个单独标题已删除
     const marketGroup = document.querySelector('[aria-label="市场"]')!
@@ -316,6 +325,31 @@ describe('条件选股弹窗', () => {
     expect(marketRow.contains(stSwitch)).toBe(true)
     expect(marketRow.textContent).toContain('包含 ST / *ST')
     expect(screen.queryByText('ST 股票')).toBeNull()
+  })
+
+  it('L1b 勾上「启用」才提交日期：不勾时 asof 为 null，勾上后带日期', async () => {
+    const onSavePreset = vi.fn()
+    renderDialog({ initialRequest: null, onSavePreset })
+
+    const toggle = document.querySelector<HTMLInputElement>('[data-screen-field="asof_enabled"]')!
+    const input = document.querySelector<HTMLInputElement>('[data-screen-field="asof"]')!
+
+    // 不勾：日期框禁用，草稿里的日期是空串
+    expect(input.disabled).toBe(true)
+
+    await userEvent.click(toggle)
+    expect(input.disabled).toBe(false)
+    // 勾上时预填一个可用起点（当前数据日期）
+    expect(input.value).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+
+    // 日期框是分段输入，直接派发 change 比逐字符 type 稳
+    fireEvent.change(input, { target: { value: '2026-09-30' } })
+    expect(input.value).toBe('2026-09-30')
+
+    // 取消勾选 → 日期清空、再次禁用
+    await userEvent.click(toggle)
+    expect(input.value).toBe('')
+    expect(input.disabled).toBe(true)
   })
 
   it('L2 连续阳线两个参数：倒数第几个交易日（默认 1）+ 天数（默认 4）', async () => {

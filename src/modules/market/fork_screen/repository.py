@@ -37,14 +37,20 @@ _YI = 100_000_000.0
 
 # ① 候选：列与 ``market-table`` 的 ``_PAGE_SELECT`` 完全一致（``map_row`` 直接可用），
 # WHERE 用的是 CTE 里新增的两列 market_board / is_st。
+#
+# 市值过滤是**可选**的（``{cap}``）：2026-10-21 起「总市值」搬进了条件列表，新请求
+# 不再带基础市值区间，这时候选 = 所选市场（默认全市场），市值在条件树里按天算。
+# 老脚本 / 老条件文件仍然带区间，照旧在 SQL 里先过滤（省一次全市场求值）。
+_CAP_FILTER = """
+  AND COALESCE(total_market_cap, info_market_cap) > %(cap_min)s
+  AND COALESCE(total_market_cap, info_market_cap) < %(cap_max)s"""
+
 _CANDIDATE_SQL = (
     fork_market._WITH_UNI
     + fork_market._PAGE_SELECT
     + """
 WHERE market_board IN %(markets)s
-  AND (%(include_st)s = 1 OR is_st = 0)
-  AND COALESCE(total_market_cap, info_market_cap) > %(cap_min)s
-  AND COALESCE(total_market_cap, info_market_cap) < %(cap_max)s
+  AND (%(include_st)s = 1 OR is_st = 0){cap}
 ORDER BY code"""
 )
 
@@ -74,7 +80,7 @@ LIMIT %(k)s
 #    所以「多取一列都是钱」，不能图省事固定取全。
 _BASE_COLUMNS = ("symbol", "trade_date", "open", "close", "pre_close", "adj_factor")
 #: 额外列在 SELECT 里的固定顺序（``build_series`` 按下标取值，两边必须一致）
-_EXTRAS_ORDER = ("traded", "volume", "amount", "turnover_rate")
+_EXTRAS_ORDER = ("traded", "volume", "amount", "turnover_rate", "total_market_cap")
 
 
 def extras_select(extras: "Iterable[str]") -> tuple[str, ...]:
@@ -98,12 +104,16 @@ ORDER BY symbol, trade_date
 _LATEST_ANCHOR = "latest AS (SELECT MAX(trade_date) AS asof FROM stock_daily)"
 
 
-def candidate_sql(asof: _dt.date | None = None) -> str:
-    """① 候选 SQL。``asof`` 给了就把「最新交易日」固定成那一天。"""
+def candidate_sql(asof: _dt.date | None = None, with_cap: bool = False) -> str:
+    """① 候选 SQL。``asof`` 给了就把「最新交易日」固定成那一天。
+
+    ``with_cap``：是否把基础市值区间拼进 WHERE（老请求才带区间）。
+    """
+    sql = _CANDIDATE_SQL.format(cap=_CAP_FILTER if with_cap else "")
     if asof is None:
-        return _CANDIDATE_SQL
+        return sql
     anchored = f"latest AS (SELECT DATE '{asof.isoformat()}' AS asof)"
-    return _CANDIDATE_SQL.replace(_LATEST_ANCHOR, anchored)
+    return sql.replace(_LATEST_ANCHOR, anchored)
 
 
 def calendar_sql() -> str:
@@ -129,13 +139,20 @@ def bars_sql(extras: "Iterable[str]" = ()) -> str:
 
 
 def candidate_params(req: ScreenRequest) -> dict[str, Any]:
-    """① 的参数。市值单位是**元**（库里口径），界面输入是亿元。"""
-    return {
+    """① 的参数。市值单位是**元**（库里口径），界面输入是亿元。
+
+    没有基础市值区间（新请求）时不带 ``cap_min`` / ``cap_max`` —— SQL 里也没有
+    对应的占位符（见 ``candidate_sql``）。
+    """
+    params: dict[str, Any] = {
         "markets": tuple(req.markets),
         "include_st": 1 if req.include_st else 0,
-        "cap_min": float(req.market_cap.min_yi) * _YI,
-        "cap_max": float(req.market_cap.max_yi) * _YI,
     }
+    cap = req.market_cap
+    if cap is not None:
+        params["cap_min"] = float(cap.min_yi) * _YI
+        params["cap_max"] = float(cap.max_yi) * _YI
+    return params
 
 
 @dataclass
@@ -216,7 +233,10 @@ def fetch_screen_data(
     try:
         # ① 候选
         with conn.cursor() as cursor:
-            cursor.execute(candidate_sql(asof), candidate_params(req))
+            cursor.execute(
+                candidate_sql(asof, with_cap=req.market_cap is not None),
+                candidate_params(req),
+            )
             data.candidates = list(cursor.fetchall() or [])
         if data.asof is None and data.candidates:
             # 候选行都贴在锚点那一行行情上，所以任一行都能给出 asof
