@@ -37,6 +37,9 @@ def _db_row(**over):
         "close": Decimal("1290.5000"),
         "pre_close": Decimal("1286.0000"),
         "change_pct": Decimal("0.3500"),
+        "volume": 58855939,
+        "amount": Decimal("15252457670.0000"),
+        "turnover_rate": Decimal("1.3814"),
         "total_market_cap": Decimal("1607604938886.00"),
         "info_market_cap": 1607604938886,
         "source": "sina",
@@ -72,6 +75,7 @@ def test_返回字段名都是_1_到_2_个字母且不带表格不用的字段()
     assert all(len(key) <= 2 for key in item), sorted(item)
     assert set(item) == {
         "c", "s", "e", "n", "b", "d", "pc", "cl", "h", "l", "cp", "mc",
+        "v", "am", "tr",
         "so", "sc", "sl", "sg", "m", "t",
     }
     for gone in ("open", "change_amount", "circulating_market_cap", "adj_factor"):
@@ -120,6 +124,14 @@ def test_市值取当日值_当日为空时回落到股票表():
     assert fork_market.map_row(_db_row())["mc"] == 1607604938886.0
     fallback = fork_market.map_row(_db_row(total_market_cap=None))
     assert fallback["mc"] == 1607604938886.0
+
+
+def test_成交量成交额换手率原样带出():
+    """三列都是日终管道算好的原值：volume 单位股、amount 单位元、turnover_rate 已是百分数。"""
+    item = fork_market.map_row(_db_row())
+    assert item["v"] == 58855939.0
+    assert item["am"] == 15252457670.0
+    assert item["tr"] == 1.3814
 
 
 # ------------------------------------------------------------------ 数据不足

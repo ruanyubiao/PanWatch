@@ -5,6 +5,7 @@ import {
   EMPTY_MARKET_FILTERS,
   INDICATOR_FILTER_KEYS,
   TRADE_STATUS_FILTER_OPTIONS_ZH,
+  TURNOVER_FILTER_OPTIONS_ZH,
   capBucketOf,
   filterMarketRows,
   hasActiveFilters,
@@ -13,7 +14,9 @@ import {
   matchChange,
   matchIndicator,
   matchTradeStatus,
+  matchTurnover,
   tradeStatusKeyOf,
+  turnoverBucketOf,
   type MarketTableFilters,
 } from '@/lib/market-filters'
 import { BOARD_OPTIONS } from '@/lib/board-classify'
@@ -45,6 +48,9 @@ const row = (over: Partial<MarketRow> = {}): MarketRow => ({
   low: 1276,
   change_amount: 4.5,
   change_pct: 0.35,
+  volume: 58855939,
+  amount: 15252457670,
+  turnover_rate: 1.3814,
   total_market_cap: 1607604938886,
   source: 'sina',
   adj_factor: 1,
@@ -113,6 +119,36 @@ describe('fork: 市值分档（多选）', () => {
       '1000亿',
       '其他',
     ])
+  })
+})
+
+describe('fork: 换手率分档（多选）', () => {
+  it('「2%」= 小于 2%，往上每档是上一档到本档，其他 = 20% 以上', () => {
+    expect(turnoverBucketOf(0)).toBe('lt2')
+    expect(turnoverBucketOf(1.99)).toBe('lt2')
+    expect(turnoverBucketOf(2)).toBe('lt5')
+    expect(turnoverBucketOf(4.99)).toBe('lt5')
+    expect(turnoverBucketOf(5)).toBe('lt10')
+    expect(turnoverBucketOf(9.99)).toBe('lt10')
+    expect(turnoverBucketOf(10)).toBe('lt20')
+    expect(turnoverBucketOf(19.99)).toBe('lt20')
+    expect(turnoverBucketOf(20)).toBe('gt20')
+    expect(turnoverBucketOf(59.05)).toBe('gt20')
+  })
+
+  it('一档都不选 = 不限；勾多档 = 并集；缺值只在「不限」里出现', () => {
+    expect(matchTurnover(1, [])).toBe(true)
+    expect(matchTurnover(1, ['lt2'])).toBe(true)
+    expect(matchTurnover(1, ['lt5'])).toBe(false)
+    expect(matchTurnover(6, ['lt2', 'lt10'])).toBe(true)
+    expect(matchTurnover(6, ['lt2', 'lt20'])).toBe(false)
+    expect(matchTurnover(null, [])).toBe(true)
+    expect(matchTurnover(null, ['lt2'])).toBe(false)
+  })
+
+  it('档位文案与顺序：2% / 5% / 10% / 20% / 其他（「全部」是多选下拉的 allLabel，不是档位）', () => {
+    expect(TURNOVER_FILTER_OPTIONS_ZH.map(o => o.label)).toEqual(['2%', '5%', '10%', '20%', '其他'])
+    expect(TURNOVER_FILTER_OPTIONS_ZH.map(o => o.key)).toEqual(['lt2', 'lt5', 'lt10', 'lt20', 'gt20'])
   })
 })
 
@@ -187,6 +223,7 @@ describe('fork: 涨跌 / 指标 / 状态', () => {
     expect(hasActiveFilters(F({ indicator: ['buy'] }))).toBe(true)
     expect(hasActiveFilters(F({ change: 'down' }))).toBe(true)
     expect(hasActiveFilters(F({ cap: ['lt50'] }))).toBe(true)
+    expect(hasActiveFilters(F({ turnover: ['lt2'] }))).toBe(true)
     expect(hasActiveFilters(F({ tradeStatus: ['suspended'] }))).toBe(true)
   })
 

@@ -103,6 +103,7 @@ status_today AS (
 uni AS (
     SELECT b.*, d.trade_date, d.open, d.high, d.low, d.close, d.pre_close,
            d.change_amount, d.change_pct, d.total_market_cap, d.circulating_market_cap,
+           d.volume, d.amount, d.turnover_rate,
            d.source, d.adj_factor, d.ma5, d.ma10, d.ma20, d.ma60, d.traded,
            d.tech_score, d.tech_trend, d.tech_macd, d.tech_rsi, d.tech_kdj,
            d.tech_boll, d.tech_volume, d.tech_support, d.tech_resistance,
@@ -134,6 +135,7 @@ GROUP BY l.asof
 _PAGE_SELECT = """
 SELECT code, symbol, exchange, name, board, trade_date, high, low, close,
        pre_close, change_pct, total_market_cap, info_market_cap,
+       volume, amount, turnover_rate,
        source, adj_factor, ma5, ma10, ma20, ma60,
        tech_score, tech_trend, tech_macd, tech_rsi, tech_kdj, tech_boll,
        tech_volume, tech_support, tech_resistance,
@@ -303,6 +305,7 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
         c=code  s=symbol  e=exchange  n=name  b=board  d=trade_date
         pc=pre_close  cl=close  h=high  l=low  cp=change_pct
         mc=total_market_cap  so=source
+        v=volume（股）  am=amount（元）  tr=turnover_rate（百分数）
         sc/sl/sg=status_code/status_label/status_group
         m={5,10,20,60} 均线（不复权空间）  t=技术面结论（无分时为 null）
 
@@ -360,6 +363,11 @@ def map_row(row: dict[str, Any]) -> dict[str, Any]:
         "l": _f(row.get("low")),
         "cp": _f(row.get("change_pct")),
         "mc": _f(market_cap),
+        # 成交量（股）/ 成交额（元）/ 换手率（**百分数**：库里 1.3814 就是 1.38%，
+        # 管道已按流通股本算好，前端直接显示，不要再乘 100）。
+        "v": _f(row.get("volume")),
+        "am": _f(row.get("amount")),
+        "tr": _f(row.get("turnover_rate")),
         "so": row.get("source"),
         # 交易日状态（停牌 / ST / *ST / 退市 / 新股 / 正常）。
         # 库里的 status_code 是当日 ``stock_status_daily`` 的**最严重**那条

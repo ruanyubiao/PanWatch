@@ -6,21 +6,24 @@ import {
   CHANGE_FILTER_OPTIONS_ZH,
   EMPTY_MARKET_FILTERS,
   TRADE_STATUS_FILTER_OPTIONS_ZH,
+  TURNOVER_FILTER_OPTIONS_ZH,
   hasAnyFilterActive,
   type CapFilter,
   type ChangeFilter,
   type MarketTableFilters,
   type TradeStatusFilter,
+  type TurnoverFilter,
 } from '@/lib/market-filters'
 
 /**
- * fork：分析页的筛选行（五组）。
+ * fork：分析页的筛选行（六组）。
  *
  *   组1 市场   全部 | 上证 | 深证 | 创业 | 科创 | ST    单选下拉（带计数）
  *   组2 指标   全部指标 | 买入 | 回避 | 观望            多选下拉（技术面结论）
  *   组3 涨跌   全部涨跌 | 上涨 | 下跌                    单选下拉
  *   组4 市值   全部市值 | 50亿 | 100亿 | … | 其他        多选下拉
- *   组5 状态   全部状态 | 正常 | 停牌 | ST | *ST | …     多选下拉（交易日状态）
+ *   组5 换手率 全部换手率 | 2% | 5% | 10% | 20% | 其他   多选下拉（排在市值后面）
+ *   组6 状态   全部状态 | 正常 | 停牌 | ST | *ST | …     多选下拉（交易日状态）
  *
  * 2026-10-20 第四批反馈的改动：
  *   - 第 4 条：组2 从「状态」改名「指标」（表格里那一列的标题同步改成「指标」），
@@ -48,9 +51,10 @@ const FILTER_BAR_TEXTS_ZH = {
   indicatorAll: '全部指标',
   changeAll: '全部涨跌',
   capAll: '全部市值',
+  turnoverAll: '全部换手率',
   tradeStatusAll: '全部状态',
   clear: '清空筛选',
-  clearHint: '市场、指标、涨跌、市值、状态一起复位',
+  clearHint: '市场、指标、涨跌、市值、换手率、状态一起复位',
   indicatorHint: (label: string) => `技术面：${label}`,
 }
 
@@ -157,7 +161,23 @@ export function StockFilterBar({
         menuClassName="w-[288px]"
       />
 
-      {/* 组5 状态：多选下拉（用户要求放在「全部市值」后面）—— 交易日状态，不是技术面结论 */}
+      {/* 组5 换手率：多选下拉（排在「全部市值」后面，与市值同一种「标签 = 本档上界」的写法） */}
+      <MultiSelectFilter
+        label={FILTER_BAR_TEXTS_ZH.turnoverAll}
+        allLabel={FILTER_BAR_TEXTS_ZH.turnoverAll}
+        options={TURNOVER_FILTER_OPTIONS_ZH.map(option => ({
+          key: option.key,
+          label: option.label,
+          hint: option.hint,
+        }))}
+        value={filters.turnover}
+        onChange={next => onFiltersChange({ ...filters, turnover: next as TurnoverFilter[] })}
+        // 「全部换手率」是 5 个字，104px 装不下（实测被压成「全部换…」）——只这一组给 120px
+        className="w-[120px]"
+        menuClassName="w-[248px]"
+      />
+
+      {/* 组6 状态：多选下拉（用户要求放在「全部市值」后面）—— 交易日状态，不是技术面结论 */}
       <MultiSelectFilter
         label={FILTER_BAR_TEXTS_ZH.tradeStatusAll}
         allLabel={FILTER_BAR_TEXTS_ZH.tradeStatusAll}

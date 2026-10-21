@@ -1,14 +1,17 @@
 /**
- * fork 专用：分析页表格的**筛选**（除板块以外的三组）。
+ * fork 专用：分析页表格的**筛选**（除板块以外的五组，加上市场共六组）。
  *
- * 用户第二轮要求把筛选做成「机会页」那种形式（下拉 + 清空筛选），四组：
+ * 用户第二轮要求把筛选做成「机会页」那种形式（下拉 + 清空筛选）：
  *   组1 市场   全部 | 上证 | 深证 | 创业 | 科创 | ST  （单选**下拉**，选项带计数，见 board-classify.ts）
- *   组2 状态   全部 | 买入 | 回避 | 观望               （**多选**下拉）
+ *   组2 指标   全部 | 买入 | 回避 | 观望               （**多选**下拉，技术面结论）
  *   组3 涨跌   全部 | 上涨 | 下跌                       （单选下拉）
  *   组4 市值   全部 | 50亿 | 100亿 | 300亿 | 500亿 | 1000亿 | 其他
  *                                                     （**多选**下拉）
  *              其中「50亿」表示**小于 50 亿**，往上每档是「上一档 ~ 本档」，
  *              「其他」表示 1000 亿以上 —— 与用户给的写法一致。
+ *   组5 换手率 全部 | 2% | 5% | 10% | 20% | 其他              （**多选**下拉）
+ *              同样是「标签 = 本档上界」：「2%」= 小于 2%，「其他」= 20% 以上。
+ *   组6 状态   全部 | 正常 | 停牌 | ST | …                    （**多选**下拉）
  *
  * 多选组的语义：一档都不选 = 不限；选了若干档 = **并集**（命中任一档即通过）。
  *
@@ -22,6 +25,12 @@ import type { MarketRow } from '@/lib/fork-kline-summary'
 
 export type ChangeFilter = 'all' | 'up' | 'down'
 export type CapFilter = 'lt50' | 'lt100' | 'lt300' | 'lt500' | 'lt1000' | 'gt1000'
+/**
+ * 换手率档位（2026-10 新增）。分档取自云端 2026-10-20 全市场 5577 只的实际分布：
+ * <2% 3264 / 2–5% 1610 / 5–10% 478 / 10–20% 180 / ≥20% 45 —— 每档都有一批票，
+ * 不像「<1% / ≥30%」那种极端切法会把九成股票挤在一档里。
+ */
+export type TurnoverFilter = 'lt2' | 'lt5' | 'lt10' | 'lt20' | 'gt20'
 /** 交易日状态（停牌 / 正常 / ST …）的筛选键。 */
 export type TradeStatusFilter =
   | 'normal'
@@ -46,6 +55,8 @@ export interface MarketTableFilters {
   cap: CapFilter[]
   /** 交易日状态：空数组 = 不限；多选 = 命中其一即可 */
   tradeStatus: TradeStatusFilter[]
+  /** 换手率档位：空数组 = 不限；多选 = 命中任一档即可 */
+  turnover: TurnoverFilter[]
 }
 
 export const EMPTY_MARKET_FILTERS: MarketTableFilters = {
@@ -53,6 +64,7 @@ export const EMPTY_MARKET_FILTERS: MarketTableFilters = {
   change: 'all',
   cap: [],
   tradeStatus: [],
+  turnover: [],
 }
 
 /**
@@ -106,6 +118,37 @@ export function capBucketOf(cap: number | null | undefined): CapFilter | null {
 export function matchCap(cap: number | null | undefined, filters: CapFilter[]): boolean {
   if (filters.length === 0) return true
   const bucket = capBucketOf(cap)
+  return bucket != null && filters.includes(bucket)
+}
+
+/**
+ * 换手率档位（**不含「全部」**——多选下拉里「不限」= 一档都不选，与市值组同一套语义）。
+ *
+ * 写法沿用市值组：标签是**本档的上界**（「5%」= 2% ~ 5%），最后一档叫「其他」。
+ * 上限只在悬停提示里写全，否则 104px 的下拉装不下「2% ~ 5%」这类区间文案。
+ */
+export const TURNOVER_FILTER_OPTIONS_ZH: FilterOption<TurnoverFilter>[] = [
+  { key: 'lt2', label: '2%', hint: '换手率小于 2%（含停牌 0%）' },
+  { key: 'lt5', label: '5%', hint: '换手率 2% ~ 5%' },
+  { key: 'lt10', label: '10%', hint: '换手率 5% ~ 10%' },
+  { key: 'lt20', label: '20%', hint: '换手率 10% ~ 20%' },
+  { key: 'gt20', label: '其他', hint: '换手率 20% 以上' },
+]
+
+/** 换手率落在哪一档。库里缺值（新股当日无成交记录）→ 只在「不限」里出现。 */
+export function turnoverBucketOf(rate: number | null | undefined): TurnoverFilter | null {
+  if (rate == null) return null
+  if (rate < 2) return 'lt2'
+  if (rate < 5) return 'lt5'
+  if (rate < 10) return 'lt10'
+  if (rate < 20) return 'lt20'
+  return 'gt20'
+}
+
+/** 换手率（多选）：空数组 = 不限；否则命中任一档即可。 */
+export function matchTurnover(rate: number | null | undefined, filters: TurnoverFilter[]): boolean {
+  if (filters.length === 0) return true
+  const bucket = turnoverBucketOf(rate)
   return bucket != null && filters.includes(bucket)
 }
 
@@ -182,6 +225,7 @@ export function passesMarketFilters(
   if (!stockMatchesSearch(row, query)) return false
   if (!matchChange(row.change_pct, filters.change)) return false
   if (!matchCap(row.total_market_cap, filters.cap)) return false
+  if (!matchTurnover(row.turnover_rate, filters.turnover)) return false
   if (!matchTradeStatus(row, filters.tradeStatus)) return false
   // 指标未选 = 不限。先判断再调用 actionOf，否则每次搜索都会对全市场逐行重算技术面。
   if (filters.indicator.length === 0) return true
@@ -205,6 +249,7 @@ export function hasActiveFilters(filters: MarketTableFilters): boolean {
     filters.indicator.length > 0 ||
     filters.change !== 'all' ||
     filters.cap.length > 0 ||
+    filters.turnover.length > 0 ||
     filters.tradeStatus.length > 0
   )
 }

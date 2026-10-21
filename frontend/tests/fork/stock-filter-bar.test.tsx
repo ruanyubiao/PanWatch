@@ -77,6 +77,8 @@ describe('fork: 分析页筛选行', () => {
     expect(screen.getByLabelText('全部指标').className).toContain('w-[104px]')
     expect(screen.getByLabelText('全部市值').className).toContain('w-[104px]')
     expect(screen.getByLabelText('全部状态').className).toContain('w-[104px]')
+    // 「全部换手率」5 个字，104px 会被压成「全部换…」→ 只有这一组 120px
+    expect(screen.getByLabelText('全部换手率').className).toContain('w-[120px]')
   })
 
   it('市场下拉里「全部市场」就是不限（board=all），触发器也显示这个文案', () => {
@@ -169,25 +171,27 @@ describe('fork: 分析页筛选行', () => {
     expect(screen.getByLabelText('全部涨跌')).toBeTruthy()
   })
 
-  it('五组都是下拉，一个 pill 都不剩', () => {
+  it('六组都是下拉，一个 pill 都不剩', () => {
     renderBar()
     expect(document.querySelectorAll('button[aria-pressed]')).toHaveLength(0)
     // 单选下拉：市场、涨跌
     expect(document.querySelectorAll('[role="combobox"]')).toHaveLength(2)
-    // 多选下拉：指标、市值、状态
-    expect(document.querySelectorAll('[aria-haspopup="listbox"]')).toHaveLength(3)
+    // 多选下拉：指标、市值、换手率、状态
+    expect(document.querySelectorAll('[aria-haspopup="listbox"]')).toHaveLength(4)
   })
 
-  it('「全部状态」排在「全部市值」后面（第 6 条）', () => {
+  it('「全部换手率」排在「全部市值」后面，「全部状态」再跟在换手率后面', () => {
     renderBar()
     const bar = screen.getByLabelText('全部市场').parentElement as HTMLElement
     const labels = Array.from(bar.querySelectorAll('[aria-label]')).map(node =>
       node.getAttribute('aria-label'),
     )
     const capIndex = labels.indexOf('全部市值')
+    const turnoverIndex = labels.indexOf('全部换手率')
     const statusIndex = labels.indexOf('全部状态')
     expect(capIndex).toBeGreaterThan(-1)
-    expect(statusIndex).toBe(capIndex + 1)
+    expect(turnoverIndex).toBe(capIndex + 1)
+    expect(statusIndex).toBe(turnoverIndex + 1)
   })
 
   it('「清空筛选」紧跟在下拉菜单后面（DOM 里就是筛选行的最后一个元素）', () => {
