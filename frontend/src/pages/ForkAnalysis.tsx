@@ -263,6 +263,21 @@ const toPriceAlertSummaryMap = (rows: PriceAlertRuleSummary[]): Record<string, {
 const MARKET_ROW_TEXTS_ZH = {
   expired: '（已过期）',
   technical: '技术指标',
+  aiDeep: 'AI深度',
+}
+
+/**
+ * fork：「来源」列里的 Agent 标签。
+ *
+ * 深度分析这一类在接口 / 库里落的是 ``TradingAgents 深度``（agent_label 的写入口径），
+ * 表格里统一显示为「AI深度」—— 用户要求；历史建议行的 agent_label 已经是旧字面量，
+ * 这里在展示层改口径，库里的存量记录不用回填。
+ * 其余标签（盘中监测 / 盘后日报 / 盘前分析 …）原样显示。
+ */
+export function sourceAgentLabel(label?: string | null): string {
+  const raw = (label || '').trim()
+  if (!raw) return 'AI'
+  return /tradingagents/i.test(raw) ? MARKET_ROW_TEXTS_ZH.aiDeep : raw
 }
 
 /** fork：点股票代码复制时的提示文案（变量名以 _ZH 结尾，check:i18n 放行）。 */
@@ -1913,7 +1928,7 @@ export default function StocksPage() {
       const time = suggestionTimeText(suggestion.created_at)
       return (
         <span>
-          {suggestion.agent_label || 'AI'}
+          {sourceAgentLabel(suggestion.agent_label)}
           {time && ` · ${time}`}
           {suggestion.is_expired && (
             <span className="ml-1 text-amber-600">{MARKET_ROW_TEXTS_ZH.expired}</span>
