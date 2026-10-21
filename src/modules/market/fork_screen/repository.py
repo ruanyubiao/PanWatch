@@ -286,6 +286,22 @@ def resolve_asof(day: _dt.date) -> _dt.date | None:
         conn.close()
 
 
+def latest_trade_date() -> _dt.date | None:
+    """库里最大的交易日；没有数据时 None。候选被筛空时用它保住响应里的「数据截至」。"""
+    conn = fork_market._connect()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT MAX(trade_date) AS asof FROM stock_daily")
+            row = cursor.fetchone() or {}
+            return _as_date(row.get("asof"))
+    except fork_market.ForkDbUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise fork_market.ForkDbUnavailable(f"查询行情库失败：{exc}") from exc
+    finally:
+        conn.close()
+
+
 def fetch_screen_data(
     req: ScreenRequest,
     k: int,
@@ -323,7 +339,11 @@ def fetch_screen_data(
         if data.asof is None and data.candidates:
             # 候选行都贴在锚点那一行行情上，所以任一行都能给出 asof
             data.asof = _as_date(data.candidates[0].get("trade_date"))
-        if k <= 0 or not data.candidates or data.asof is None:
+        if data.asof is None:
+            # 身份条件下推可能把候选筛成 0（比如查了个不存在的名称）——
+            # 这时候「数据截至」仍应是真实交易日，不能返回 null（横幅会显示成空）。
+            data.asof = _as_date(asof) if asof is not None else latest_trade_date()
+        if k <= 0 or data.asof is None:
             return data
 
         # ② 日历（先带下界；长假导致行数不足 k 时再用无下界的版本补一次）
@@ -347,6 +367,10 @@ def fetch_screen_data(
             return data
         if data.calendar[0] != data.asof:
             data.stale_date = data.calendar[0]
+            return data
+        if not data.candidates:
+            # 日历照样给（横幅要显「窗口起点」），但没有候选就不用去查日线了 ——
+            # `symbol IN ()` 是非法 SQL，走到底会炸。
             return data
 
         symbols = tuple(str(row.get("symbol")) for row in data.candidates)
