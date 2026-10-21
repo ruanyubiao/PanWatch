@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import datetime as _dt
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -56,3 +57,7 @@ class ScreenRequest(_Strict):
     include_st: bool = False
     market_cap: MarketCap
     rule: GroupNode
+    #: 非必填：统计窗口的**结束日**（30 个交易日从它往前数）。
+    #: 省略 = 库里最新交易日。给了非交易日时自动落到 ≤ 它的最大交易日，
+    #: 响应里的 ``asof`` 永远是真正用的那一天。
+    asof: _dt.date | None = None
