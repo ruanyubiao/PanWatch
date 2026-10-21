@@ -314,17 +314,23 @@ def evaluate_node_or_condition(node: Any, series: StockSeries, ctx: EvalContext)
 def build_series(
     symbol: str,
     rows: Iterable[Sequence[Any]],
-    with_extras: bool = False,
+    extras_columns: Sequence[str] = (),
 ) -> StockSeries | None:
     """库行 → ``StockSeries``。
 
-    ``rows`` 每行是 ``(trade_date, open, close, pre_close, adj_factor)``；带量价列时
-    是 ``(trade_date, open, close, pre_close, adj_factor, high, low, volume, amount,
-    turnover_rate)``（见 ``repository.bars_sql``，按 ``needs_extras`` 选列）。
-    无效记录（``open``/``close`` 为空或 ≤ 0）等同于缺失，直接丢弃。
+    ``rows`` 每行是 ``(trade_date, open, close, pre_close, adj_factor)``；
+    ``extras_columns`` 非空时后面还有那几列（顺序见
+    ``repository.extras_select``：``traded`` / ``volume`` / ``amount`` /
+    ``turnover_rate`` 的子集）。无效记录（``open``/``close`` 为空或 ≤ 0）等同于缺失，
+    直接丢弃。
     """
     bars: list[Bar] = []
-    extras = BarExtras.empty() if with_extras else None
+    extras = BarExtras.empty_for(frozenset(extras_columns)) if extras_columns else None
+    index_of = {name: 5 + position for position, name in enumerate(extras_columns)}
+
+    def number(value: Any) -> float:
+        return float("nan") if value is None else float(value)
+
     for row in rows:
         trade_date, open_, close, pre_close, adj_factor = row[:5]
         if open_ is None or close is None:
@@ -346,8 +352,15 @@ def build_series(
             )
         )
         if extras is not None:
-            high, low, volume, amount, turnover = (row[5], row[6], row[7], row[8], row[9])
-            extras.append(volume, amount, turnover, high, low)
+            traded = row[index_of["traded"]]
+            # traded 为 NULL 的老数据按「有成交」处理（宁可多算，不误判成停牌）
+            extras.traded.append(0 if traded is not None and int(traded) == 0 else 1)
+            if extras.volume is not None:
+                extras.volume.append(number(row[index_of["volume"]]))
+            if extras.amount is not None:
+                extras.amount.append(number(row[index_of["amount"]]))
+            if extras.turnover is not None:
+                extras.turnover.append(number(row[index_of["turnover_rate"]]))
     if not bars:
         return None
     return StockSeries.build(symbol, bars, extras)
