@@ -122,16 +122,17 @@ def validate_params(req: ScreenRequest) -> list[ScreenIssue]:
     elif len(set(req.markets)) != len(req.markets):
         issues.append(ScreenIssue("markets", "市场不能重复选择"))
 
-    # ---- market_cap
+    # ---- market_cap（可选：新请求把市值搬进了条件列表）
     cap = req.market_cap
-    if cap.min_yi < 0:
-        issues.append(ScreenIssue("market_cap.min_yi", "总市值下限需为 ≥ 0 的数字"))
-    if cap.max_yi > MAX_MARKET_CAP_YI:
-        issues.append(ScreenIssue("market_cap.max_yi", "总市值上限不能超过 1,000,000 亿"))
-    if round(cap.min_yi, 2) != cap.min_yi or round(cap.max_yi, 2) != cap.max_yi:
-        issues.append(ScreenIssue("market_cap", "总市值最多保留 2 位小数"))
-    elif not cap.min_yi < cap.max_yi:
-        issues.append(ScreenIssue("market_cap", "下限必须小于上限"))
+    if cap is not None:
+        if cap.min_yi < 0:
+            issues.append(ScreenIssue("market_cap.min_yi", "总市值下限需为 ≥ 0 的数字"))
+        if cap.max_yi > MAX_MARKET_CAP_YI:
+            issues.append(ScreenIssue("market_cap.max_yi", "总市值上限不能超过 1,000,000 亿"))
+        if round(cap.min_yi, 2) != cap.min_yi or round(cap.max_yi, 2) != cap.max_yi:
+            issues.append(ScreenIssue("market_cap", "总市值最多保留 2 位小数"))
+        elif not cap.min_yi < cap.max_yi:
+            issues.append(ScreenIssue("market_cap", "下限必须小于上限"))
     return issues
 
 
@@ -361,6 +362,9 @@ def build_series(
                 extras.amount.append(number(row[index_of["amount"]]))
             if extras.turnover is not None:
                 extras.turnover.append(number(row[index_of["turnover_rate"]]))
+            if extras.mcap is not None:
+                # 总市值（元）：停牌日也有值，缺失记 NaN
+                extras.mcap.append(number(row[index_of["total_market_cap"]]))
     if not bars:
         return None
     return StockSeries.build(symbol, bars, extras)

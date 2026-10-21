@@ -23,7 +23,7 @@ import datetime as _dt
 import math
 from array import array as _array
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -65,6 +65,8 @@ class BarExtras:
     volume: "_array | None"  # 股
     amount: "_array | None"  # 元
     turnover: "_array | None"  # 百分数（管道已算好）
+    #: 当日总市值（元）。只给总市值类条件用；停牌日也有值（停牌不改股本）
+    mcap: "_array | None" = None
 
     @classmethod
     def empty_for(cls, columns: "frozenset[str]") -> "BarExtras":
@@ -76,6 +78,7 @@ class BarExtras:
             volume=maybe("volume"),
             amount=maybe("amount"),
             turnover=maybe("turnover_rate"),
+            mcap=maybe("total_market_cap"),
         )
 
 
@@ -511,8 +514,8 @@ CONDITIONS: dict[str, ConditionSpec] = {
 # 这类行按**数据不足**处理（不当 0 用）—— 否则「每日换手率 < 5%」会命中一堆停牌股。
 # ==========================================================================
 
-#: 量价指标
-METRICS: tuple[str, ...] = ("pct", "turnover", "volume", "amount", "vol_ratio")
+#: 量价 / 市值指标
+METRICS: tuple[str, ...] = ("pct", "turnover", "volume", "amount", "vol_ratio", "market_cap")
 
 #: 指标的界面名称（后端只用于拼错误文案，界面文案在前端）
 _METRIC_LABEL: dict[str, str] = {
@@ -521,6 +524,7 @@ _METRIC_LABEL: dict[str, str] = {
     "volume": "成交量",
     "amount": "成交额",
     "vol_ratio": "量比",
+    "market_cap": "总市值",
 }
 
 #: 指标允许的取值边界（界面单位）
@@ -530,6 +534,7 @@ _METRIC_BOUNDS: dict[str, tuple[float, float]] = {
     "volume": (0.0, 1e9),
     "amount": (0.0, 1e9),
     "vol_ratio": (0.0, 1e6),
+    "market_cap": (0.0, 1e6),
 }
 
 #: 参数缺省时的区间（正常请求里前端总会带全，这里只给程序化调用兜底）
@@ -539,6 +544,7 @@ _METRIC_DEFAULTS: dict[str, tuple[float, float]] = {
     "volume": (0.0, 100000.0),
     "amount": (0.0, 100.0),
     "vol_ratio": (0.0, 10.0),
+    "market_cap": (0.0, 1000.0),
 }
 
 #: 量比默认回看几日均量（不含当日）
@@ -555,6 +561,7 @@ _METRIC_COLUMN: dict[str, tuple[str, ...]] = {
     "volume": ("volume",),
     "amount": ("amount",),
     "vol_ratio": ("volume",),
+    "market_cap": ("total_market_cap",),
 }
 
 
@@ -639,6 +646,15 @@ def _metric_at(series: StockSeries, index: int, metric: str, window: int) -> flo
     extras = series.extras
     if extras is None:
         return None
+    if metric == "market_cap":
+        # 停牌日 total_market_cap 仍是有效值（停牌不改股本），所以**不**走 traded 判定
+        column = extras.mcap
+        if column is None:
+            return None
+        cap = column[index]
+        if math.isnan(cap) or cap <= 0:
+            return None
+        return cap / 1e8  # 元 → 亿元
     if not extras.traded[index]:
         # 停牌行：volume/amount/turnover 都是 0，但「0 成交」不是事实，按缺数据处理
         return None
@@ -664,136 +680,126 @@ def _metric_at(series: StockSeries, index: int, metric: str, window: int) -> flo
 # ---------------------------------------------------------------- 求值器
 
 
-def _single_eval(metric: str):
-    def run(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
-        n = int(params.n)
-        if n > len(ctx.calendar):
+def _single_value(series: StockSeries, params: Any, ctx: EvalContext, metric: str) -> bool:
+    """倒数第 N 日的指标落在区间内（开区间）。"""
+    n = int(params.n)
+    if n > len(ctx.calendar):
+        ctx.insufficient = True
+        return False
+    index = series.index_on(ctx.calendar[n - 1])
+    if index is None:
+        ctx.insufficient = True
+        return False
+    value = _metric_at(series, index, metric, _window_of(params))
+    if value is None:
+        ctx.insufficient = True
+        return False
+    return _r(params.min) < _r(value) < _r(params.max)
+
+
+def _all_value(series: StockSeries, params: Any, ctx: EvalContext, metric: str) -> bool:
+    """倒数第 N～M 日的**每一天**都在区间内（开区间）。"""
+    for offset in range(int(params.n) - 1, int(params.m)):
+        if offset >= len(ctx.calendar):
             ctx.insufficient = True
             return False
-        index = series.index_on(ctx.calendar[n - 1])
+        index = series.index_on(ctx.calendar[offset])
         if index is None:
             ctx.insufficient = True
             return False
-        value = _metric_at(series, index, metric, int(params.window))
+        value = _metric_at(series, index, metric, _window_of(params))
         if value is None:
             ctx.insufficient = True
             return False
-        return _r(params.min) < _r(value) < _r(params.max)
-
-    return run
-
-
-def _all_eval(metric: str):
-    def run(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
-        for offset in range(int(params.n) - 1, int(params.m)):
-            if offset >= len(ctx.calendar):
-                ctx.insufficient = True
-                return False
-            index = series.index_on(ctx.calendar[offset])
-            if index is None:
-                ctx.insufficient = True
-                return False
-            value = _metric_at(series, index, metric, int(params.window))
-            if value is None:
-                ctx.insufficient = True
-                return False
-            if not _r(params.min) < _r(value) < _r(params.max):
-                return False
-        return True
-
-    return run
+        if not _r(params.min) < _r(value) < _r(params.max):
+            return False
+    return True
 
 
-def _any_eval(metric: str):
-    def run(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
-        seen = False
-        for offset in range(int(params.n) - 1, int(params.m)):
-            if offset >= len(ctx.calendar):
-                break
-            index = series.index_on(ctx.calendar[offset])
-            if index is None:
-                continue
-            value = _metric_at(series, index, metric, int(params.window))
-            if value is None:
-                continue
-            seen = True
-            if _r(params.min) < _r(value) < _r(params.max):
-                return True
-        if not seen:
-            # 区间内一天数据都没有 —— 是「算不出来」，不是「不满足」
-            ctx.insufficient = True
+def _any_value(series: StockSeries, params: Any, ctx: EvalContext, metric: str) -> bool:
+    """倒数第 N～M 日里**至少有一天**在区间内（开区间）。"""
+    seen = False
+    for offset in range(int(params.n) - 1, int(params.m)):
+        if offset >= len(ctx.calendar):
+            break
+        index = series.index_on(ctx.calendar[offset])
+        if index is None:
+            continue
+        value = _metric_at(series, index, metric, _window_of(params))
+        if value is None:
+            continue
+        seen = True
+        if _r(params.min) < _r(value) < _r(params.max):
+            return True
+    if not seen:
+        # 区间内一天数据都没有 —— 是「算不出来」，不是「不满足」
+        ctx.insufficient = True
+    return False
+
+
+def _span_value(series: StockSeries, params: Any, ctx: EvalContext, metric: str) -> bool:
+    """区间口径：涨跌幅算复权区间涨幅、量能算合计、量比算均值，结果落在区间内。"""
+    near, far = int(params.n) - 1, int(params.m) - 1
+    if far >= len(ctx.calendar):
+        ctx.insufficient = True
         return False
-
-    return run
-
-
-def _span_eval(metric: str):
-    def run(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
-        near, far = int(params.n) - 1, int(params.m) - 1
-        if far >= len(ctx.calendar):
+    indexes: list[int] = []
+    for offset in range(near, far + 1):
+        index = series.index_on(ctx.calendar[offset])
+        if index is None:
             ctx.insufficient = True
             return False
-        indexes: list[int] = []
-        for offset in range(near, far + 1):
-            index = series.index_on(ctx.calendar[offset])
-            if index is None:
-                ctx.insufficient = True
-                return False
-            indexes.append(index)
-        window = int(params.window)
-        if metric == "pct":
-            # 区间涨跌幅用**后复权**价，否则除权日会算出假涨幅
-            newest = series.bars[indexes[0]]
-            oldest = series.bars[indexes[-1]]
-            if oldest.c_adj <= 0:
-                ctx.insufficient = True
-                return False
-            value = (newest.c_adj / oldest.c_adj - 1.0) * 100.0
-        elif metric == "vol_ratio":
-            values = [
-                item
-                for item in (_metric_at(series, index, metric, window) for index in indexes)
-                if item is not None
-            ]
-            if not values:
-                ctx.insufficient = True
-                return False
-            value = sum(values) / len(values)
-        else:
-            total = 0.0
-            for index in indexes:
-                item = _metric_at(series, index, metric, window)
-                if item is None:
-                    ctx.insufficient = True
-                    return False
-                total += item
-            value = total
-        return _r(params.min) < _r(value) < _r(params.max)
-
-    return run
-
-
-def _consecutive_value_eval(metric: str):
-    def run(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
-        first = int(params.start) - 1
-        last = first + int(params.days)
-        if last > len(ctx.calendar):
+        indexes.append(index)
+    window = _window_of(params)
+    if metric == "pct":
+        # 区间涨跌幅用**后复权**价，否则除权日会算出假涨幅
+        newest = series.bars[indexes[0]]
+        oldest = series.bars[indexes[-1]]
+        if oldest.c_adj <= 0:
             ctx.insufficient = True
             return False
-        for offset in range(first, last):
-            index = series.index_on(ctx.calendar[offset])
-            if index is None:
+        value = (newest.c_adj / oldest.c_adj - 1.0) * 100.0
+    elif metric == "vol_ratio":
+        values = [
+            item
+            for item in (_metric_at(series, index, metric, window) for index in indexes)
+            if item is not None
+        ]
+        if not values:
+            ctx.insufficient = True
+            return False
+        value = sum(values) / len(values)
+    else:
+        total = 0.0
+        for index in indexes:
+            item = _metric_at(series, index, metric, window)
+            if item is None:
                 ctx.insufficient = True
                 return False
-            value = _metric_at(series, index, metric, int(params.window))
-            if value is None:
-                ctx.insufficient = True
-                return False
-            if not _r(params.min) < _r(value) < _r(params.max):
-                return False
-        return True
+            total += item
+        value = total
+    return _r(params.min) < _r(value) < _r(params.max)
 
-    return run
+
+def _consecutive_value(series: StockSeries, params: Any, ctx: EvalContext, metric: str) -> bool:
+    """自倒数第 start 日起连续 days 天，每天都落在区间内。"""
+    first = int(params.start) - 1
+    last = first + int(params.days)
+    if last > len(ctx.calendar):
+        ctx.insufficient = True
+        return False
+    for offset in range(first, last):
+        index = series.index_on(ctx.calendar[offset])
+        if index is None:
+            ctx.insufficient = True
+            return False
+        value = _metric_at(series, index, metric, _window_of(params))
+        if value is None:
+            ctx.insufficient = True
+            return False
+        if not _r(params.min) < _r(value) < _r(params.max):
+            return False
+    return True
 
 
 # ---------------------------------------------------------------- 校验
@@ -883,31 +889,181 @@ def _required_consecutive(metric: str):
     return lambda p, w: int(p.start) - 1 + int(p.days) + _warmup(metric, p)
 
 
+# ---------------------------------------------------------------- 每个条件一个函数
+#
+# 用户要求：**每个条件是单独的函数**。以前注册表里是 `_single_eval("turnover")`
+# 这样的闭包 —— 读不出这条条件在算什么，也没法单独测、单独改。现在一条条件一个
+# 具名函数，语义写在 docstring 里；循环形状的实现仍共享上面那五个「内核」
+# （`_single_value` / `_all_value` / `_any_value` / `_span_value` /
+# `_consecutive_value`），所以改形状口径不用改 20 多个函数、也不会各写一份走偏。
+
+
+def _window_of(params: Any) -> int:
+    """量比的回看天数；其他条件没有这个字段。"""
+    return int(getattr(params, "window", DEFAULT_VOL_RATIO_WINDOW))
+
+
+# ---- 涨跌幅（第 N 日就是既有的 change_pct，不再重复注册）
+
+
+def change_pct_all(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日**每一天**的涨跌幅都在区间内（开区间）。"""
+    return _all_value(series, params, ctx, "pct")
+
+
+def change_pct_any(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日**至少一天**的涨跌幅在区间内（开区间）。"""
+    return _any_value(series, params, ctx, "pct")
+
+
+def change_pct_span(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """区间涨跌幅（后复权）落在区间内（开区间）。"""
+    return _span_value(series, params, ctx, "pct")
+
+
+# ---- 换手率
+
+
+def turnover_single(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N 日换手率落在区间内（开区间，百分数）。"""
+    return _single_value(series, params, ctx, "turnover")
+
+
+def turnover_all(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日每天的换手率都在区间内（开区间）。"""
+    return _all_value(series, params, ctx, "turnover")
+
+
+def turnover_any(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日至少一天的换手率在区间内（开区间）。"""
+    return _any_value(series, params, ctx, "turnover")
+
+
+def turnover_span(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """区间累计换手率（各日之和）落在区间内（开区间）。"""
+    return _span_value(series, params, ctx, "turnover")
+
+
+# ---- 成交量
+
+
+def volume_single(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N 日成交量落在区间内（开区间，万手）。"""
+    return _single_value(series, params, ctx, "volume")
+
+
+def volume_all(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日每天的成交量都在区间内（开区间，万手）。"""
+    return _all_value(series, params, ctx, "volume")
+
+
+def volume_any(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日至少一天的成交量在区间内（开区间，万手）。"""
+    return _any_value(series, params, ctx, "volume")
+
+
+def volume_span(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """区间累计成交量落在区间内（开区间，万手）。"""
+    return _span_value(series, params, ctx, "volume")
+
+
+# ---- 成交额
+
+
+def amount_single(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N 日成交额落在区间内（开区间，亿元）。"""
+    return _single_value(series, params, ctx, "amount")
+
+
+def amount_all(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日每天的成交额都在区间内（开区间，亿元）。"""
+    return _all_value(series, params, ctx, "amount")
+
+
+def amount_any(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日至少一天的成交额在区间内（开区间，亿元）。"""
+    return _any_value(series, params, ctx, "amount")
+
+
+def amount_span(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """区间累计成交额落在区间内（开区间，亿元）。"""
+    return _span_value(series, params, ctx, "amount")
+
+
+# ---- 量比（放量 / 缩量）
+
+
+def vol_ratio_single(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N 日量比落在区间内（开区间，倍）。"""
+    return _single_value(series, params, ctx, "vol_ratio")
+
+
+def vol_ratio_all(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日每天的量比都在区间内（开区间）。"""
+    return _all_value(series, params, ctx, "vol_ratio")
+
+
+def vol_ratio_any(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日至少一天的量比在区间内（开区间）。"""
+    return _any_value(series, params, ctx, "vol_ratio")
+
+
+def vol_ratio_avg(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """区间平均量比落在区间内（开区间）。"""
+    return _span_value(series, params, ctx, "vol_ratio")
+
+
+def vol_ratio_consecutive(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """自倒数第 start 日起连续 days 天量比都落在区间内（开区间）。"""
+    return _consecutive_value(series, params, ctx, "vol_ratio")
+
+
+# ---- 总市值（历史值来自 stock_daily.total_market_cap，停牌日也有值）
+
+
+def market_cap_single(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N 日的总市值落在区间内（开区间，亿元）。"""
+    return _single_value(series, params, ctx, "market_cap")
+
+
+def market_cap_all(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日每天的总市值都在区间内（开区间，亿元）。"""
+    return _all_value(series, params, ctx, "market_cap")
+
+
+def market_cap_any(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """倒数第 N～M 日至少一天的总市值在区间内（开区间，亿元）。"""
+    return _any_value(series, params, ctx, "market_cap")
+
+
 # ---------------------------------------------------------------- 注册
 
 
-#: (条件名, 指标, 形状)
-_VALUE_CONDITIONS: tuple[tuple[str, str, str], ...] = (
-    ("change_pct_all", "pct", "all"),
-    ("change_pct_any", "pct", "any"),
-    ("change_pct_span", "pct", "span"),
-    ("turnover_single", "turnover", "single"),
-    ("turnover_all", "turnover", "all"),
-    ("turnover_any", "turnover", "any"),
-    ("turnover_span", "turnover", "span"),
-    ("volume_single", "volume", "single"),
-    ("volume_all", "volume", "all"),
-    ("volume_any", "volume", "any"),
-    ("volume_span", "volume", "span"),
-    ("amount_single", "amount", "single"),
-    ("amount_all", "amount", "all"),
-    ("amount_any", "amount", "any"),
-    ("amount_span", "amount", "span"),
-    ("vol_ratio_single", "vol_ratio", "single"),
-    ("vol_ratio_all", "vol_ratio", "all"),
-    ("vol_ratio_any", "vol_ratio", "any"),
-    ("vol_ratio_avg", "vol_ratio", "span"),
-    ("vol_ratio_consecutive", "vol_ratio", "consecutive"),
+#: (条件名, 指标, 形状, 求值函数) —— 求值函数**一条一个**
+_VALUE_CONDITIONS: tuple[tuple[str, str, str, Callable[..., bool]], ...] = (
+    ("change_pct_all", "pct", "all", change_pct_all),
+    ("change_pct_any", "pct", "any", change_pct_any),
+    ("change_pct_span", "pct", "span", change_pct_span),
+    ("turnover_single", "turnover", "single", turnover_single),
+    ("turnover_all", "turnover", "all", turnover_all),
+    ("turnover_any", "turnover", "any", turnover_any),
+    ("turnover_span", "turnover", "span", turnover_span),
+    ("volume_single", "volume", "single", volume_single),
+    ("volume_all", "volume", "all", volume_all),
+    ("volume_any", "volume", "any", volume_any),
+    ("volume_span", "volume", "span", volume_span),
+    ("amount_single", "amount", "single", amount_single),
+    ("amount_all", "amount", "all", amount_all),
+    ("amount_any", "amount", "any", amount_any),
+    ("amount_span", "amount", "span", amount_span),
+    ("vol_ratio_single", "vol_ratio", "single", vol_ratio_single),
+    ("vol_ratio_all", "vol_ratio", "all", vol_ratio_all),
+    ("vol_ratio_any", "vol_ratio", "any", vol_ratio_any),
+    ("vol_ratio_avg", "vol_ratio", "span", vol_ratio_avg),
+    ("vol_ratio_consecutive", "vol_ratio", "consecutive", vol_ratio_consecutive),
+    ("market_cap_single", "market_cap", "single", market_cap_single),
+    ("market_cap_all", "market_cap", "all", market_cap_all),
+    ("market_cap_any", "market_cap", "any", market_cap_any),
 )
 
 _VALUE_MODELS: dict[str, tuple[type[BaseModel], type[BaseModel], type[BaseModel]]] = {
@@ -915,39 +1071,185 @@ _VALUE_MODELS: dict[str, tuple[type[BaseModel], type[BaseModel], type[BaseModel]
 }
 
 
+def _value_spec(
+    name: str, metric: str, shape: str, evaluate: Callable[..., bool]
+) -> ConditionSpec:
+    """把一个具名求值函数接上参数模型 / 校验 / 根数。"""
+    single_model, range_model, consecutive_model = _VALUE_MODELS[metric]
+    if shape == "single":
+        params_model = single_model
+        validate = _validate_value_single(metric)
+        required = _required_single(metric)
+    elif shape in ("all", "any", "span"):
+        params_model = range_model
+        validate = _validate_value_range(metric)
+        required = _required_range(metric)
+    else:
+        params_model = consecutive_model
+        validate = _validate_value_consecutive(metric)
+        required = _required_consecutive(metric)
+    return ConditionSpec(
+        name=name,
+        params_model=params_model,
+        required_bars=required,
+        validate=validate,
+        evaluate=evaluate,
+        extras_columns=_METRIC_COLUMN[metric],
+    )
+
+
 def _build_value_conditions() -> dict[str, ConditionSpec]:
-    built: dict[str, ConditionSpec] = {}
-    for name, metric, shape in _VALUE_CONDITIONS:
-        single_model, range_model, consecutive_model = _VALUE_MODELS[metric]
-        if shape == "single":
-            params_model, evaluate, validate, required = (
-                single_model,
-                _single_eval(metric),
-                _validate_value_single(metric),
-                _required_single(metric),
-            )
-        elif shape in ("all", "any", "span"):
-            evaluate = {"all": _all_eval, "any": _any_eval, "span": _span_eval}[shape](metric)
-            params_model = range_model
-            validate = _validate_value_range(metric)
-            required = _required_range(metric)
-        else:
-            params_model = consecutive_model
-            evaluate = _consecutive_value_eval(metric)
-            validate = _validate_value_consecutive(metric)
-            required = _required_consecutive(metric)
-        built[name] = ConditionSpec(
-            name=name,
-            params_model=params_model,
-            required_bars=required,
-            validate=validate,
-            evaluate=evaluate,
-            extras_columns=_METRIC_COLUMN[metric],
-        )
-    return built
+    return {
+        name: _value_spec(name, metric, shape, evaluate)
+        for name, metric, shape, evaluate in _VALUE_CONDITIONS
+    }
 
 
 CONDITIONS.update(_build_value_conditions())
+
+
+# ==========================================================================
+# 总市值阈值（> / ≥ / < / ≤）＋ 股票代码 / 股票名称（各自一个条件）
+#
+# 用户 2026-10-21：把「总市值」从基础筛选搬进条件列表 —— 基础筛选只做市场 / ST，
+# 市值也要能参与 AND / OR 组合，并且能按历史某一天算。
+# ==========================================================================
+
+
+class MarketCapOpParams(_Strict):
+    """总市值阈值：``op`` + ``value``（亿元），比较的是**窗口末日**那根的总市值。"""
+
+    op: Literal["gt", "gte", "lt", "lte"] = "gte"
+    value: float = 100.0
+
+
+class StockCodeParams(_Strict):
+    """股票代码（6 位）完整匹配；多个用逗号 / 顿号 / 空格分隔。"""
+
+    text: str = ""
+
+
+class StockNameParams(_Strict):
+    """股票名称**完整匹配**（可带也可不带 ST / *ST 这类前缀）。"""
+
+    text: str = ""
+
+
+def market_cap_op(series: StockSeries, params: MarketCapOpParams, ctx: EvalContext) -> bool:
+    """总市值与阈值比较（gt / gte / lt / lte），单位亿元。"""
+    if not series.bars:
+        ctx.insufficient = True
+        return False
+    cap = _metric_at(series, len(series.bars) - 1, "market_cap", 0)
+    if cap is None:
+        ctx.insufficient = True
+        return False
+    limit = _r(params.value)
+    if params.op == "gt":
+        return _r(cap) > limit
+    if params.op == "gte":
+        return _r(cap) >= limit
+    if params.op == "lt":
+        return _r(cap) < limit
+    return _r(cap) <= limit
+
+
+def stock_code(series: StockSeries, params: StockCodeParams, ctx: EvalContext) -> bool:
+    """股票代码完整相等（6 位），不做模糊匹配。"""
+    tokens = _match_tokens(params.text)
+    if not tokens:
+        ctx.insufficient = True
+        return False
+    return ctx.code in tokens
+
+
+def stock_name(series: StockSeries, params: StockNameParams, ctx: EvalContext) -> bool:
+    """股票名称完整相等；比对时忽略 ``ST/*ST/XD/XR`` 这类前缀，写不写都能命中。"""
+    tokens = _match_tokens(params.text)
+    if not tokens:
+        ctx.insufficient = True
+        return False
+    raw = (ctx.name or "").strip()
+    bare = _bare_name(raw)
+    for token in tokens:
+        if token == raw:
+            return True
+        if bare and _bare_name(token) == bare:
+            return True
+    return False
+
+
+#: 名称前缀里「不是名字本身」的部分（ST 系列 + 除权除息标记）
+_NAME_PREFIXES: tuple[str, ...] = ("*ST", "SST", "S*ST", "ST", "XD", "XR", "DR")
+
+
+def _bare_name(name: str) -> str:
+    """去掉开头的 ST / *ST / XD / XR / DR（可能叠两个，如 *ST 与 XD）。"""
+    text = (name or "").strip()
+    trimmed = True
+    while trimmed and text:
+        trimmed = False
+        for prefix in _NAME_PREFIXES:
+            if text.upper().startswith(prefix):
+                text = text[len(prefix) :].strip()
+                trimmed = True
+                break
+    return text
+
+
+def _validate_market_cap_op(params: MarketCapOpParams, trading_days: int) -> list[str]:
+    lo, hi = _METRIC_BOUNDS["market_cap"]
+    if not lo <= params.value <= hi:
+        return [f"总市值需在 {lo:g} 至 {hi:g} 亿元之间"]
+    return []
+
+
+def _validate_stock_code(params: StockCodeParams, trading_days: int) -> list[str]:
+    tokens = _match_tokens(params.text)
+    if not tokens:
+        return ["请填写股票代码"]
+    if len(tokens) > MAX_MATCH_TOKENS:
+        return [f"一次最多 {MAX_MATCH_TOKENS} 个股票代码"]
+    return []
+
+
+def _validate_stock_name(params: StockNameParams, trading_days: int) -> list[str]:
+    tokens = _match_tokens(params.text)
+    if not tokens:
+        return ["请填写股票名称"]
+    if len(tokens) > MAX_MATCH_TOKENS:
+        return [f"一次最多 {MAX_MATCH_TOKENS} 个股票名称"]
+    if any(len(token) > 20 for token in tokens):
+        return ["股票名称过长"]
+    return []
+
+
+CONDITIONS.update(
+    {
+        "market_cap": ConditionSpec(
+            name="market_cap",
+            params_model=MarketCapOpParams,
+            required_bars=lambda p, w: 1,
+            validate=_validate_market_cap_op,
+            evaluate=market_cap_op,
+            extras_columns=("total_market_cap",),
+        ),
+        "stock_code": ConditionSpec(
+            name="stock_code",
+            params_model=StockCodeParams,
+            required_bars=lambda p, w: 1,
+            validate=_validate_stock_code,
+            evaluate=stock_code,
+        ),
+        "stock_name": ConditionSpec(
+            name="stock_name",
+            params_model=StockNameParams,
+            required_bars=lambda p, w: 1,
+            validate=_validate_stock_name,
+            evaluate=stock_name,
+        ),
+    }
+)
 
 
 # ==========================================================================
@@ -994,42 +1296,56 @@ def _consecutive_falling(series: StockSeries, params: ConsecutiveParams, ctx: Ev
     return True
 
 
-def _new_extreme(highest: bool):
-    def run(series: StockSeries, params: LookbackParams, ctx: EvalContext) -> bool:
-        lookback = int(params.m)
-        if len(series.bars) < lookback + 1:
-            ctx.insufficient = True
-            return False
-        last = series.bars[-1].c_adj
-        previous = [bar.c_adj for bar in series.bars[-lookback - 1 : -1]]
-        return last > max(previous) if highest else last < min(previous)
-
-    return run
+def _extreme(series: StockSeries, params: LookbackParams, ctx: EvalContext, highest: bool) -> bool:
+    lookback = int(params.m)
+    if len(series.bars) < lookback + 1:
+        ctx.insufficient = True
+        return False
+    last = series.bars[-1].c_adj
+    previous = [bar.c_adj for bar in series.bars[-lookback - 1 : -1]]
+    return last > max(previous) if highest else last < min(previous)
 
 
-def _ma_cross(upward: bool):
-    def run(series: StockSeries, params: MaCrossParams, ctx: EvalContext) -> bool:
-        index = len(series.bars) - 1
-        if index < 1:
-            ctx.insufficient = True
-            return False
-        fast_now = _ma_at(series, index, params.fast)
-        slow_now = _ma_at(series, index, params.slow)
-        fast_prev = _ma_at(series, index - 1, params.fast)
-        slow_prev = _ma_at(series, index - 1, params.slow)
-        if None in (fast_now, slow_now, fast_prev, slow_prev):
-            ctx.insufficient = True
-            return False
-        # 上面的 None 检查之后 pyright 仍按 float|None 推断，这里显式收窄
-        f_now = float(fast_now)  # type: ignore[arg-type]
-        s_now = float(slow_now)  # type: ignore[arg-type]
-        f_prev = float(fast_prev)  # type: ignore[arg-type]
-        s_prev = float(slow_prev)  # type: ignore[arg-type]
-        if upward:
-            return f_prev <= s_prev and f_now > s_now
-        return f_prev >= s_prev and f_now < s_now
+def new_high(series: StockSeries, params: LookbackParams, ctx: EvalContext) -> bool:
+    """收盘（复权）创前 M 个交易日新高，不含当日。"""
+    return _extreme(series, params, ctx, highest=True)
 
-    return run
+
+def new_low(series: StockSeries, params: LookbackParams, ctx: EvalContext) -> bool:
+    """收盘（复权）创前 M 个交易日新低，不含当日。"""
+    return _extreme(series, params, ctx, highest=False)
+
+
+def _cross(series: StockSeries, params: MaCrossParams, ctx: EvalContext, upward: bool) -> bool:
+    index = len(series.bars) - 1
+    if index < 1:
+        ctx.insufficient = True
+        return False
+    fast_now = _ma_at(series, index, params.fast)
+    slow_now = _ma_at(series, index, params.slow)
+    fast_prev = _ma_at(series, index - 1, params.fast)
+    slow_prev = _ma_at(series, index - 1, params.slow)
+    if None in (fast_now, slow_now, fast_prev, slow_prev):
+        ctx.insufficient = True
+        return False
+    # 上面的 None 检查之后 pyright 仍按 float|None 推断，这里显式收窄
+    f_now = float(fast_now)  # type: ignore[arg-type]
+    s_now = float(slow_now)  # type: ignore[arg-type]
+    f_prev = float(fast_prev)  # type: ignore[arg-type]
+    s_prev = float(slow_prev)  # type: ignore[arg-type]
+    if upward:
+        return f_prev <= s_prev and f_now > s_now
+    return f_prev >= s_prev and f_now < s_now
+
+
+def ma_golden_cross(series: StockSeries, params: MaCrossParams, ctx: EvalContext) -> bool:
+    """快线上一交易日不高于慢线、今天高于慢线。"""
+    return _cross(series, params, ctx, upward=True)
+
+
+def ma_dead_cross(series: StockSeries, params: MaCrossParams, ctx: EvalContext) -> bool:
+    """快线上一交易日不低于慢线、今天低于慢线。"""
+    return _cross(series, params, ctx, upward=False)
 
 
 def _match_tokens(text: str) -> list[str]:
@@ -1049,6 +1365,11 @@ def _stock_match(series: StockSeries, params: StockMatchParams, ctx: EvalContext
         ctx.insufficient = True
         return False
     return ctx.code in tokens or ctx.name in tokens
+
+
+def consecutive_shrinking(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """连续缩量：自倒数第 start 日起连续 days 天量比都落在区间内（默认上限 1）。"""
+    return _consecutive_value(series, params, ctx, "vol_ratio")
 
 
 def _validate_lookback(params: LookbackParams, trading_days: int) -> list[str]:
@@ -1091,7 +1412,7 @@ CONDITIONS.update(
             params_model=_VALUE_MODELS["vol_ratio"][2],
             required_bars=_required_consecutive("vol_ratio"),
             validate=_validate_value_consecutive("vol_ratio"),
-            evaluate=_consecutive_value_eval("vol_ratio"),
+            evaluate=consecutive_shrinking,
             extras_columns=("volume",),
         ),
         "new_high": ConditionSpec(
@@ -1099,28 +1420,28 @@ CONDITIONS.update(
             params_model=LookbackParams,
             required_bars=lambda p, w: int(p.m) + 1,
             validate=_validate_lookback,
-            evaluate=_new_extreme(True),
+            evaluate=new_high,
         ),
         "new_low": ConditionSpec(
             name="new_low",
             params_model=LookbackParams,
             required_bars=lambda p, w: int(p.m) + 1,
             validate=_validate_lookback,
-            evaluate=_new_extreme(False),
+            evaluate=new_low,
         ),
         "ma_golden_cross": ConditionSpec(
             name="ma_golden_cross",
             params_model=MaCrossParams,
             required_bars=lambda p, w: int(p.slow) + 1,
             validate=_validate_ma_cross,
-            evaluate=_ma_cross(True),
+            evaluate=ma_golden_cross,
         ),
         "ma_dead_cross": ConditionSpec(
             name="ma_dead_cross",
             params_model=MaCrossParams,
             required_bars=lambda p, w: int(p.slow) + 1,
             validate=_validate_ma_cross,
-            evaluate=_ma_cross(False),
+            evaluate=ma_dead_cross,
         ),
         "stock_match": ConditionSpec(
             name="stock_match",

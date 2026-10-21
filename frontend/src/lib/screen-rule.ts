@@ -22,8 +22,11 @@ export type LogicOperator = 'AND' | 'OR'
 export type MaPeriod = 5 | 10 | 20 | 30 | 60 | 120 | 250
 export const MA_PERIODS: MaPeriod[] = [5, 10, 20, 30, 60, 120, 250]
 
+/** 总市值阈值的比较符（后端 `MarketCapOpParams.op` 同名）。 */
+export type MarketCapOp = 'gt' | 'gte' | 'lt' | 'lte'
+
 /** 量价指标（后端 `METRICS` 同名）。 */
-export type MetricKey = 'pct' | 'turnover' | 'volume' | 'amount' | 'vol_ratio'
+export type MetricKey = 'pct' | 'turnover' | 'volume' | 'amount' | 'vol_ratio' | 'market_cap'
 /** 量价条件的形状：单日 / 每日 / 任意一天 / 累计 / 连续。 */
 export type MetricShape = 'single' | 'all' | 'any' | 'span' | 'consecutive'
 
@@ -100,6 +103,18 @@ export interface ConditionParamsMap {
   ma_golden_cross: { fast: MaPeriod; slow: MaPeriod }
   ma_dead_cross: { fast: MaPeriod; slow: MaPeriod }
   stock_match: { text: string }
+  /** 股票代码（6 位）完整匹配；与「股票名称」是两个独立条件 */
+  stock_code: { text: string }
+  /** 股票名称完整匹配（可不带 ST / *ST 前缀） */
+  stock_name: { text: string }
+  /** 总市值阈值（亿元）：> / ≥ / < / ≤，比较窗口末日那根 */
+  market_cap: { op: MarketCapOp; value: number }
+  /** 第 N 日总市值 */
+  market_cap_single: MetricSingleParams
+  /** 范围内每一天总市值 */
+  market_cap_all: MetricRangeParams
+  /** 范围内任意一天总市值 */
+  market_cap_any: MetricRangeParams
 }
 export type ConditionName = keyof ConditionParamsMap
 
@@ -121,7 +136,11 @@ export interface ScreenRequest {
   trading_days: number
   markets: ScreenMarket[]
   include_st: boolean
-  market_cap: { min_yi: number; max_yi: number }
+  /**
+   * 基础市值区间（亿元）。**只在读老条件文件时出现**：2026-10-22 起「总市值」
+   * 搬进了条件列表（`market_cap` 条件），新请求不再带这个字段。
+   */
+  market_cap?: { min_yi: number; max_yi: number }
   rule: GroupNode
   /**
    * 统计窗口的**结束日**（`YYYY-MM-DD`）；留空/不传 = 库里最新交易日。
@@ -187,7 +206,8 @@ export const SCREEN_TEXTS_ZH = {
   tradingDaysPlaceholder: '1–250',
   tradingDaysHint: '1–250；均线等指标所需的更早历史自动补足，不计入窗口',
   asofLabel: '窗口截止日',
-  asofHint: '留空 = 最新交易日；30 个交易日从这天往前数，非交易日自动取之前最近的交易日',
+  asofEnable: '启用',
+  asofHint: '不勾「启用」= 最新交易日；勾上后 30 个交易日从这天往前数，非交易日自动取之前最近的交易日',
   asofInvalid: '数据截至需为 YYYY-MM-DD 格式的日期',
   asofFallback: (actual: string, requested: string) => `${actual}（请求 ${requested}，已回退到之前最近的交易日）`,
   marketCap: '总市值（亿元）',
@@ -204,8 +224,8 @@ export const SCREEN_TEXTS_ZH = {
   marketKcb: '科创',
   stIncluded: '含 ST',
   stExcluded: '不含 ST',
-  baseSummary: (markets: string, st: string, min: number, max: number, days: number) =>
-    `${markets} · ${st} · 总市值 ${min}–${max} 亿 · 窗口 ${days} 日`,
+  baseSummary: (markets: string, st: string, days: number) =>
+    `${markets} · ${st} · 窗口 ${days} 日`,
   st: 'ST 股票',
   includeSt: '包含 ST / *ST',
   ruleTitle: '条件组合',
@@ -320,9 +340,18 @@ export type ParamEditorKind =
   | 'lookback'
   | 'ma-cross'
   | 'text'
+  | 'market-cap-op'
 
 /** 条件分类（选择列表按这个分组，顺序见 `CONDITION_CATEGORIES`）。 */
-export type ConditionCategory = '均线' | 'K 线' | '涨跌幅' | '换手率' | '成交量' | '成交额' | '量比'
+export type ConditionCategory =
+  | '均线'
+  | 'K 线'
+  | '总市值'
+  | '涨跌幅'
+  | '换手率'
+  | '成交量'
+  | '成交额'
+  | '量比'
 
 /** 条件注册表：label / 分类 / 默认值 / 摘要 / 需要的根数 / 校验。 */
 export interface ConditionDef<K extends ConditionName> {
@@ -336,6 +365,14 @@ export interface ConditionDef<K extends ConditionName> {
   validate: (p: ConditionParamsMap[K], tradingDays: number) => string[]
   /** 缺省时按条件名走老的专用表单（均线周期 / 连续阳线 / 涨跌幅） */
   editor?: ParamEditorKind
+  /**
+   * 不在「+ 条件」的选择列表里露出来（但注册表里保留）。
+   *
+   * 用途：``stock_match``（代码或名称合一）已被 ``stock_code`` / ``stock_name``
+   * 取代，服务器上的老条件文件里还可能有它 —— 要能回填、能编辑、能提交，只是
+   * 不再作为「新条件」推荐。
+   */
+  hidden?: boolean
 }
 
 type ConditionDefMap = { [K in ConditionName]: ConditionDef<K> }
@@ -358,6 +395,7 @@ export const METRIC_TEXTS_ZH = {
     volume: '成交量',
     amount: '成交额',
     vol_ratio: '量比',
+    market_cap: '总市值',
   } as Record<MetricKey, string>,
   unit: {
     pct: '%',
@@ -365,6 +403,7 @@ export const METRIC_TEXTS_ZH = {
     volume: '万手',
     amount: '亿元',
     vol_ratio: '倍',
+    market_cap: '亿元',
   } as Record<MetricKey, string>,
   singleSummary: (n: number, label: string, unit: string, min: number, max: number) =>
     `第 ${n} 日${label} ∈ (${min}${unit}, ${max}${unit})`,
@@ -429,6 +468,35 @@ export const METRIC_TEXTS_ZH = {
   nShortLabel: 'N',
   consecutiveStartLabel: '起点（倒数第几个交易日）',
   consecutiveDaysLabel: '连续天数',
+  // ---- 总市值（2026-10-22 从基础筛选搬进条件列表）
+  labelMarketCap: '总市值',
+  descMarketCap:
+    '窗口末日（数据截至那天）的总市值与阈值比较：大于 / 大于等于 / 小于 / 小于等于，单位亿元',
+  summaryMarketCap: (op: string, value: number) => `总市值 ${op} ${value} 亿元`,
+  marketCapValueLabel: '阈值（亿元）',
+  marketCapOpLabel: '比较',
+  marketCapHint: '比较的是窗口末日的总市值；停牌日市值照旧有效（停牌不改股本）',
+  marketCapInvalid: (hi: number) => `总市值需为 0 至 ${hi} 亿元之间的数字`,
+  opGt: '大于',
+  opGte: '大于等于',
+  opLt: '小于',
+  opLte: '小于等于',
+  opGtSymbol: '>',
+  opGteSymbol: '≥',
+  opLtSymbol: '<',
+  opLteSymbol: '≤',
+  // ---- 股票代码 / 股票名称（拆成两个条件）
+  labelStockCode: '股票代码（完整匹配）',
+  labelStockName: '股票名称（完整匹配）',
+  descStockCode: '按 6 位代码完整相等筛选，不做模糊匹配；多个用逗号或空格分隔',
+  descStockName:
+    '按股票名称完整相等筛选，不做模糊匹配；不用写 ST / *ST 前缀（写了也认），多个用逗号或空格分隔',
+  stockCodePlaceholder: '600519',
+  stockNamePlaceholder: '贵州茅台',
+  stockCodeRequired: '请填写股票代码',
+  stockNameRequired: '请填写股票名称',
+  summaryStockCode: (text: string) => (text.trim() ? `代码 ∈ { ${text.trim()} }` : '代码（未填写）'),
+  summaryStockName: (text: string) => (text.trim() ? `名称 ∈ { ${text.trim()} }` : '名称（未填写）'),
 } as const
 
 /** 区间形状的跨度上限（与后端 `MAX_VALUE_SPAN` 一致）。 */
@@ -441,6 +509,7 @@ const METRIC_LIMITS: Record<MetricKey, [number, number]> = {
   volume: [0, 1e9],
   amount: [0, 1e9],
   vol_ratio: [0, 1e6],
+  market_cap: [0, 1e6],
 }
 
 /** 指标的默认区间（与后端 `_METRIC_DEFAULTS` 一致）。 */
@@ -450,6 +519,7 @@ const METRIC_DEFAULTS: Record<MetricKey, [number, number]> = {
   volume: [0, 100000],
   amount: [0, 100],
   vol_ratio: [0, 10],
+  market_cap: [0, 1000],
 }
 
 /** 指标 → 选择列表里的分组名。 */
@@ -459,6 +529,7 @@ const METRIC_CATEGORY_ZH: Record<MetricKey, ConditionCategory> = {
   volume: '成交量',
   amount: '成交额',
   vol_ratio: '量比',
+  market_cap: '总市值',
 }
 
 interface MetricSeed {
@@ -606,6 +677,24 @@ const METRIC_SEEDS_ZH: Record<string, MetricSeed> = {
     description: '自倒数第 M 个交易日起连续 N 个交易日量比都小于上限（开区间），与「连续放量」是同一个条件的两侧',
     defaultMin: 0,
     defaultMax: 1,
+  },
+  market_cap_single: {
+    metric: 'market_cap',
+    shape: 'single',
+    label: '第 N 日总市值',
+    description: '倒数第 N 个交易日的总市值落在区间内（开区间，单位亿元）',
+  },
+  market_cap_all: {
+    metric: 'market_cap',
+    shape: 'all',
+    label: '总市值 · 范围内每日',
+    description: '倒数第 N ～ M 个交易日每天的总市值都落在区间内（开区间，单位亿元）',
+  },
+  market_cap_any: {
+    metric: 'market_cap',
+    shape: 'any',
+    label: '总市值 · 范围内任意一天',
+    description: '倒数第 N ～ M 个交易日里至少有一天的总市值落在区间内（开区间，单位亿元）',
   },
 }
 
@@ -776,6 +865,74 @@ function stockMatchDef(): ConditionDef<'stock_match'> {
     requiredBars: () => 1,
     validate: p => (p.text.trim() ? [] : [M.stockRequired]),
     editor: 'text',
+    // 已被 stock_code / stock_name 取代：老条件文件仍能回填编辑，但不再出现在选择列表
+    hidden: true,
+  }
+}
+
+/** 股票代码（完整匹配）。 */
+function stockCodeDef(): ConditionDef<'stock_code'> {
+  const M = METRIC_TEXTS_ZH
+  return {
+    name: 'stock_code',
+    label: M.labelStockCode,
+    category: 'K 线',
+    description: M.descStockCode,
+    defaults: { text: '' },
+    summary: p => M.summaryStockCode(p.text),
+    requiredBars: () => 1,
+    validate: p => (p.text.trim() ? [] : [M.stockCodeRequired]),
+    editor: 'text',
+  }
+}
+
+/** 股票名称（完整匹配，忽略 ST / *ST 前缀）。 */
+function stockNameDef(): ConditionDef<'stock_name'> {
+  const M = METRIC_TEXTS_ZH
+  return {
+    name: 'stock_name',
+    label: M.labelStockName,
+    category: 'K 线',
+    description: M.descStockName,
+    defaults: { text: '' },
+    summary: p => M.summaryStockName(p.text),
+    requiredBars: () => 1,
+    validate: p => (p.text.trim() ? [] : [M.stockNameRequired]),
+    editor: 'text',
+  }
+}
+
+/** 总市值阈值（> / ≥ / < / ≤，单位亿元）。 */
+function marketCapDef(): ConditionDef<'market_cap'> {
+  const M = METRIC_TEXTS_ZH
+  return {
+    name: 'market_cap',
+    label: M.labelMarketCap,
+    category: '总市值',
+    description: M.descMarketCap,
+    defaults: { op: 'gte', value: 100 },
+    // 摘要用符号（大于/大于等于写进摘要太长，一眼看不出比较方向）
+    summary: p =>
+      M.summaryMarketCap(
+        p.op === 'gt'
+          ? M.opGtSymbol
+          : p.op === 'lt'
+            ? M.opLtSymbol
+            : p.op === 'lte'
+              ? M.opLteSymbol
+              : M.opGteSymbol,
+        p.value,
+      ),
+    // 只用窗口末日那一根
+    requiredBars: () => 1,
+    validate: p => {
+      const value = Number(p.value)
+      if (!Number.isFinite(value) || value < 0 || value > MAX_MARKET_CAP_YI) {
+        return [M.marketCapInvalid(MAX_MARKET_CAP_YI)]
+      }
+      return []
+    },
+    editor: 'market-cap-op',
   }
 }
 
@@ -945,6 +1102,9 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
   vol_ratio_avg: metricDef('vol_ratio_avg'),
   vol_ratio_consecutive: metricDef('vol_ratio_consecutive'),
   consecutive_shrinking: metricDef('consecutive_shrinking'),
+  market_cap_single: metricDef('market_cap_single'),
+  market_cap_all: metricDef('market_cap_all'),
+  market_cap_any: metricDef('market_cap_any'),
 
   // ---- 第二批
   consecutive_falling: fallingDef(),
@@ -953,6 +1113,9 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
   ma_golden_cross: crossDef('ma_golden_cross', true),
   ma_dead_cross: crossDef('ma_dead_cross', false),
   stock_match: stockMatchDef(),
+  stock_code: stockCodeDef(),
+  stock_name: stockNameDef(),
+  market_cap: marketCapDef(),
 }
 
 /** 涨跌幅取值区间（与后端 ``_validate_change_pct`` 一致）。 */
@@ -1007,6 +1170,11 @@ function inPctRange(value: number): boolean {
 
 export const CONDITION_NAMES = Object.keys(CONDITION_DEFS_ZH) as ConditionName[]
 
+/** 「+ 条件」列表里能选的条件（隐藏掉已被取代的老条件，如 stock_match）。 */
+export const PICKABLE_CONDITION_NAMES = CONDITION_NAMES.filter(
+  name => !CONDITION_DEFS_ZH[name].hidden,
+)
+
 export function metricOf(name: ConditionName): { metric: MetricKey; shape: MetricShape } | null {
   const seed = METRIC_SEEDS_ZH[name]
   return seed ? { metric: seed.metric, shape: seed.shape } : null
@@ -1026,6 +1194,7 @@ export function metricUnit(metric: MetricKey): string {
 export const CONDITION_CATEGORIES: ConditionCategory[] = [
   '均线',
   'K 线',
+  '总市值',
   '涨跌幅',
   '换手率',
   '成交量',
@@ -1077,8 +1246,61 @@ export function createDefaultRequest(): ScreenRequest {
     trading_days: 30,
     markets: [...SCREEN_MARKETS],
     include_st: false,
-    market_cap: { min_yi: 1, max_yi: 100000 },
     rule: createGroup('AND'),
+  }
+}
+
+/**
+ * 老条件文件里的「基础市值区间」→ 条件树里的两条市值条件。
+ *
+ * 2026-10-22 起总市值搬进条件列表，服务器上已存的条件文件里仍然带
+ * ``market_cap: {min_yi, max_yi}``。直接丢掉会让老条件的筛选范围忽然变宽
+ * （相当于「全市场」），所以读进来时**等价翻译**成：
+ *
+ *   ``总市值 > min_yi`` 且 ``总市值 < max_yi``   ← 与老 SQL 的严格开区间一致
+ *
+ * 老默认区间 ``{1, 100000}`` 实际等于「不限」，直接忽略（不然每个老条件都会
+ * 多出两条无意义的条件）。
+ */
+
+/** 老条件的「默认市值区间」——等于不限（见 `migrateLegacyMarketCap`） */
+const LEGACY_CAP_DEFAULT_MIN = 1
+const LEGACY_CAP_DEFAULT_MAX = 100000
+
+export function migrateLegacyMarketCap(request: ScreenRequest): GroupNode {
+  const cap = request.market_cap
+  if (!cap) return request.rule
+  const min = Number(cap.min_yi)
+  const max = Number(cap.max_yi)
+  if (!Number.isFinite(min) || !Number.isFinite(max)) return request.rule
+  if (min <= LEGACY_CAP_DEFAULT_MIN && max >= LEGACY_CAP_DEFAULT_MAX) return request.rule
+
+  const children: RuleNode[] = []
+  if (min > 0) {
+    children.push({
+      type: 'condition',
+      id: newNodeId(),
+      name: 'market_cap',
+      params: { op: 'gt', value: min },
+    })
+  }
+  if (max < MAX_MARKET_CAP_YI) {
+    children.push({
+      type: 'condition',
+      id: newNodeId(),
+      name: 'market_cap',
+      params: { op: 'lt', value: max },
+    })
+  }
+  if (children.length === 0) return request.rule
+  if (request.rule.children.length === 0) return { ...request.rule, children }
+  // 老区间与老条件树是「且」的关系：并在根组里（根组是 OR 时套一层 AND）
+  if (request.rule.operator === 'AND') {
+    return { ...request.rule, children: [...request.rule.children, ...children] }
+  }
+  return {
+    ...request.rule,
+    children: [...request.rule.children, { type: 'group', id: newNodeId(), operator: 'AND', children }],
   }
 }
 
@@ -1188,13 +1410,7 @@ export function summarizeBase(req: ScreenRequest): string {
     req.markets.length === SCREEN_MARKETS.length
       ? T.marketAll
       : req.markets.map(m => marketLabels[m]).join(T.summaryPeriodsJoin)
-  return T.baseSummary(
-    markets,
-    req.include_st ? T.stIncluded : T.stExcluded,
-    req.market_cap.min_yi,
-    req.market_cap.max_yi,
-    req.trading_days,
-  )
+  return T.baseSummary(markets, req.include_st ? T.stIncluded : T.stExcluded, req.trading_days)
 }
 
 // ------------------------------------------------------------------ 校验
@@ -1217,22 +1433,11 @@ export function validateScreenRequest(req: ScreenRequest): ValidationIssue[] {
     issues.push({ path: 'markets', message: T.marketRequired })
   }
 
-  const cap = req.market_cap
-  if (!(cap.min_yi >= 0)) issues.push({ path: 'market_cap.min_yi', message: T.capMinInvalid })
-  if (!(cap.max_yi <= MAX_MARKET_CAP_YI)) issues.push({ path: 'market_cap.max_yi', message: T.capMaxInvalid })
-  if (!hasTwoDecimals(cap.min_yi) || !hasTwoDecimals(cap.max_yi)) {
-    issues.push({ path: 'market_cap', message: T.capDecimalsInvalid })
-  } else if (!(cap.min_yi < cap.max_yi)) {
-    issues.push({ path: 'market_cap', message: T.capOrderInvalid })
-  }
+  // 基础市值区间不再由界面维护（已搬进条件列表，见 migrateLegacyMarketCap）；
+  // 老条件文件里如果还带着，读入时就翻译成条件了，这里不用管。
 
   issues.push(...validateGroup(req.rule, 'rule', 1, days, { count: 0 }))
   return issues
-}
-
-function hasTwoDecimals(value: number): boolean {
-  if (!Number.isFinite(value)) return false
-  return Math.abs(value * 100 - Math.round(value * 100)) < 1e-6
 }
 
 function validateGroup(
@@ -1332,10 +1537,7 @@ export function toApiRequest(state: ScreenRequest): ScreenRequest {
     trading_days: Number(state.trading_days),
     markets: [...state.markets],
     include_st: Boolean(state.include_st),
-    market_cap: {
-      min_yi: Number(state.market_cap.min_yi),
-      max_yi: Number(state.market_cap.max_yi),
-    },
+    // market_cap 不再提交：市值是条件列表里的一条条件（老请求仍被后端兼容）
     rule: stripGroup(state.rule),
     // 空串按 null 传：后端 `asof` 是可选日期，null / 缺省都表示「最新交易日」
     asof: asof === '' ? null : asof,

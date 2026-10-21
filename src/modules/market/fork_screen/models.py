@@ -55,7 +55,10 @@ class ScreenRequest(_Strict):
     trading_days: int | float
     markets: list[Literal["sh", "sz", "cyb", "kcb"]]
     include_st: bool = False
-    market_cap: MarketCap
+    #: 基础筛选的市值区间（亿元，开区间）。**可选**：2026-10-21 起「总市值」搬进了
+    #: 条件列表（``market_cap``），新请求不再带这个字段；保留它是为了老脚本和老
+    #: 「已保存条件」照原样能跑 —— 带上了就在 SQL 里先过滤，与条件树是「且」。
+    market_cap: MarketCap | None = None
     rule: GroupNode
     #: 非必填：统计窗口的**结束日**（30 个交易日从它往前数）。
     #: 省略 = 库里最新交易日。给了非交易日时自动落到 ≤ 它的最大交易日，
