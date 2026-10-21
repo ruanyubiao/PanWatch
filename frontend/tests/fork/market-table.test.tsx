@@ -279,7 +279,7 @@ describe('fork: 分析页全市场表格', () => {
     expect(screen.getByText('ST')).toBeTruthy()
   })
 
-  it('列宽：市场 40、昨收价～总市值各 −5、名称 60、状态 48、指标 140（左内边距 20）、操作 220', async () => {
+  it('列宽：市场 40、昨收价～总市值各 68/80/88、名称 60、状态 48、指标 140（左内边距 20）、操作 220', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response([row({ code: '600519' })]))
     renderTable()
     await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
@@ -291,27 +291,27 @@ describe('fork: 分析页全市场表格', () => {
     const widthOf = (label: string) =>
       (table.querySelectorAll('colgroup col')[headers.indexOf(label)] as HTMLElement).style.width
 
-    // 本轮：市场 −10；昨收价～总市值每列 −5；状态 −20；指标 +20
+    // 本轮：每个尾数 9 的列宽 −1、尾数 1 的 −1（69→68、81→80、89→88）
     expect(widthOf('市场')).toBe('40px')
     expect(widthOf('代码')).toBe('70px')
     expect(widthOf('名称')).toBe('60px')
-    expect(widthOf('昨收价')).toBe('69px')
-    expect(widthOf('现价')).toBe('69px')
-    expect(widthOf('涨跌')).toBe('69px')
-    expect(widthOf('最高价')).toBe('69px')
-    expect(widthOf('最低价')).toBe('69px')
-    expect(widthOf('成交量')).toBe('81px')
-    expect(widthOf('成交额')).toBe('89px')
-    expect(widthOf('换手率')).toBe('69px')
-    expect(widthOf('总市值')).toBe('89px')
+    expect(widthOf('昨收价')).toBe('68px')
+    expect(widthOf('现价')).toBe('68px')
+    expect(widthOf('涨跌')).toBe('68px')
+    expect(widthOf('最高价')).toBe('68px')
+    expect(widthOf('最低价')).toBe('68px')
+    expect(widthOf('成交量')).toBe('80px')
+    expect(widthOf('成交额')).toBe('88px')
+    expect(widthOf('换手率')).toBe('68px')
+    expect(widthOf('总市值')).toBe('88px')
     expect(widthOf('状态')).toBe('48px')
-    // 指标列本轮 +20（120 → 140）；「Agent 状态」整列删除、图标搬进操作列，操作列 220
+    // 指标列 140；「Agent 状态」整列删除、图标搬进操作列，操作列 220
     expect(widthOf('指标')).toBe('140px')
     expect(widthOf('操作')).toBe('220px')
     expect(headers).not.toContain('Agent 状态')
 
-    // 表宽 = 各列之和 1451（1506 − 10 − 45 − 20 + 20）
-    expect(table.className).toContain('min-w-[1451px]')
+    // 表宽 = 各列之和 1442（1451 − 6×1 − 1 − 2）
+    expect(table.className).toContain('min-w-[1442px]')
 
     // 市场～总市值不再留 minWidth（否则浏览器会按内容撑开，固定宽失效）
     const cols = table.querySelectorAll('colgroup col')
