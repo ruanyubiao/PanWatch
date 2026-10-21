@@ -28,7 +28,7 @@ import time
 from typing import Any
 
 from ..api import fork_market
-from .conditions import has_volume_price
+from .conditions import extras_columns_of
 from .evaluator import (
     ScreenEvalError,
     ScreenIssue,
@@ -141,12 +141,12 @@ def run_screen(payload: ScreenRequest, asof: _dt.date | None = None) -> dict[str
 
     rule = compile_rule(payload)
     k = required_bars_of_group(rule, int(payload.trading_days))
-    with_extras = has_volume_price(rule)
+    extras = extras_columns_of(rule)
 
     if not _SLOTS.acquire(blocking=False):
         raise ScreenBusy("选股任务繁忙，请稍后重试")
     try:
-        data = fetch_screen_data(payload, k, asof=resolved, with_extras=with_extras)
+        data = fetch_screen_data(payload, k, asof=resolved, extras=extras)
         if data.stale_date is not None:
             # 只在「锚点 = 最新交易日」时才有意义：指定历史日期时，
             # 日历最新日必然等于 asof（asof 本来就是从 ≤ 该日的最大交易日落出来的）
@@ -158,11 +158,11 @@ def run_screen(payload: ScreenRequest, asof: _dt.date | None = None) -> dict[str
     body["window"]["fetched_bars"] = int(k)
     body["stats"]["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
     logger.info(
-        "条件选股：asof=%s candidates=%s K=%s 量价=%s rows=%s 空树=%s 命中=%s 耗时=%sms",
+        "条件选股：asof=%s candidates=%s K=%s 量价列=%s rows=%s 空树=%s 命中=%s 耗时=%sms",
         body["asof"],
         body["stats"]["candidates"],
         k,
-        with_extras,
+        ",".join(sorted(extras)) or "-",
         data.fetched_bars,
         is_empty_rule(rule),
         body["total"],

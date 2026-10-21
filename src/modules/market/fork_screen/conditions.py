@@ -49,34 +49,34 @@ class Bar:
 class BarExtras:
     """量价列（与 ``StockSeries.bars`` **按下标对齐**）。
 
-    为什么不用往 ``Bar`` 里加字段：只有量价类条件才需要这 5 列，而 ``Bar`` 是
+    为什么不用往 ``Bar`` 里加字段：只有量价类条件才需要这些列，而 ``Bar`` 是
     全市场都要持有的对象（最坏 5577 只 × 251 天 ≈ 126 万根）。加 5 个 float 字段
-    会让峰值多出约 150MB；用 ``array('d')`` 平行数组只在请求里出现量价条件时才建
-    （见 ``repository.needs_extras``），不需要时一个字节都不付。
+    会让峰值多出约 150MB；用 ``array`` 平行数组、并且**只建请求真正用到的那几列**
+    （见 ``repository.bars_sql``），不需要时一个字节都不付。
 
-    缺失值一律 ``NaN``：``high``/``low`` 为 ``NaN`` 就是**停牌行**（库里有行、
-    ``volume/amount/turnover_rate = 0``、``high/low`` 为 ``NULL``）。
+    ``traded`` 是**停牌标记**（0 = 当日无成交：``high/low`` 为 NULL、
+    ``volume/amount/turnover_rate`` 都是 0）。实测云端 2026-10-21 三个条件完全等价
+    （10 只停牌股三项同时成立），用它比拿 ``high IS NULL`` 当标记更明确，也省两列。
+
+    没取的列是 ``None``；取到的列里缺失值是 ``NaN``。
     """
 
-    volume: "_array"  # 股
-    amount: "_array"  # 元
-    turnover: "_array"  # 百分数（管道已算好）
-    high: "_array"
-    low: "_array"
+    traded: "_array"  # 0/1
+    volume: "_array | None"  # 股
+    amount: "_array | None"  # 元
+    turnover: "_array | None"  # 百分数（管道已算好）
 
     @classmethod
-    def empty(cls) -> "BarExtras":
-        return cls(_array("d"), _array("d"), _array("d"), _array("d"), _array("d"))
+    def empty_for(cls, columns: "frozenset[str]") -> "BarExtras":
+        def maybe(name: str) -> "_array | None":
+            return _array("d") if name in columns else None
 
-    def append(self, volume, amount, turnover, high, low) -> None:
-        def num(value) -> float:
-            return float("nan") if value is None else float(value)
-
-        self.volume.append(num(volume))
-        self.amount.append(num(amount))
-        self.turnover.append(num(turnover))
-        self.high.append(num(high))
-        self.low.append(num(low))
+        return cls(
+            traded=_array("b"),
+            volume=maybe("volume"),
+            amount=maybe("amount"),
+            turnover=maybe("turnover_rate"),
+        )
 
 
 @dataclass
@@ -187,9 +187,9 @@ class ConditionSpec:
     validate: Callable[[Any, int], list[str]]
     #: 纯谓词；数据不足时置 ``ctx.insufficient`` 并返回 False
     evaluate: Callable[[StockSeries, Any, EvalContext], bool]
-    #: 这个条件要不要读量价列（volume/amount/turnover/high/low）。
-    #: True 才让取数层多取 5 列 —— 取数体积实测 ×1.84，能省就省。
-    needs_extras: bool = False
+    #: 这个条件要从库里多取哪些列（``volume`` / ``amount`` / ``turnover_rate``）。
+    #: 空 = 只用 OHLC。取数层按并集取列 —— 取数体积实测每多一列都涨，能省就省。
+    extras_columns: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------- 指标
@@ -548,8 +548,14 @@ MAX_VALUE_SPAN = 30
 #: 「股票代码或名称」一次最多写几个
 MAX_MATCH_TOKENS = 10
 
-#: 停牌行的判定：high/low 为 NULL（映射成 NaN）
-_SUSPENDED = math.isnan
+#: 指标 → 需要从库里多取的列（pct 用收盘价，不需要额外列）
+_METRIC_COLUMN: dict[str, tuple[str, ...]] = {
+    "pct": (),
+    "turnover": ("turnover_rate",),
+    "volume": ("volume",),
+    "amount": ("amount",),
+    "vol_ratio": ("volume",),
+}
 
 
 def _make_value_models(metric: str) -> tuple[type[BaseModel], type[BaseModel], type[BaseModel]]:
@@ -608,15 +614,16 @@ _MISSING = object()
 def _vol_ratio(series: StockSeries, index: int, window: int) -> float | None:
     """量比 = 当日成交量 ÷ 前 ``window`` 个**有量**交易日的均量（不含当日）。"""
     extras = series.extras
-    if extras is None or window <= 0:
+    volumes = None if extras is None else extras.volume
+    if volumes is None or window <= 0:
         return None
-    today = extras.volume[index]
+    today = volumes[index]
     if not today or today <= 0:
         return None
     picked: list[float] = []
     cursor = index - 1
     while cursor >= 0 and len(picked) < window:
-        value = extras.volume[cursor]
+        value = volumes[cursor]
         if value and value > 0:
             picked.append(value)
         cursor -= 1
@@ -632,20 +639,26 @@ def _metric_at(series: StockSeries, index: int, metric: str, window: int) -> flo
     extras = series.extras
     if extras is None:
         return None
-    if _SUSPENDED(extras.high[index]):
+    if not extras.traded[index]:
         # 停牌行：volume/amount/turnover 都是 0，但「0 成交」不是事实，按缺数据处理
         return None
     if metric == "vol_ratio":
         return _vol_ratio(series, index, window)
     if metric == "turnover":
-        value = extras.turnover[index]
+        column = extras.turnover
+        divisor = 1.0
     elif metric == "volume":
-        value = extras.volume[index] / 1e6  # 股 → 万手
+        column = extras.volume
+        divisor = 1e6  # 股 → 万手
     elif metric == "amount":
-        value = extras.amount[index] / 1e8  # 元 → 亿元
+        column = extras.amount
+        divisor = 1e8  # 元 → 亿元
     else:
         return None
-    return None if math.isnan(value) else value
+    if column is None:
+        return None
+    value = column[index]
+    return None if math.isnan(value) else value / divisor
 
 
 # ---------------------------------------------------------------- 求值器
@@ -929,7 +942,7 @@ def _build_value_conditions() -> dict[str, ConditionSpec]:
             required_bars=required,
             validate=validate,
             evaluate=evaluate,
-            needs_extras=metric != "pct",
+            extras_columns=_METRIC_COLUMN[metric],
         )
     return built
 
@@ -1079,7 +1092,7 @@ CONDITIONS.update(
             required_bars=_required_consecutive("vol_ratio"),
             validate=_validate_value_consecutive("vol_ratio"),
             evaluate=_consecutive_value_eval("vol_ratio"),
-            needs_extras=True,
+            extras_columns=("volume",),
         ),
         "new_high": ConditionSpec(
             name="new_high",
@@ -1121,18 +1134,16 @@ CONDITIONS.update(
 )
 
 
-def needs_extras_of(spec: ConditionSpec) -> bool:
-    """取数层用：这个条件要不要量价列。"""
-    return bool(spec.needs_extras)
+def extras_columns_of(rule: Any) -> frozenset[str]:
+    """编译后的树要用到哪些额外列（取数层据此决定 SELECT 加哪几列）。
 
-
-def has_volume_price(rule: Any) -> bool:
-    """编译后的树里有没有需要量价列的条件（取数层据此决定多取 5 列）。"""
+    空集 = 只用 OHLC，一分钱不付。量比条件也要 ``volume``。
+    """
+    used: set[str] = set()
     children = getattr(rule, "children", ())
     for child in children:
         if hasattr(child, "children"):
-            if has_volume_price(child):
-                return True
-        elif needs_extras_of(child.spec):
-            return True
-    return False
+            used |= extras_columns_of(child)
+        else:
+            used |= set(child.spec.extras_columns)
+    return frozenset(used)

@@ -21,7 +21,7 @@ from src.modules.market.fork_screen.conditions import (
     CONDITIONS,
     EvalContext,
     StockSeries,
-    has_volume_price,
+    extras_columns_of,
 )
 from src.modules.market.fork_screen.evaluator import build_series, compile_rule, required_bars_of_group
 from src.modules.market.fork_screen.models import ScreenRequest
@@ -38,10 +38,13 @@ def rows_of(
     closes: list[float],
     volumes: list[float] | None = None,
     turnovers: list[float] | None = None,
-    highs: list[float | None] | None = None,
+    traded: list[int] | None = None,
     adj: float = 1.0,
 ) -> list[tuple]:
-    """升序日线行；带量价列时是 10 元组（与 ``bars_sql(with_extras=True)`` 同形）。"""
+    """升序日线行；列顺序与 ``repository.extras_select`` 一致。
+
+    带量价列时是 ``(date, open, close, pre_close, adj, traded, volume, amount, turnover)``。
+    """
     total = len(closes)
     rows = []
     for index, close in enumerate(closes):
@@ -49,7 +52,7 @@ def rows_of(
         pre = closes[index - 1] if index else close
         volume = volumes[index] if volumes else 1_000_000.0
         turnover = turnovers[index] if turnovers else 1.0
-        high = highs[index] if highs else close * 1.01
+        flag = traded[index] if traded else 1
         rows.append(
             (
                 trade_date,
@@ -57,8 +60,7 @@ def rows_of(
                 close,
                 pre,
                 adj,
-                high,
-                close * 0.99,
+                flag,
                 volume,
                 volume * close,
                 turnover,
@@ -67,9 +69,12 @@ def rows_of(
     return rows
 
 
+EXTRAS = ("traded", "volume", "amount", "turnover_rate")
+
+
 def series_of(closes, **kwargs) -> StockSeries:
     rows = rows_of(closes, **kwargs)
-    series = build_series("sh600000", rows, True)
+    series = build_series("sh600000", rows, EXTRAS)
     assert series is not None
     return series
 
@@ -113,10 +118,10 @@ def test_涨跌幅任意一天_命中一天即可():
 def test_区间涨跌幅用复权价():
     # 不复权 20 → 30 看着是 +50%，但 adj 从 1.0 掉到 0.6（除权）时复权价是 20 → 18
     rows = [
-        (day(1), 20.0, 20.0, 20.0, 1.0, 20.2, 19.9, 1e6, 2e7, 1.0),
-        (day(0), 30.0, 30.0, 20.0, 0.6, 30.3, 29.7, 1e6, 3e7, 1.0),
+        (day(1), 20.0, 20.0, 20.0, 1.0, 1, 1e6, 2e7, 1.0),
+        (day(0), 30.0, 30.0, 20.0, 0.6, 1, 1e6, 3e7, 1.0),
     ]
-    series = build_series("sh600000", rows, True)
+    series = build_series("sh600000", rows, EXTRAS)
     assert series is not None
     # 复权：20 → 18 = -10%
     hit, _ = evaluate("change_pct_span", series, n=1, m=2, min=-11, max=-9)
@@ -133,8 +138,13 @@ def test_换手率单日_单位是百分数():
 
 
 def test_停牌行的换手率按数据不足处理():
-    """停牌日 high 为 NULL、volume/turnover 为 0 —— 不能当成「换手率 0 < 5%」命中。"""
-    series = series_of([10.0, 10.0], volumes=[1e6, 0.0], turnovers=[1.0, 0.0], highs=[10.1, None])
+    """停牌日 traded=0（high/low 为 NULL、volume/turnover 都是 0）—— 不能当成「换手率 0 < 5%」命中。"""
+    series = series_of(
+        [10.0, 10.0],
+        volumes=[1e6, 0.0],
+        turnovers=[1.0, 0.0],
+        traded=[1, 0],
+    )
     hit, ctx = evaluate("turnover_all", series, n=1, m=2, min=0, max=100)
     assert hit is False
     assert ctx.insufficient is True
@@ -280,16 +290,33 @@ def test_股票匹配校验空文本():
 
 def test_bars_sql_按需取列():
     plain = repository.bars_sql()
-    extras = repository.bars_sql(with_extras=True)
-    assert "volume" not in plain
-    for column in ("high", "low", "volume", "amount", "turnover_rate"):
-        assert column in extras
+    assert "volume" not in plain and "traded" not in plain
+
+    # 换手率只要 turnover_rate + traded（停牌标记），不带 volume/amount
+    turnover = repository.bars_sql(("turnover_rate",))
+    assert "turnover_rate" in turnover and "traded" in turnover
+    assert "volume" not in turnover and "amount" not in turnover
+
+    # 成交额只要 amount
+    amount = repository.bars_sql(("amount",))
+    assert "amount" in amount and "volume" not in amount
+
+    # 量比要 volume
+    ratio = repository.bars_sql(("volume",))
+    assert "volume" in ratio and "amount" not in ratio
+
+
+def test_extras_select_顺序固定且总带_traded():
+    assert repository.extras_select(()) == ()
+    assert repository.extras_select({"turnover_rate", "volume"}) == ("traded", "volume", "turnover_rate")
 
 
 def test_needs_extras_只在量价条件上为真():
-    assert CONDITIONS["turnover_single"].needs_extras is True
-    assert CONDITIONS["change_pct_all"].needs_extras is False
-    assert CONDITIONS["close_above_ma"].needs_extras is False
+    assert CONDITIONS["turnover_single"].extras_columns == ("turnover_rate",)
+    assert CONDITIONS["amount_all"].extras_columns == ("amount",)
+    assert CONDITIONS["vol_ratio_single"].extras_columns == ("volume",)
+    assert CONDITIONS["change_pct_all"].extras_columns == ()
+    assert CONDITIONS["close_above_ma"].extras_columns == ()
 
 
 def _request(rule: dict) -> ScreenRequest:
@@ -308,9 +335,9 @@ def _condition(name: str, **params) -> dict:
     return {"type": "condition", "id": name, "name": name, "params": params}
 
 
-def test_has_volume_price_识别树里的量价条件():
+def test_extras_columns_of_识别树里的量价条件():
     plain = compile_rule(_request(_condition("close_above_ma", period=5)))
-    assert has_volume_price(plain) is False
+    assert extras_columns_of(plain) == frozenset()
     mixed = compile_rule(
         _request(
             {
@@ -321,7 +348,21 @@ def test_has_volume_price_识别树里的量价条件():
             }
         )
     )
-    assert has_volume_price(mixed) is True
+    assert extras_columns_of(mixed) == frozenset({"volume"})
+    both = compile_rule(
+        _request(
+            {
+                "type": "group",
+                "id": "g",
+                "operator": "AND",
+                "children": [
+                    _condition("turnover_single", n=1),
+                    _condition("amount_span", n=1, m=5),
+                ],
+            }
+        )
+    )
+    assert extras_columns_of(both) == frozenset({"turnover_rate", "amount"})
 
 
 def test_量价条件的_K_含预热根数():
@@ -359,7 +400,7 @@ def test_run_screen_把指定日期解析成交易日并传给取数层(monkeypa
 
     def fake_fetch(req, k, **kwargs):
         captured["asof"] = kwargs.get("asof")
-        captured["with_extras"] = kwargs.get("with_extras")
+        captured["extras"] = kwargs.get("extras")
         return ScreenData(asof=dt.date(2026, 9, 1), candidates=[], calendar=[dt.date(2026, 9, 1)])
 
     monkeypatch.setattr(screen_service, "resolve_asof", fake_resolve)
@@ -368,7 +409,7 @@ def test_run_screen_把指定日期解析成交易日并传给取数层(monkeypa
     body = screen_service.run_screen(_request(_condition("volume_single", n=1)), asof=dt.date(2026, 9, 5))
     assert captured["requested"] == dt.date(2026, 9, 5)
     assert captured["asof"] == dt.date(2026, 9, 1)
-    assert captured["with_extras"] is True
+    assert captured["extras"] == frozenset({"volume"})
     assert body["asof"] == "2026-09-01"
     assert body["requested_asof"] == "2026-09-05"
 

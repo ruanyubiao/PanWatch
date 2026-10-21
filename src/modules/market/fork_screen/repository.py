@@ -21,7 +21,7 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterable
 
 from ..api import fork_market
 from .conditions import StockSeries
@@ -68,19 +68,25 @@ ORDER BY trade_date DESC
 LIMIT %(k)s
 """
 
-# ③ 日线：默认只取 6 列（``map_row``/均线真正用到的），量价条件才多取 5 列。
-#    多取会让 payload 从 6 列变 11 列（实测 800 只×246 天 9.4MB → 17.3MB，1.84 倍），
-#    所以由 ``with_extras`` 决定，没有量价条件就一分钱不付。
-_BARS_SQL = """
-SELECT symbol, trade_date, open, close, pre_close, adj_factor
-FROM {table}
-WHERE symbol IN %(symbols)s AND trade_date BETWEEN %(start)s AND %(asof)s
-ORDER BY symbol, trade_date
-"""
+# ③ 日线：默认只取 6 列（``map_row``/均线真正用到的）。量价条件按**用到的列**再补：
+#    换手率只要 turnover_rate、成交量只要 volume、量比只要 volume、成交额只要 amount，
+#    外加一列 traded 当停牌标记。实测全市场 30 天：6 列 1.7s，11 列 3.1s，
+#    所以「多取一列都是钱」，不能图省事固定取全。
+_BASE_COLUMNS = ("symbol", "trade_date", "open", "close", "pre_close", "adj_factor")
+#: 额外列在 SELECT 里的固定顺序（``build_series`` 按下标取值，两边必须一致）
+_EXTRAS_ORDER = ("traded", "volume", "amount", "turnover_rate")
 
-_BARS_SQL_EXTRAS = """
-SELECT symbol, trade_date, open, close, pre_close, adj_factor,
-       high, low, volume, amount, turnover_rate
+
+def extras_select(extras: "Iterable[str]") -> tuple[str, ...]:
+    """把条件需要的列名补上 ``traded``，按固定顺序返回。空集 = 不加列。"""
+    wanted = set(extras)
+    if not wanted:
+        return ()
+    return tuple(name for name in _EXTRAS_ORDER if name == "traded" or name in wanted)
+
+
+_BARS_SQL = """
+SELECT {columns}
 FROM {table}
 WHERE symbol IN %(symbols)s AND trade_date BETWEEN %(start)s AND %(asof)s
 ORDER BY symbol, trade_date
@@ -117,8 +123,9 @@ def calendar_params(asof: _dt.date, k: int) -> dict[str, Any]:
     }
 
 
-def bars_sql(with_extras: bool = False) -> str:
-    return (_BARS_SQL_EXTRAS if with_extras else _BARS_SQL).format(table=_BARS_TABLE)
+def bars_sql(extras: "Iterable[str]" = ()) -> str:
+    columns = list(_BASE_COLUMNS) + list(extras_select(extras))
+    return _BARS_SQL.format(columns=", ".join(columns), table=_BARS_TABLE)
 
 
 def candidate_params(req: ScreenRequest) -> dict[str, Any]:
@@ -195,13 +202,15 @@ def fetch_screen_data(
     req: ScreenRequest,
     k: int,
     asof: _dt.date | None = None,
-    with_extras: bool = False,
+    extras: Iterable[str] = (),
 ) -> ScreenData:
     """执行 ①②③ 并构建 ``StockSeries``。连接/查询失败抛 ``ForkDbUnavailable``。
 
     ``asof`` 给了就按那一天选股（窗口从它往前数），不给就是库里最新交易日。
-    ``with_extras`` 决定 ③ 是否多取量价 5 列。
+    ``extras`` 是条件需要额外取的列（见 ``conditions.extras_columns_of``）：
+    空就从 6 列取，非空按并集加上 ``traded`` 与那几列。
     """
+    columns = extras_select(extras)
     data = ScreenData(asof=asof)
     conn = fork_market._connect()
     try:
@@ -246,7 +255,7 @@ def fetch_screen_data(
         buckets: dict[str, list] = {}
         with _tuple_cursor(conn) as cursor:
             cursor.execute(
-                bars_sql(with_extras),
+                bars_sql(extras),
                 {"symbols": symbols, "start": start, "asof": data.asof},
             )
             while True:
@@ -257,7 +266,7 @@ def fetch_screen_data(
                 for row in batch:
                     buckets.setdefault(str(row[0]), []).append(tuple(row[1:]))
         for symbol, rows in buckets.items():
-            series = build_series(symbol, rows, with_extras)
+            series = build_series(symbol, rows, columns)
             if series is not None:
                 data.series[symbol] = series
     except fork_market.ForkDbUnavailable:
