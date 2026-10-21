@@ -4,12 +4,20 @@ import { Popover, PopoverContent, PopoverTrigger } from '@panwatch/base-ui/compo
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Input } from '@panwatch/base-ui/components/ui/input'
 import { Label } from '@panwatch/base-ui/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@panwatch/base-ui/components/ui/select'
 import { ScreenNumberField } from '@/components/fork/ScreenNumberField'
 import {
   CONDITION_DEFS_ZH,
   MA_PERIODS,
   MAX_CHANGE_PCT,
   MAX_CONSECUTIVE_DAYS,
+  MAX_MARKET_CAP_YI,
   METRIC_TEXTS_ZH,
   MIN_CHANGE_PCT,
   SCREEN_TEXTS_ZH,
@@ -18,6 +26,7 @@ import {
   type ConditionName,
   type ConditionParamsMap,
   type MaPeriod,
+  type MarketCapOp,
   type ParamEditorKind,
 } from '@/lib/screen-rule'
 
@@ -421,18 +430,67 @@ function MetricParamFields({
   )
 
   if (editor === 'text') {
+    // 三个文本条件共用这个编辑器，标题/占位/说明按条件分开说
+    const isCode = name === 'stock_code'
+    const isName = name === 'stock_name'
+    const label = isCode ? M.labelStockCode : isName ? M.labelStockName : M.stockLabel
+    const placeholder = isCode
+      ? M.stockCodePlaceholder
+      : isName
+        ? M.stockNamePlaceholder
+        : M.stockPlaceholder
+    const hint = isCode ? M.descStockCode : isName ? M.descStockName : M.stockHint
     return (
       <div className="space-y-1.5" data-fork-screen-metric-editor="text">
-        <Label className="text-[11px] text-muted-foreground">{M.stockLabel}</Label>
+        <Label className="text-[11px] text-muted-foreground">{label}</Label>
         <Input
           className="h-7 text-[12px]"
-          aria-label={M.stockLabel}
-          placeholder={M.stockPlaceholder}
+          aria-label={label}
+          placeholder={placeholder}
           value={String(draft.text ?? '')}
           onChange={event => onPatch({ text: event.target.value })}
           data-fork-screen-param-field="text"
         />
-        <div className="text-[11px] text-muted-foreground">{M.stockHint}</div>
+        <div className="text-[11px] text-muted-foreground">{hint}</div>
+      </div>
+    )
+  }
+
+  if (editor === 'market-cap-op') {
+    const op = String(draft.op ?? 'gte')
+    const options: { value: MarketCapOp; label: string }[] = [
+      { value: 'gt', label: M.opGt },
+      { value: 'gte', label: M.opGte },
+      { value: 'lt', label: M.opLt },
+      { value: 'lte', label: M.opLte },
+    ]
+    return (
+      <div className="space-y-2" data-fork-screen-metric-editor="market-cap-op">
+        <div className="text-[11px] leading-4 text-muted-foreground">{M.marketCapHint}</div>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="min-w-0 space-y-1">
+            <Label className="block truncate text-[11px] text-muted-foreground">
+              {M.marketCapOpLabel}
+            </Label>
+            <Select value={op} onValueChange={value => onPatch({ op: value })}>
+              <SelectTrigger
+                aria-label={M.marketCapOpLabel}
+                data-fork-screen-param-field="op"
+                className="h-7 px-1.5 text-[12px]"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {options.map(option => (
+                  <SelectItem key={option.value} value={option.value} className="text-[12px]">
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {field('value', M.marketCapValueLabel, 0, MAX_MARKET_CAP_YI, false)}
+        </div>
       </div>
     )
   }

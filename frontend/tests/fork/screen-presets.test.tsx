@@ -217,7 +217,7 @@ describe('条件弹窗：已保存条件模式', () => {
     expect(screen.getByText(SCREEN_PRESET_TEXTS_ZH.editingPreset('四连阳'))).toBeTruthy()
   })
 
-  it('N9b 弹窗「保存」交出去的是当前草稿：没名字 → name=null；已保存 → 覆盖原名', async () => {
+  it('N9b 弹窗「保存」交出去的是当前草稿：没保存过 → name=null；已保存 → 带上原名', async () => {
     const onSavePreset = vi.fn()
     renderDialog({ onSavePreset })
 
@@ -225,28 +225,31 @@ describe('条件弹窗：已保存条件模式', () => {
     expect(onSavePreset).toHaveBeenCalledTimes(1)
     const [request, name] = onSavePreset.mock.calls[0]
     expect(name).toBeNull()
-    // 整份请求都交出去了（窗口 / 市值 / 条件树），落到文件里才能原样回填
+    // 整份请求都交出去了（窗口 / 市场 / 条件树）；市值已经是条件，不再有基础区间
     expect(request).toMatchObject({
       trading_days: 30,
       markets: ['sh', 'sz', 'cyb', 'kcb'],
-      market_cap: { min_yi: 1, max_yi: 100000 },
     })
+    expect(request.market_cap).toBeUndefined()
     cleanup()
 
     const overlay = vi.fn()
     renderDialog({ initialRequest: baseRequest(), presetName: '四连阳', onSavePreset: overlay })
     await userEvent.click(document.querySelector('[data-fork-screen-save-preset]') as HTMLElement)
+    // 已保存过的也照旧只交出「请求 + 原名」，由页面弹输入框（名字预填原名，可改名）
     expect(overlay.mock.calls[0][1]).toBe('四连阳')
-    expect(overlay.mock.calls[0][0]).toMatchObject({ trading_days: 30, market_cap: { min_yi: 100 } })
+    expect(overlay.mock.calls[0][0]).toMatchObject({ trading_days: 30 })
   })
 
-  it('N10 已保存条件的完整请求被回填（窗口 / 市值 / 条件树）', () => {
+  it('N10 已保存条件的完整请求被回填（窗口 / 市值条件 / 条件树）', () => {
     renderDialog({ initialRequest: baseRequest(), presetName: '四连阳' })
 
     const days = document.querySelector<HTMLInputElement>('[data-screen-field="trading_days"]')!
-    const capMin = document.querySelector<HTMLInputElement>('[data-screen-field="market_cap.min_yi"]')!
     expect(days.value).toBe('30')
-    expect(capMin.value).toBe('100')
-    expect(document.querySelector('[data-fork-screen-preview]')!.textContent).toContain('连续')
+    // 老文件里的 market_cap {100, 200} 被翻译成两条市值条件
+    const preview = document.querySelector('[data-fork-screen-preview]')!.textContent || ''
+    expect(preview).toContain('连续')
+    expect(preview).toContain('总市值 > 100 亿元')
+    expect(preview).toContain('总市值 < 200 亿元')
   })
 })
