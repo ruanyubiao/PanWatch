@@ -160,9 +160,12 @@ export const SCREEN_TEXTS_ZH = {
   noMatch: '没有股票满足当前条件',
   bannerTitle: (total: number) => `条件选股结果：${total} 只`,
   bannerMeta: (asof: string, candidates: number, evaluated: number, insufficient: number, seconds: string) =>
-    evaluated === candidates
-      ? `数据截至 ${asof} · 基础筛选后 ${candidates} 只参与计算 · 缺数据排除 ${insufficient} 只 · 耗时 ${seconds} s`
-      : `数据截至 ${asof} · 基础筛选后 ${candidates} 只，其中 ${evaluated} 只参与计算 · 缺数据排除 ${insufficient} 只 · 耗时 ${seconds} s`,
+    // evaluated = 0 只有一种情况：条件树是空的（纯基础筛选，没有可算的技术条件）
+    evaluated === 0
+      ? `数据截至 ${asof} · 基础筛选后 ${candidates} 只（未设技术条件） · 耗时 ${seconds} s`
+      : evaluated === candidates
+        ? `数据截至 ${asof} · 基础筛选后 ${candidates} 只参与计算 · 缺数据排除 ${insufficient} 只 · 耗时 ${seconds} s`
+        : `数据截至 ${asof} · 基础筛选后 ${candidates} 只，其中 ${evaluated} 只参与计算 · 缺数据排除 ${insufficient} 只 · 耗时 ${seconds} s`,
   editRule: '修改条件',
   rerun: '重新选股',
   exit: '退出选股',
