@@ -193,6 +193,11 @@ class ConditionSpec:
     #: 这个条件要从库里多取哪些列（``volume`` / ``amount`` / ``turnover_rate``）。
     #: 空 = 只用 OHLC。取数层按并集取列 —— 取数体积实测每多一列都涨，能省就省。
     extras_columns: tuple[str, ...] = ()
+    #: 「股票代码 / 股票名称」这类**身份条件**：只比候选行自带的代码/名称，
+    #: 不读日线。同一个 AND 组里出现多个身份条件时按「或」合并（见
+    #: ``evaluator._merge_identity``），并且能下推成候选 SQL（见
+    #: ``evaluator.identity_filter_groups``）。
+    identity: bool = False
 
 
 # ---------------------------------------------------------------- 指标
@@ -1240,6 +1245,7 @@ CONDITIONS.update(
             required_bars=lambda p, w: 1,
             validate=_validate_stock_code,
             evaluate=stock_code,
+            identity=True,
         ),
         "stock_name": ConditionSpec(
             name="stock_name",
@@ -1247,6 +1253,7 @@ CONDITIONS.update(
             required_bars=lambda p, w: 1,
             validate=_validate_stock_name,
             evaluate=stock_name,
+            identity=True,
         ),
     }
 )
@@ -1367,6 +1374,29 @@ def _stock_match(series: StockSeries, params: StockMatchParams, ctx: EvalContext
     return ctx.code in tokens or ctx.name in tokens
 
 
+def identity_tokens(
+    spec: ConditionSpec, params: Any
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """身份条件里的 (代码词表, 名称词表)。**同一条件内的多个词是「或」**。
+
+    名称返回**剥掉 ST/XD/XR/DR 前缀**后的形式：求值侧比对前也剥前缀，所以
+    ``ST爱柯迪`` 与 ``爱柯迪`` 等价。SQL 层只拿它做超集过滤（``name LIKE '%词'``），
+    多放进来的行由 Python 精确判掉 —— 快但是绝不漏。
+    """
+    if not spec.identity:
+        return (), ()
+    tokens = _match_tokens(getattr(params, "text", "") or "")
+    if not tokens:
+        return (), ()
+    if spec.name == "stock_code":
+        return tuple(tokens), ()
+    names = tuple(_bare_name(token) for token in tokens if _bare_name(token))
+    if spec.name == "stock_name":
+        return (), names
+    # stock_match：代码或名称，两边都要
+    return tuple(tokens), names
+
+
 def consecutive_shrinking(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
     """连续缩量：自倒数第 start 日起连续 days 天量比都落在区间内（默认上限 1）。"""
     return _consecutive_value(series, params, ctx, "vol_ratio")
@@ -1450,6 +1480,7 @@ CONDITIONS.update(
             required_bars=lambda p, w: 1,
             validate=_validate_stock_match,
             evaluate=_stock_match,
+            identity=True,
         ),
     }
 )
