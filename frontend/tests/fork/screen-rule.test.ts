@@ -3,6 +3,7 @@ import {
   CONDITION_DEFS_ZH,
   MAX_CONDITIONS,
   SCREEN_MARKETS,
+  SCREEN_TEXTS_ZH,
   addChild,
   countConditions,
   createCondition,
@@ -302,6 +303,17 @@ describe('条件选股 / 注册表', () => {
     expect(
       messages(validateScreenRequest(req(group([cond('consecutive_bullish', { start: 0, days: 4 })])))),
     ).toContain('倒数第几个交易日需为 1 至 30 的整数')
+  })
+
+  it('结果横幅摘要：参与计算用实际求值数，缺数据只算被排除的', () => {
+    // 全部候选都求了值 → 合并成一句
+    expect(SCREEN_TEXTS_ZH.bannerMeta('2026-10-20', 285, 285, 0, '0.2')).toBe(
+      '数据截至 2026-10-20 · 基础筛选后 285 只参与计算 · 缺数据排除 0 只 · 耗时 0.2 s',
+    )
+    // 有候选没取到当日 K 线（evaluated < candidates）→ 两个数分开写，不能并成一句
+    expect(SCREEN_TEXTS_ZH.bannerMeta('2026-10-20', 5226, 5217, 550, '1.9')).toBe(
+      '数据截至 2026-10-20 · 基础筛选后 5226 只，其中 5217 只参与计算 · 缺数据排除 550 只 · 耗时 1.9 s',
+    )
   })
 
   it('F6 老请求缺 start 时按 1 提交（后端 extra=forbid，不能漏字段）', () => {
