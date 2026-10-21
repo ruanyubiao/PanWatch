@@ -37,6 +37,7 @@ from .evaluator import (
     evaluate_candidates,
     is_empty_rule,
     required_bars_of_group,
+    required_market_cap_filters,
     validate_params,
     validate_rule,
 )
@@ -142,11 +143,13 @@ def run_screen(payload: ScreenRequest, asof: _dt.date | None = None) -> dict[str
     rule = compile_rule(payload)
     k = required_bars_of_group(rule, int(payload.trading_days))
     extras = extras_columns_of(rule)
+    # AND 分支里的「总市值」条件下推成候选 SQL 过滤：W=250 时这是 30s 与 3s 的差别
+    predicates = required_market_cap_filters(rule)
 
     if not _SLOTS.acquire(blocking=False):
         raise ScreenBusy("选股任务繁忙，请稍后重试")
     try:
-        data = fetch_screen_data(payload, k, asof=resolved, extras=extras)
+        data = fetch_screen_data(payload, k, asof=resolved, extras=extras, predicates=predicates)
         if data.stale_date is not None:
             # 只在「锚点 = 最新交易日」时才有意义：指定历史日期时，
             # 日历最新日必然等于 asof（asof 本来就是从 ≤ 该日的最大交易日落出来的）
