@@ -10,7 +10,7 @@ vi.mock('@panwatch/api', () => ({ fetchAPI: vi.fn() }))
 
 /**
  * fork 分析页的行表格。这里钉住用户明确要求过的事：
- *   1. 列的**顺序与名称**（市场 代码 名称 昨收价 现价 涨跌 最高价 最低价 总市值 状态 Agent状态 来源 操作）
+ *   1. 列的**顺序与名称**（市场 代码 名称 昨收价 现价 涨跌 最高价 最低价 成交量 成交额 换手率 总市值 状态 指标 来源 操作）
  *   2. 数据**只**来自 /stocks/market-table —— 再也不发 /quotes/batch 与
  *      /klines/summary/batch（那两条就是「查外网次数太多被屏蔽」的元凶）
  *   3. 市场列只出 沪/深/北
@@ -141,7 +141,6 @@ const renderTable = (props: Partial<React.ComponentProps<typeof StockMarketTable
       onRemove={onRemove}
       onOpenDetail={onOpenDetail}
       renderIndicator={r => <span>状态-{r.code}</span>}
-      renderAgentStatus={() => <span>未配置 Agent</span>}
       renderSource={r => <span>技术指标 · {r.trade_date?.slice(5)}</span>}
       renderActions={(r, state) => (
         <button onClick={() => (state.followed ? state.onUnfollow() : state.onFollow())}>
@@ -194,7 +193,6 @@ describe('fork: 分析页全市场表格', () => {
       '总市值',
       '状态',
       '指标',
-      'Agent 状态',
       '来源',
       '操作',
     ])
@@ -278,7 +276,7 @@ describe('fork: 分析页全市场表格', () => {
     expect(screen.getByText('ST')).toBeTruthy()
   })
 
-  it('列宽：市场～总市值一律固定宽（各 −10）、名称 60 / 指标 160（左内边距 20）/ Agent 90 / 操作 180', async () => {
+  it('列宽：市场～总市值一律固定宽（各 −10）、名称 60 / 指标 120（左内边距 20）/ 操作 220', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response([row({ code: '600519' })]))
     renderTable()
     await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
@@ -303,10 +301,11 @@ describe('fork: 分析页全市场表格', () => {
     expect(widthOf('成交额')).toBe('94px')
     expect(widthOf('换手率')).toBe('74px')
     expect(widthOf('总市值')).toBe('94px')
-    // 指标列再 −20；其余不在这次的收窄范围里
-    expect(widthOf('指标')).toBe('160px')
-    expect(widthOf('Agent 状态')).toBe('90px')
-    expect(widthOf('操作')).toBe('180px')
+    // 指标列本轮再 −40（160 → 120）；「Agent 状态」整列删除、图标搬进操作列，
+    // 操作列 180 → 220（多一个按钮的宽度 + 间隔）
+    expect(widthOf('指标')).toBe('120px')
+    expect(widthOf('操作')).toBe('220px')
+    expect(headers).not.toContain('Agent 状态')
 
     // 市场～总市值不再留 minWidth（否则浏览器会按内容撑开，固定宽失效）
     const cols = table.querySelectorAll('colgroup col')
@@ -364,7 +363,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />,
@@ -381,7 +379,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />,
@@ -417,7 +414,6 @@ describe('fork: 分析页全市场表格', () => {
     expect(within(bei).getByText('北')).toBeTruthy()
     // 富列由页面注入
     expect(within(hu).getByText('状态-600519')).toBeTruthy()
-    expect(within(hu).getByText('未配置 Agent')).toBeTruthy()
     expect(within(hu).getByText('技术指标 · 10-14')).toBeTruthy()
     expect(within(hu).getByText('操作-600519')).toBeTruthy()
   })
@@ -518,7 +514,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />,
@@ -538,7 +533,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />,
@@ -558,7 +552,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />,
@@ -669,7 +662,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />
@@ -710,7 +702,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={r => (r.tech ? <span>badge-{r.tech.score}</span> : <span>数据不足</span>)}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />,
@@ -732,7 +723,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />
@@ -777,7 +767,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />
@@ -817,7 +806,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />
@@ -847,7 +835,6 @@ describe('fork: 分析页全市场表格', () => {
         onRemove={vi.fn()}
         onOpenDetail={vi.fn()}
         renderIndicator={() => null}
-        renderAgentStatus={() => null}
         renderSource={() => null}
         renderActions={() => null}
       />

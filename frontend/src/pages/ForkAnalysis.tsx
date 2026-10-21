@@ -292,6 +292,34 @@ const FORK_ANALYSIS_TEXTS_ZH = {
   nextPage: '下一页',
   unfollow: '取消关注',
   unfollowDescription: '取消后该股票将从关注列表移除，关联的价格提醒也会一并清理。',
+  /**
+   * 指标列的空态文案（原来借用上游的「暂无技术面/AI 分析」）。
+   * 用户要求缩成两个字：这列已经压到 120px，长句必被截断。
+   */
+  indicatorEmpty: '暂无',
+  /** 指标列空态悬停说明（两个字看不出「没有什么」，鼠标悬停补全） */
+  indicatorEmptyHint: '暂无技术面/AI 分析',
+  /** 操作列里那颗「A」图标（配置监控 Agent）的悬停提示 */
+  agentRunning: (name: string) => `执行中 · ${name}`,
+}
+
+/**
+ * 操作列里的「A」图标（配置监控 Agent）。
+ *
+ * 为什么是文字字形而不是 lucide 图标：锁定的 lucide-react 0.300 里没有单字母 A
+ * （``ALargeSmall``/``LetterA`` 都是 0.4x 才加的，只有 ``case-upper`` = 「AA」，
+ * 14px 下两个字母挤在一起认不出来）。所以用一个 14px 盒子里的粗体 A —— 盒子尺寸
+ * 与其他按钮里的 ``w-3.5 h-3.5`` 图标完全一致，视觉重量靠 font-bold 接近 2px 描边。
+ */
+function AgentGlyph({ className = '' }: { className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={`inline-flex h-3.5 w-3.5 items-center justify-center text-[13px] font-bold leading-none ${className}`}
+    >
+      A
+    </span>
+  )
 }
 
 export default function StocksPage() {
@@ -1777,8 +1805,11 @@ export default function StocksPage() {
     const kline = rowSummary(row)
     if (!suggestion && !kline) {
       return (
-        <span className="text-[11px] text-muted-foreground/70">
-          {stockT('stocksPage.messages.noAnalysis')}
+        <span
+          className="text-[11px] text-muted-foreground/70"
+          title={FORK_ANALYSIS_TEXTS_ZH.indicatorEmptyHint}
+        >
+          {FORK_ANALYSIS_TEXTS_ZH.indicatorEmpty}
         </span>
       )
     }
@@ -1825,28 +1856,39 @@ export default function StocksPage() {
     )
   }
 
-  /** Agent 状态列：与卡片同一套文案（未配置 Agent / 已配置 N 个）。 */
-  const renderMarketAgentStatus = (row: MarketRow) => {
-    const found = findWatchedStock(row)
-    const running = found ? runningAgents[found.id] : null
-    if (running) {
-      return (
-        <span className="inline-flex items-center gap-1 text-[10px] text-amber-600">
-          <span className="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin" />
-          {agentName(running, agents.find(a => a.name === running)?.display_name)}
-        </span>
-      )
-    }
-    const count = found?.agents?.length ?? 0
-    if (count > 0) {
-      return (
-        <Badge variant="secondary" className="text-[10px]">
-          {stockT('stocksPage.messages.agentCount', { count })}
-        </Badge>
-      )
-    }
-    return <span>{stockT('stocksPage.messages.notConfigured')}</span>
-  }
+  /**
+   * Agent 配置入口（本轮第 2 条）：原来那一整列「Agent 状态」删掉，收敛成操作列里
+   * 一颗「A」图标，点它弹上游那个「配置监控 Agent」弹窗（本页早已有一份完整实现）。
+   *
+   * 未关注的行也能点：agent 绑定挂在自选行上（PUT /stocks/{id}/agents），所以这里先
+   * 把股票加进自选（与点「+」同一个 POST /stocks），再打开弹窗 —— 否则弹窗能打开、
+   * 存不进任何配置。加入自选会 toast 明说，不做静默变更。
+   */
+  const openMarketAgent = useCallback(
+    async (row: MarketRow) => {
+      const found = findWatchedStock(row)
+      if (found) {
+        setAgentDialogStock(found)
+        return
+      }
+      try {
+        const created = await stocksApi.create({
+          symbol: row.code,
+          name: row.name,
+          market: 'CN',
+          asset_type: 'stock',
+        })
+        toast(`已关注 ${row.name}（配置 Agent 需先加入自选）`, 'success')
+        load()
+        setAgentDialogStock({ ...created, agents: created.agents ?? [] })
+      } catch (e) {
+        toast(e instanceof Error ? e.message : stockT('stocksPage.messages.addStockFailed'), 'error')
+      }
+    },
+    // stockT 来自 i18n hook，随语言变化；load 是稳定的（useCallback）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [findWatchedStock, load],
+  )
 
   /** 建议时间（本地时区，只到分）—— 与上游 suggestion-badge 里的格式一致。 */
   const suggestionTimeText = (isoTime?: string | null): string => {
@@ -1938,6 +1980,43 @@ export default function StocksPage() {
         >
           <ExternalLink className="w-3.5 h-3.5" />
         </Button>
+        {/*
+          Agent 配置（本轮第 2 条）：原「Agent 状态」列整列删掉，改成这一颗「A」图标。
+          亮/暗按是否已配置：已配置 → text-primary（与表里其他可点图标同色），
+          未配置 → text-muted-foreground/40（暗一档，但仍可点）。执行中额外变琥珀 + 呼吸，
+          补回删列时丢掉的「正在跑哪个 Agent」这一条信息。悬停提示：未配置 Agent /
+          N 个 Agent / 执行中 · 名字。
+        */}
+        {(() => {
+          const runningAgent = found ? runningAgents[found.id] : null
+          const assigned = found?.agents?.length ?? 0
+          const tip = runningAgent
+            ? FORK_ANALYSIS_TEXTS_ZH.agentRunning(
+                agentName(runningAgent, agents.find(a => a.name === runningAgent)?.display_name),
+              )
+            : assigned > 0
+              ? stockT('stocksPage.messages.agentCount', { count: assigned })
+              : stockT('stocksPage.messages.notConfigured')
+          return (
+            <Button
+              variant="ghost"
+              size="icon"
+              className={`h-7 w-7 ${
+                runningAgent
+                  ? 'text-amber-600'
+                  : assigned > 0
+                    ? 'text-primary'
+                    : 'text-muted-foreground/40 hover:text-foreground'
+              }`}
+              onClick={() => void openMarketAgent(row)}
+              title={tip}
+              aria-label={tip}
+              data-fork-market-agent={assigned}
+            >
+              <AgentGlyph className={runningAgent ? 'animate-pulse' : ''} />
+            </Button>
+          )
+        })()}
         {state.followed ? (
           <Button
             variant="ghost"
@@ -2807,7 +2886,6 @@ export default function StocksPage() {
               }
               renderIndicator={renderMarketIndicator}
               renderTradeStatus={renderMarketTradeStatus}
-              renderAgentStatus={renderMarketAgentStatus}
               renderSource={renderMarketSource}
               renderActions={renderMarketActions}
             />
