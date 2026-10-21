@@ -25,6 +25,7 @@ from .conditions import (
     CONDITIONS,
     EvalContext,
     StockSeries,
+    identity_tokens,
 )
 from .models import ConditionNode, GroupNode, RuleNode, ScreenRequest
 
@@ -227,7 +228,43 @@ def _compile_group(node: GroupNode, path: str) -> CompiledGroup:
                     path=child_path,
                 )
             )
+    if node.operator == "AND":
+        children = _merge_identity(children, path)
     return CompiledGroup(operator=node.operator, children=tuple(children), node_id=node.id, path=path)
+
+
+def _merge_identity(children: list[Any], path: str) -> list[Any]:
+    """AND 组里出现多个身份条件（股票代码 / 名称）时，合成一个 **OR** 组。
+
+    为什么必须改语义：一只股票只有一个代码，``代码=A 且 名称=B`` 基本永远为假，
+    所以「多个代码/名称」在 AND 下没有意义。用户要的是「这几只里的任意一只」，
+    也就是「或」。合并放在**编译期**（而不是求值时特判），求值、取数、下推三条
+    路径就都只有一种树形，不会各算各的。
+
+    只合并同一个 AND 组的直接子节点；单个身份条件保持原样（它自己内部的多词
+    已经是「或」，见 ``conditions.identity_tokens``）。
+    """
+    identities = [
+        child for child in children if isinstance(child, CompiledCondition) and child.spec.identity
+    ]
+    if len(identities) < 2:
+        return children
+    merged = CompiledGroup(
+        operator="OR",
+        children=tuple(identities),
+        node_id=None,
+        path=f"{path}.identity",
+    )
+    out: list[Any] = []
+    placed = False
+    for child in children:
+        if isinstance(child, CompiledCondition) and child.spec.identity:
+            if not placed:
+                out.append(merged)
+                placed = True
+            continue
+        out.append(child)
+    return out
 
 
 # ---------------------------------------------------------------- 取数根数 K
@@ -294,6 +331,74 @@ def required_market_cap_filters(node: CompiledGroup) -> tuple[tuple[str, float],
             if op in ("gt", "gte", "lt", "lte") and isinstance(value, (int, float)):
                 found.append((op, float(value)))
     return tuple(found)
+
+
+@dataclass(frozen=True)
+class IdentityFilter:
+    """一条「身份条件」下推出来的**超集**过滤：代码精确、名称按后缀 LIKE。"""
+
+    codes: tuple[str, ...] = ()
+    names: tuple[str, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.codes or self.names)
+
+
+def _identity_of(children: Sequence[Any]) -> IdentityFilter:
+    codes: list[str] = []
+    names: list[str] = []
+    for child in children:
+        if not (isinstance(child, CompiledCondition) and child.spec.identity):
+            continue
+        child_codes, child_names = identity_tokens(child.spec, child.params)
+        codes.extend(child_codes)
+        names.extend(child_names)
+    # 去重但保序：占位符个数 = 唯一词个数，列表里重复写同一个词不额外花钱
+    return IdentityFilter(codes=tuple(dict.fromkeys(codes)), names=tuple(dict.fromkeys(names)))
+
+
+def identity_filter_groups(node: CompiledGroup) -> tuple[IdentityFilter, ...]:
+    """树里**必然成立**的身份条件（可下推成候选 SQL 过滤），每项是一组「或」。
+
+    与 ``required_market_cap_filters`` 同一套规则：只看 AND 分支（OR 的另一条支路
+    可能成立，下推会漏股票）；OR 组内部若**全是**身份条件，那一组本身就是「或」，
+    可以整体下推成 ``symbol IN (...) OR name LIKE ...``。
+
+    语义上只是**超集**：名称走 ``LIKE '%词'``，前缀不同名的行也会被放进候选，
+    求值时由 ``stock_name`` 精确判掉 —— 只慢一点点，绝不漏。
+    """
+    if node.operator != "AND":
+        return ()
+    found: list[IdentityFilter] = []
+    for child in node.children:
+        if isinstance(child, CompiledGroup):
+            if child.operator == "AND":
+                found.extend(identity_filter_groups(child))
+            elif _only_identity(child.children):
+                found.extend(_pushable(_identity_of(child.children)))
+        elif child.spec.identity:
+            found.extend(_pushable(_identity_of((child,))))
+    return tuple(found)
+
+
+def _pushable(group: IdentityFilter) -> tuple[IdentityFilter, ...]:
+    """词数在预算内才下推（见 ``MAX_IDENTITY_PUSH_TOKENS``）。"""
+    if not group:
+        return ()
+    if len(group.codes) + len(group.names) > MAX_IDENTITY_PUSH_TOKENS:
+        return ()
+    return (group,)
+
+
+def _only_identity(children: Sequence[Any]) -> bool:
+    return bool(children) and all(
+        isinstance(child, CompiledCondition) and child.spec.identity for child in children
+    )
+
+
+#: 身份条件下推的词数上限。超过就不下推 —— 求值照样正确，只是回到全市场求值。
+#: 20 个条件各填 50 个词会让 SQL 长到没人愿意读，而那种条件本身也筛不掉什么。
+MAX_IDENTITY_PUSH_TOKENS = 200
 
 
 # ---------------------------------------------------------------- 求值
