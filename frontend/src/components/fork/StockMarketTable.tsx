@@ -41,12 +41,12 @@ import {
  *
  * 列宽（用户逐列指定）：市场 60 / 代码 80 / 名称 140 / 成交量 96 / 成交额 104 /
  * 换手率 84（这三列排在**总市值前面**）/ 总市值之后紧跟**状态 68**
- * （停牌 / 正常 / ST 这类 2–3 字标签）/ 指标 200（左内边距 40，免得紧挨着右对齐的
- * 总市值）/ Agent 状态 120 / 来源 200 / 操作 220；
+ * （停牌 / 正常 / ST 这类 2–3 字标签）/ 指标 160 → 120（本页最新要求再减 40）/
+ * 来源 200 / 操作 180 → 220（Agent 配置图标搬进操作列，多一个按钮的宽度＋间隔）；
  * 其余数值列只给最小列宽，宽屏时摊开剩余空间。
  *
- * 本组件只管「取数 / 筛选 / 排序 / 分页 / 表格骨架 / 列的格式」——四个富列
- * （状态、指标、Agent 状态、来源、操作）由页面通过 render prop 注入：它们要弹上游的
+ * 本组件只管「取数 / 筛选 / 排序 / 分页 / 表格骨架 / 列的格式」——三个富列
+ * （状态、指标、来源）与操作列由页面通过 render prop 注入：它们要弹上游的
  * 弹窗、要读建议池与自选状态，属于页面的事。列的顺序与表头只在这里出现一次
  * （**单一真相**），单测直接钉住它。
  *
@@ -71,7 +71,6 @@ const MARKET_TABLE_TEXTS_ZH = {
   colTradeStatus: '状态',
   /** 技术面结论（买入 / 回避 / 观望 + 技术面徽章）。原名「状态」，第 4 条改名。 */
   colIndicator: '指标',
-  colAgent: 'Agent 状态',
   colSource: '来源',
   colActions: '操作',
   sortBy: (label: string) => `按${label}排序`,
@@ -257,7 +256,7 @@ interface ColumnDef {
   label: string
   sortKey?: SortKey
   align?: 'right'
-  /** 固定列宽（用户指定：市场/代码/名称/状态/Agent 状态/来源/操作） */
+  /** 固定列宽（用户指定：市场/代码/名称/状态/指标/来源/操作） */
   width?: number
   /** 其余列只给最小列宽，宽屏摊开 */
   minWidth?: number
@@ -294,14 +293,14 @@ const COLUMNS: ColumnDef[] = [
   // 左内边距 40px 在**这一列**（用户第 9 条：原来加在「指标」列前面的间距挪到状态列，
   // 指标列不再留白）—— 总市值是右对齐的，紧贴一个状态标签会糊成一片。
   { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 68, padLeft: 40 },
-  // 指标列：左内边距 20px（用户最新第 1 条：指标列前面加 20px 间距），列宽 200 → 180 → 160
-  // （第 4 条：指标列减少 20px；本轮用户再要求减少 20px）
-  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 160, padLeft: 20 },
-  // Agent 状态列 120 → 90（第 4 条）
-  { key: 'agent', label: MARKET_TABLE_TEXTS_ZH.colAgent, width: 90 },
+  // 指标列：左内边距 20px（用户最新第 1 条：指标列前面加 20px 间距），列宽 200 → 180 → 160 → 120
+  // （第 4 条 −20；本轮再 −20；最新一轮「减少 40px」，同时把空态文案从
+  // 「暂无技术面/AI 分析」缩成「暂无」——字数少了，列宽才敢压到 120）
+  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 120, padLeft: 20 },
   { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 200 },
-  // 操作列 220 → 180（第 4 条）
-  { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 180 },
+  // 操作列 220 → 180 → 220：Agent 状态列整列删掉，改成操作列里一颗「A」图标
+  // （点击弹「配置监控 Agent」），所以把原来那一个按钮的宽度＋间隔（40px）加回来
+  { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 220 },
 ]
 
 /** 每个可排序列三种状态的图标（未排序灰 ↕ / 降序蓝 ↓ / 升序蓝 ↑）。 */
@@ -398,7 +397,6 @@ interface StockMarketTableProps {
   renderIndicator: (row: MarketRow) => ReactNode
   /** 「状态」列：交易日状态（停牌 / 正常 / ST …），由页面给标签与配色；不给就用纯文本 */
   renderTradeStatus?: (row: MarketRow) => ReactNode
-  renderAgentStatus: (row: MarketRow) => ReactNode
   renderSource: (row: MarketRow) => ReactNode
   renderActions: (row: MarketRow, state: MarketRowState) => ReactNode
 }
@@ -426,7 +424,6 @@ export function StockMarketTable({
   belowToolbar,
   renderIndicator,
   renderTradeStatus,
-  renderAgentStatus,
   renderSource,
   renderActions,
 }: StockMarketTableProps) {
@@ -603,8 +600,6 @@ export function StockMarketTable({
         )
       case 'indicator':
         return renderIndicator(row)
-      case 'agent':
-        return renderAgentStatus(row)
       case 'source':
         return renderSource(row)
       case 'actions':
@@ -664,11 +659,11 @@ export function StockMarketTable({
         <div className="py-10 text-center text-[12px] text-muted-foreground">{emptyText}</div>
       ) : (
         <div className="overflow-x-auto scrollbar">
-          {/* 表格最小宽 = 各列固定宽之和 1596px（市场～总市值各 −10、名称再 −20、指标再 −20，1746 → 1596）。
-              保留 w-full：容器比 1596 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
-              窄到不够就横向滚动；只有容器比 1596 还宽时 table-fixed 才会把余量按比例摊给各列——
+          {/* 表格最小宽 = 各列固定宽之和 1506px（1596 − 指标 40 − 删掉的 Agent 状态 90 + 操作列 40）。
+              保留 w-full：容器比 1506 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
+              窄到不够就横向滚动；只有容器比 1506 还宽时 table-fixed 才会把余量按比例摊给各列——
               这是原来就有的行为（宽屏铺满），本次不动 */}
-          <table className="w-full min-w-[1596px] table-fixed text-[12px]">
+          <table className="w-full min-w-[1506px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col
@@ -743,7 +738,7 @@ export function StockMarketTable({
                               : {}),
                           }}
                           className={`py-2 px-2 ${column.align === 'right' ? 'text-right' : 'text-left'} ${
-                            column.key === 'source' || column.key === 'agent'
+                            column.key === 'source'
                               ? 'whitespace-nowrap text-[11px] text-muted-foreground'
                               : ''
                           } ${column.key === 'actions' ? 'whitespace-nowrap' : ''}`}
