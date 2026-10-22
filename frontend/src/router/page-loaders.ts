@@ -4,6 +4,8 @@ export const pageLoaders = {
   login: () => import('@/pages/Login'),
   // fork：分析页 —— A 股全市场行情表（读本机 MySQL），挂在 /analysis
   forkAnalysis: () => import('@/pages/ForkAnalysis'),
+  // fork：数据分析完整报告（/analysis/report/:runId，弹窗里「查看完整报告」开在新标签页）
+  forkAnalysisReport: () => import('@/pages/ForkAnalysisReport'),
   dashboard: () => import('@/pages/Dashboard'),
   gettingStarted: () => import('@/pages/GettingStarted'),
   stocks: () => import('@/pages/Stocks'),
@@ -25,6 +27,7 @@ export const routePages = {
   LoginPage: lazy(pageLoaders.login),
   // fork：分析页
   ForkAnalysisPage: lazy(pageLoaders.forkAnalysis),
+  ForkAnalysisReportPage: lazy(pageLoaders.forkAnalysisReport),
   DashboardPage: lazy(pageLoaders.dashboard),
   GettingStartedPage: lazy(pageLoaders.gettingStarted),
   StocksPage: lazy(pageLoaders.stocks),
@@ -56,6 +59,8 @@ const routeMatchers: Array<{ key: RouteKey; matches: (pathname: string) => boole
   { key: 'history', matches: pathname => pathname === '/history' },
   { key: 'dataSources', matches: pathname => pathname === '/datasources' },
   { key: 'settings', matches: pathname => pathname === '/settings' },
+  // fork：报告页必须排在 analysisDetail 前面 —— 后者吃所有 /analysis/ 前缀
+  { key: 'forkAnalysisReport', matches: pathname => pathname.startsWith('/analysis/report/') },
   { key: 'analysisDetail', matches: pathname => pathname.startsWith('/analysis/') },
 ]
 

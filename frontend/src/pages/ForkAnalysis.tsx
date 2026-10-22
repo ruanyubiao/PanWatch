@@ -67,6 +67,7 @@ import {
 import { StockListToolbar } from '@/components/fork/StockListToolbar'
 import { StockSearchBox } from '@/components/fork/StockSearchBox'
 import { BatchAddStocksDialog } from '@/components/fork/BatchAddStocksDialog'
+import { AnalysisDialog, ANALYSIS_DIALOG_TEXTS_ZH } from '@/components/fork/AnalysisDialog'
 import { ScreenStocksDialog } from '@/components/fork/ScreenStocksDialog'
 import { ScreenResultBanner } from '@/components/fork/ScreenResultBanner'
 import { ScreenPresetMenu } from '@/components/fork/ScreenPresetMenu'
@@ -477,6 +478,8 @@ export default function StocksPage() {
        marketAsof      表格最近一次加载的数据截止日（弹窗 footer 显示「数据截至」）
      「退出选股」只把 screenResult 置空 —— 表格自己留着全量数据，不重新请求。 */
   const [screenOpen, setScreenOpen] = useState(false)
+  /* fork：数据分析弹窗（条件在历史上的准确率）。三态文案全在弹窗自己内部。 */
+  const [analysisOpen, setAnalysisOpen] = useState(false)
   const [screenResult, setScreenResult] = useState<{
     request: ScreenRequest
     response: ScreenResponse
@@ -2114,6 +2117,19 @@ export default function StocksPage() {
    */
   const tableToolbarActions = (
     <div className="flex items-center gap-1.5">
+      {/* fork：数据分析入口。排在「条件选股」**前面**（用户 2026-10-22 指定）：
+          它不是一个筛选动作，而是「拿条件去回测历史」，语义上在选股之前。 */}
+      <Button
+        data-tour="analyze-condition"
+        size="sm"
+        variant="secondary"
+        className="h-7 px-2 text-[12px]"
+        onClick={() => setAnalysisOpen(true)}
+        data-fork-analysis-button
+      >
+        <BarChart3 className="h-3.5 w-3.5" />
+        {ANALYSIS_DIALOG_TEXTS_ZH.button}
+      </Button>
       {/* fork：条件选股入口（需求规格 §5.1），排在工具条最左边。
           结果生效时显示激活态 —— 否则用户看不出「现在看到的不是全市场」。 */}
       <Button
@@ -2304,6 +2320,15 @@ export default function StocksPage() {
         onDeletePreset={name => void handleDeletePreset(name)}
         onSavePreset={(request, name) => void handleSaveFromDialog(request, name)}
         onResult={(response, request) => setScreenResult({ request, response })}
+      />
+
+      {/* fork：数据分析弹窗（三态：未开始 / 进行中 / 已完成）。条件列表与表格的
+          数据截止日都从页面传进去，弹窗自己不重复请求这两样。 */}
+      <AnalysisDialog
+        open={analysisOpen}
+        onOpenChange={setAnalysisOpen}
+        presets={presets}
+        asof={marketAsof}
       />
 
       {/* fork：保存条件（名字 = 服务器上的文件名，最长 10 个字符） */}
