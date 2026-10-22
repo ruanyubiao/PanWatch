@@ -23,6 +23,7 @@ const {
   DashboardPage,
   // fork：分析页（上游 Stocks.tsx 的副本 + fork 改造），挂在 /analysis
   ForkAnalysisPage,
+  ForkAnalysisReportPage,
   GettingStartedPage,
   OpportunitiesPage,
   StocksPage,
@@ -314,6 +315,8 @@ function App() {
               <Route path="/portfolio" element={<StocksPage />} />
               {/* fork：分析页（A 股全市场行情表） */}
               <Route path="/analysis" element={<ForkAnalysisPage />} />
+              {/* fork：数据分析完整报告（弹窗里「查看完整报告」在新标签页打开） */}
+              <Route path="/analysis/report/:runId" element={<ForkAnalysisReportPage />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/evaluations" element={<EvaluationsPage />} />
               <Route path="/history" element={<HistoryPage />} />
