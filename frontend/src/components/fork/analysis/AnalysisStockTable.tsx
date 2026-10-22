@@ -22,7 +22,7 @@ export const STOCK_TABLE_TEXTS_ZH = {
   excessValue: (value: string) => `${value}pp`,
   search: '搜索代码 / 名称',
   boardAll: '全部市场',
-  sufficientOnly: '只看样本足够',
+  sufficientOnly: '只看样本足够（≥30 次）',
   paging: (from: number, to: number, total: number) => `第 ${from}–${to} 条 / 共 ${total} 条`,
   prev: '上一页',
   next: '下一页',
@@ -69,7 +69,7 @@ export function AnalysisStockTable({
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [board, setBoard] = useState('')
   const [query, setQuery] = useState('')
-  const [sufficientOnly, setSufficientOnly] = useState(false)
+  const [sufficientOnly, setSufficientOnly] = useState(true)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
