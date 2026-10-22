@@ -144,15 +144,39 @@ MA_PERIODS: tuple[int, ...] = (5, 10, 20, 30, 60, 120, 250)
 
 
 class MaOrderParams(_Strict):
+    """均线排列的参数。
+
+    ``n`` —— 倒数第几个交易日（默认 1 = 窗口最后一天，与加这个参数之前一致）。
+    ``m`` —— 只给「范围内每日 / 范围内任意一天」两个变体用：倒数第 n～m 个交易日。
+    """
+
     periods: list[int] = Field(default_factory=lambda: [5, 10, 20, 60])
+    n: int = 1
+    m: int = 1
 
 
 class MaParams(_Strict):
+    """股价站上均线：``period`` + 倒数第 ``n`` 日（范围变体用 ``m``）。"""
+
     period: int = 5
+    n: int = 1
+    m: int = 1
 
 
 class NoParams(_Strict):
     pass
+
+
+class CandleRangeParams(_Strict):
+    """阴阳线计数：统计 D[n..m] 这段窗口（用户 2026-10-23 第 5 条）。
+
+    ``m=0`` 是**哨兵**，表示「统计窗口的最后一天」＝ ``ctx.trading_days``。
+    用哨兵而不是直接把 W 写进默认值：条件存成预设后再换统计窗口（30 → 60）时，
+    「最后一天」应当跟着窗口走，而不是钉死在存下来那天的 30。
+    """
+
+    n: int = 1
+    m: int = 0
 
 
 #: 连续阳线：起点（倒数第几个交易日）+ 天数 的跨度上限
@@ -231,41 +255,248 @@ def _r(value: float) -> float:
 # ---------------------------------------------------------------- 7 个条件
 
 
-def _ma_bullish(series: StockSeries, params: MaOrderParams, ctx: EvalContext) -> bool:
-    values: list[float] = []
-    for period in sorted(set(params.periods)):
-        value = ma(series, period)
-        if value is None:
-            ctx.insufficient = True
-            return False
-        values.append(_r(value))
-    return all(values[i] > values[i + 1] for i in range(len(values) - 1))
+# ---------------------------------------------------------------- 按日定位
+#
+# 2026-10-23 第 6 条：「所有条件都能指定 倒数第N日」，原来没指定的一律等价于 N=1。
+#
+# 统一靠这三个小工具落地：
+#   ``_offset_index`` 日历偏移（倒数第 k 日）→ 该股在 ``series.bars`` 里的下标
+#   ``_each_day``     D[n..m] **每一天**都满足
+#   ``_some_day``     D[n..m] **至少一天**满足
+#
+# 「缺数据」与「不满足」严格分开：缺数据一律 ``ctx.insufficient = True`` 且返回
+# False，绝不把停牌 / 历史不足当成「条件不成立」悄悄放过去。
 
 
-def _ma_bearish(series: StockSeries, params: MaOrderParams, ctx: EvalContext) -> bool:
-    values: list[float] = []
-    for period in sorted(set(params.periods)):
-        value = ma(series, period)
-        if value is None:
+def _offset_index(series: StockSeries, ctx: EvalContext, offset: int) -> int | None:
+    """日历偏移 ``offset``（0 = 窗口末日）→ 该股日线下标；越界或停牌缺行返回 None。"""
+    if offset < 0 or offset >= len(ctx.calendar):
+        ctx.insufficient = True
+        return None
+    index = series.index_on(ctx.calendar[offset])
+    if index is None:
+        ctx.insufficient = True
+    return index
+
+
+def _effective_m(params: Any, ctx: EvalContext) -> int:
+    """区间终点 M：``0`` 是「窗口最后一天」的哨兵（见 ``CandleRangeParams``）。"""
+    m = int(getattr(params, "m", 0) or 0)
+    return ctx.trading_days if m <= 0 else m
+
+
+def _each_day(
+    series: StockSeries,
+    ctx: EvalContext,
+    first: int,
+    last: int,
+    check: Callable[[int], bool | None],
+) -> bool:
+    """日历偏移 ``[first, last)`` 每天都通过 ``check(index)``；``None`` = 数据不足。"""
+    if last > len(ctx.calendar) or first < 0:
+        ctx.insufficient = True
+        return False
+    for offset in range(first, last):
+        index = _offset_index(series, ctx, offset)
+        if index is None:
+            return False
+        result = check(index)
+        if result is None:
             ctx.insufficient = True
             return False
+        if not result:
+            return False
+    return True
+
+
+def _some_day(
+    series: StockSeries,
+    ctx: EvalContext,
+    first: int,
+    last: int,
+    check: Callable[[int], bool | None],
+) -> bool:
+    """日历偏移 ``[first, last)`` 至少一天通过；整天数都没数据 → 数据不足。"""
+    if last > len(ctx.calendar):
+        last = len(ctx.calendar)
+    seen = False
+    for offset in range(max(0, first), last):
+        index = series.index_on(ctx.calendar[offset])
+        if index is None:
+            continue
+        result = check(index)
+        if result is None:
+            continue
+        seen = True
+        if result:
+            return True
+    if not seen:
+        ctx.insufficient = True
+    return False
+
+
+def _ma_order_at(series: StockSeries, index: int, periods: list[int], bullish: bool) -> bool | None:
+    """第 ``index`` 根那天的均线排列；任一条均线算不出来返回 None。"""
+    values: list[float] = []
+    for period in sorted(set(periods)):
+        value = _ma_at(series, index, period)
+        if value is None:
+            return None
         values.append(_r(value))
+    if bullish:
+        return all(values[i] > values[i + 1] for i in range(len(values) - 1))
     return all(values[i] < values[i + 1] for i in range(len(values) - 1))
 
 
-def _close_above_ma(series: StockSeries, params: MaParams, ctx: EvalContext) -> bool:
-    value = ma(series, params.period)
+def _close_above_at(series: StockSeries, index: int, period: int) -> bool | None:
+    value = _ma_at(series, index, period)
     if value is None:
+        return None
+    return _r(series.bars[index].c_adj) > _r(value)
+
+
+def _cross_at(series: StockSeries, index: int, fast: int, slow: int, upward: bool) -> bool | None:
+    """第 ``index`` 根是否发生金叉 / 死叉（当天与前一根比较）。"""
+    if index < 1:
+        return None
+    fast_now = _ma_at(series, index, fast)
+    slow_now = _ma_at(series, index, slow)
+    fast_prev = _ma_at(series, index - 1, fast)
+    slow_prev = _ma_at(series, index - 1, slow)
+    if fast_now is None or slow_now is None or fast_prev is None or slow_prev is None:
+        return None
+    if upward:
+        return fast_prev <= slow_prev and fast_now > slow_now
+    return fast_prev >= slow_prev and fast_now < slow_now
+
+
+def _extreme_at(series: StockSeries, index: int, lookback: int, highest: bool) -> bool | None:
+    """第 ``index`` 根收盘（复权）是否创前 ``lookback`` 根新高 / 新低。"""
+    if lookback <= 0 or index - lookback < 0:
+        return None
+    last = series.bars[index].c_adj
+    previous = [bar.c_adj for bar in series.bars[index - lookback : index]]
+    return last > max(previous) if highest else last < min(previous)
+
+
+# ---------------------------------------------------------------- 均线系列
+
+
+def ma_bullish(series: StockSeries, params: MaOrderParams, ctx: EvalContext) -> bool:
+    """倒数第 n 日：短期均线全在长期均线之上。"""
+    index = _offset_index(series, ctx, int(params.n) - 1)
+    if index is None:
+        return False
+    result = _ma_order_at(series, index, list(params.periods), bullish=True)
+    if result is None:
         ctx.insufficient = True
         return False
-    return _r(series.bars[-1].c_adj) > _r(value)
+    return result
 
 
-def _candle_counts(series: StockSeries, ctx: EvalContext, days: int) -> tuple[int, int, int]:
-    """窗口 D[1..days] 内的（阳线, 阴线, 有效日线条数）。停牌日没有记录，不计入。"""
+def ma_bullish_all(series: StockSeries, params: MaOrderParams, ctx: EvalContext) -> bool:
+    """D[n..m] 每一天都多头排列。"""
+    return _each_day(
+        series,
+        ctx,
+        int(params.n) - 1,
+        int(params.m),
+        lambda index: _ma_order_at(series, index, list(params.periods), bullish=True),
+    )
+
+
+def ma_bullish_any(series: StockSeries, params: MaOrderParams, ctx: EvalContext) -> bool:
+    """D[n..m] 里至少有一天多头排列。"""
+    return _some_day(
+        series,
+        ctx,
+        int(params.n) - 1,
+        int(params.m),
+        lambda index: _ma_order_at(series, index, list(params.periods), bullish=True),
+    )
+
+
+def ma_bearish(series: StockSeries, params: MaOrderParams, ctx: EvalContext) -> bool:
+    """倒数第 n 日：短期均线全在长期均线之下。"""
+    index = _offset_index(series, ctx, int(params.n) - 1)
+    if index is None:
+        return False
+    result = _ma_order_at(series, index, list(params.periods), bullish=False)
+    if result is None:
+        ctx.insufficient = True
+        return False
+    return result
+
+
+def ma_bearish_all(series: StockSeries, params: MaOrderParams, ctx: EvalContext) -> bool:
+    """D[n..m] 每一天都空头排列。"""
+    return _each_day(
+        series,
+        ctx,
+        int(params.n) - 1,
+        int(params.m),
+        lambda index: _ma_order_at(series, index, list(params.periods), bullish=False),
+    )
+
+
+def ma_bearish_any(series: StockSeries, params: MaOrderParams, ctx: EvalContext) -> bool:
+    """D[n..m] 里至少有一天空头排列。"""
+    return _some_day(
+        series,
+        ctx,
+        int(params.n) - 1,
+        int(params.m),
+        lambda index: _ma_order_at(series, index, list(params.periods), bullish=False),
+    )
+
+
+def close_above_ma(series: StockSeries, params: MaParams, ctx: EvalContext) -> bool:
+    """倒数第 n 日：收盘（复权）高于 MA(period)。"""
+    index = _offset_index(series, ctx, int(params.n) - 1)
+    if index is None:
+        return False
+    result = _close_above_at(series, index, int(params.period))
+    if result is None:
+        ctx.insufficient = True
+        return False
+    return result
+
+
+def close_above_ma_all(series: StockSeries, params: MaParams, ctx: EvalContext) -> bool:
+    """D[n..m] 每一天收盘都站上 MA(period)。"""
+    return _each_day(
+        series,
+        ctx,
+        int(params.n) - 1,
+        int(params.m),
+        lambda index: _close_above_at(series, index, int(params.period)),
+    )
+
+
+def close_above_ma_any(series: StockSeries, params: MaParams, ctx: EvalContext) -> bool:
+    """D[n..m] 里至少有一天收盘站上 MA(period)。"""
+    return _some_day(
+        series,
+        ctx,
+        int(params.n) - 1,
+        int(params.m),
+        lambda index: _close_above_at(series, index, int(params.period)),
+    )
+
+
+# ---------------------------------------------------------------- 阴阳线计数
+
+
+def _candle_span(params: Any, ctx: EvalContext) -> tuple[int, int]:
+    """阴阳线计数的日历偏移区间 ``[first, last)``（M 支持「窗口最后一天」哨兵）。"""
+    return int(getattr(params, "n", 1) or 1) - 1, _effective_m(params, ctx)
+
+
+def _candle_counts(series: StockSeries, ctx: EvalContext, first: int, last: int) -> tuple[int, int, int]:
+    """D[n..m] 内的（阳线, 阴线, 有效日线条数）。停牌日没有记录，不计入。"""
     bull = bear = seen = 0
-    for day in ctx.calendar[:days]:
-        bar = series.bar_on(day)
+    for offset in range(first, min(last, len(ctx.calendar))):
+        bar = series.bar_on(ctx.calendar[offset])
         if bar is None:
             continue
         seen += 1
@@ -276,16 +507,18 @@ def _candle_counts(series: StockSeries, ctx: EvalContext, days: int) -> tuple[in
     return bull, bear, seen
 
 
-def _more_bullish_candles(series: StockSeries, params: NoParams, ctx: EvalContext) -> bool:
-    bull, bear, seen = _candle_counts(series, ctx, ctx.trading_days)
+def more_bullish_candles(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """D[n..m] 里收阳的天数多于收阴的天数（平盘不计）。"""
+    bull, bear, seen = _candle_counts(series, ctx, *_candle_span(params, ctx))
     if seen == 0:
         ctx.insufficient = True
         return False
     return bull > bear
 
 
-def _more_bearish_candles(series: StockSeries, params: NoParams, ctx: EvalContext) -> bool:
-    bull, bear, seen = _candle_counts(series, ctx, ctx.trading_days)
+def more_bearish_candles(series: StockSeries, params: Any, ctx: EvalContext) -> bool:
+    """D[n..m] 里收阴的天数多于收阳的天数（平盘不计）。"""
+    bull, bear, seen = _candle_counts(series, ctx, *_candle_span(params, ctx))
     if seen == 0:
         ctx.insufficient = True
         return False
@@ -405,8 +638,61 @@ def _validate_ma(params: MaParams, trading_days: int) -> list[str]:
     return []
 
 
+def _day_limit(trading_days: int) -> int:
+    """「倒数第 N 日」的上界 = 统计窗口（≤ 250）。"""
+    return max(1, int(trading_days))
+
+
+def _check_day(n: int, trading_days: int) -> list[str]:
+    limit = _day_limit(trading_days)
+    if not 1 <= int(n) <= limit:
+        return [f"倒数第几个交易日需为 1 至 {limit} 的整数"]
+    return []
+
+
+def _check_span(n: int, m: int, trading_days: int) -> list[str]:
+    """区间 N ≤ M ≤ 窗口，且跨度不超过 30 根（与量价条件同一套上限）。"""
+    limit = _day_limit(trading_days)
+    errors: list[str] = []
+    if not 1 <= int(n) <= limit:
+        errors.append(f"起点 N 需为 1 至 {limit} 的整数")
+    if not int(n) <= int(m) <= limit:
+        errors.append(f"终点 M 需为 {n} 至 {limit} 的整数（M ≥ N）")
+    elif int(m) - int(n) + 1 > MAX_CONSECUTIVE_SPAN:
+        errors.append(f"区间跨度不能超过 {MAX_CONSECUTIVE_SPAN} 个交易日")
+    return errors
+
+
+def _validate_ma_order_day(params: MaOrderParams, trading_days: int) -> list[str]:
+    return _validate_ma_order(params, trading_days) + _check_day(params.n, trading_days)
+
+
+def _validate_ma_order_span(params: MaOrderParams, trading_days: int) -> list[str]:
+    return _validate_ma_order(params, trading_days) + _check_span(params.n, params.m, trading_days)
+
+
+def _validate_ma_day(params: MaParams, trading_days: int) -> list[str]:
+    return _validate_ma(params, trading_days) + _check_day(params.n, trading_days)
+
+
+def _validate_ma_span(params: MaParams, trading_days: int) -> list[str]:
+    return _validate_ma(params, trading_days) + _check_span(params.n, params.m, trading_days)
+
+
 def _validate_none(params: NoParams, trading_days: int) -> list[str]:
     return []
+
+
+def _validate_candle_range(params: Any, trading_days: int) -> list[str]:
+    """阴阳线计数：``m=0`` = 整个统计窗口（不套 30 根跨度上限，与加参数前一致）。
+
+    显式给了 M（> 0）才按 D[n..m] 校验：N ≤ M ≤ 窗口、跨度 ≤ 30。
+    """
+    n = int(getattr(params, "n", 1) or 1)
+    m = int(getattr(params, "m", 0) or 0)
+    if m <= 0:
+        return _check_day(n, trading_days)
+    return _check_span(n, m, trading_days)
 
 
 def _validate_consecutive(params: ConsecutiveParams, trading_days: int) -> list[str]:
@@ -435,41 +721,89 @@ def _validate_change_pct(params: ChangePctParams, trading_days: int) -> list[str
 
 # ---------------------------------------------------------------- 注册表
 
+def _ma_need(periods: list[int]) -> int:
+    return max(periods) if periods else 1
+
+
 CONDITIONS: dict[str, ConditionSpec] = {
+    # ---- 均线排列：倒数第 N 日 / 范围内每日 / 范围内任意一天（2026-10-23 第 3 条）
     "ma_bullish": ConditionSpec(
         name="ma_bullish",
         params_model=MaOrderParams,
-        required_bars=lambda p, w: max(p.periods) if p.periods else 1,
-        validate=_validate_ma_order,
-        evaluate=_ma_bullish,
+        required_bars=lambda p, w: (int(p.n) - 1) + _ma_need(p.periods),
+        validate=_validate_ma_order_day,
+        evaluate=ma_bullish,
+    ),
+    "ma_bullish_all": ConditionSpec(
+        name="ma_bullish_all",
+        params_model=MaOrderParams,
+        required_bars=lambda p, w: (int(p.m) - 1) + _ma_need(p.periods),
+        validate=_validate_ma_order_span,
+        evaluate=ma_bullish_all,
+    ),
+    "ma_bullish_any": ConditionSpec(
+        name="ma_bullish_any",
+        params_model=MaOrderParams,
+        required_bars=lambda p, w: (int(p.m) - 1) + _ma_need(p.periods),
+        validate=_validate_ma_order_span,
+        evaluate=ma_bullish_any,
     ),
     "ma_bearish": ConditionSpec(
         name="ma_bearish",
         params_model=MaOrderParams,
-        required_bars=lambda p, w: max(p.periods) if p.periods else 1,
-        validate=_validate_ma_order,
-        evaluate=_ma_bearish,
+        required_bars=lambda p, w: (int(p.n) - 1) + _ma_need(p.periods),
+        validate=_validate_ma_order_day,
+        evaluate=ma_bearish,
+    ),
+    "ma_bearish_all": ConditionSpec(
+        name="ma_bearish_all",
+        params_model=MaOrderParams,
+        required_bars=lambda p, w: (int(p.m) - 1) + _ma_need(p.periods),
+        validate=_validate_ma_order_span,
+        evaluate=ma_bearish_all,
+    ),
+    "ma_bearish_any": ConditionSpec(
+        name="ma_bearish_any",
+        params_model=MaOrderParams,
+        required_bars=lambda p, w: (int(p.m) - 1) + _ma_need(p.periods),
+        validate=_validate_ma_order_span,
+        evaluate=ma_bearish_any,
     ),
     "close_above_ma": ConditionSpec(
         name="close_above_ma",
         params_model=MaParams,
-        required_bars=lambda p, w: p.period,
-        validate=_validate_ma,
-        evaluate=_close_above_ma,
+        required_bars=lambda p, w: (int(p.n) - 1) + int(p.period),
+        validate=_validate_ma_day,
+        evaluate=close_above_ma,
     ),
+    "close_above_ma_all": ConditionSpec(
+        name="close_above_ma_all",
+        params_model=MaParams,
+        required_bars=lambda p, w: (int(p.m) - 1) + int(p.period),
+        validate=_validate_ma_span,
+        evaluate=close_above_ma_all,
+    ),
+    "close_above_ma_any": ConditionSpec(
+        name="close_above_ma_any",
+        params_model=MaParams,
+        required_bars=lambda p, w: (int(p.m) - 1) + int(p.period),
+        validate=_validate_ma_span,
+        evaluate=close_above_ma_any,
+    ),
+    # ---- 阴阳线计数：可指定 D[n..m]（M 默认 = 窗口最后一天）
     "more_bullish_candles": ConditionSpec(
         name="more_bullish_candles",
-        params_model=NoParams,
-        required_bars=lambda p, w: w,
-        validate=_validate_none,
-        evaluate=_more_bullish_candles,
+        params_model=CandleRangeParams,
+        required_bars=lambda p, w: int(p.m) if int(p.m) > 0 else int(w),
+        validate=_validate_candle_range,
+        evaluate=more_bullish_candles,
     ),
     "more_bearish_candles": ConditionSpec(
         name="more_bearish_candles",
-        params_model=NoParams,
-        required_bars=lambda p, w: w,
-        validate=_validate_none,
-        evaluate=_more_bearish_candles,
+        params_model=CandleRangeParams,
+        required_bars=lambda p, w: int(p.m) if int(p.m) > 0 else int(w),
+        validate=_validate_candle_range,
+        evaluate=more_bearish_candles,
     ),
     "consecutive_bullish": ConditionSpec(
         name="consecutive_bullish",
@@ -1122,10 +1456,12 @@ CONDITIONS.update(_build_value_conditions())
 
 
 class MarketCapOpParams(_Strict):
-    """总市值阈值：``op`` + ``value``（亿元），比较的是**窗口末日**那根的总市值。"""
+    """总市值阈值：``op`` + ``value``（亿元），比较的是**倒数第 n 个交易日**那根。"""
 
     op: Literal["gt", "gte", "lt", "lte"] = "gte"
     value: float = 100.0
+    #: 倒数第几个交易日（默认 1 = 窗口末日，与加这个参数之前一致）
+    n: int = 1
 
 
 class StockCodeParams(_Strict):
@@ -1141,11 +1477,11 @@ class StockNameParams(_Strict):
 
 
 def market_cap_op(series: StockSeries, params: MarketCapOpParams, ctx: EvalContext) -> bool:
-    """总市值与阈值比较（gt / gte / lt / lte），单位亿元。"""
-    if not series.bars:
-        ctx.insufficient = True
+    """倒数第 n 日的总市值与阈值比较（gt / gte / lt / lte），单位亿元。"""
+    index = _offset_index(series, ctx, int(params.n) - 1)
+    if index is None:
         return False
-    cap = _metric_at(series, len(series.bars) - 1, "market_cap", 0)
+    cap = _metric_at(series, index, "market_cap", 0)
     if cap is None:
         ctx.insufficient = True
         return False
@@ -1204,9 +1540,11 @@ def _bare_name(name: str) -> str:
 
 def _validate_market_cap_op(params: MarketCapOpParams, trading_days: int) -> list[str]:
     lo, hi = _METRIC_BOUNDS["market_cap"]
+    errors: list[str] = []
     if not lo <= params.value <= hi:
-        return [f"总市值需在 {lo:g} 至 {hi:g} 亿元之间"]
-    return []
+        errors.append(f"总市值需在 {lo:g} 至 {hi:g} 亿元之间")
+    errors.extend(_check_day(params.n, trading_days))
+    return errors
 
 
 def _validate_stock_code(params: StockCodeParams, trading_days: int) -> list[str]:
@@ -1234,7 +1572,7 @@ CONDITIONS.update(
         "market_cap": ConditionSpec(
             name="market_cap",
             params_model=MarketCapOpParams,
-            required_bars=lambda p, w: 1,
+            required_bars=lambda p, w: int(p.n),
             validate=_validate_market_cap_op,
             evaluate=market_cap_op,
             extras_columns=("total_market_cap",),
@@ -1266,14 +1604,19 @@ CONDITIONS.update(
 
 
 class LookbackParams(_Strict):
-    """回看 M 根（创 M 日新高/新低）。"""
+    """回看 M 根（创 M 日新高/新低），在倒数第 ``n`` 日判断。"""
 
     m: int = 20
+    n: int = 1
 
 
 class MaCrossParams(_Strict):
+    """金叉 / 死叉：``fast``、``slow`` + 倒数第 ``n`` 日（范围变体用 ``m``）。"""
+
     fast: int = 5
     slow: int = 10
+    n: int = 1
+    m: int = 1
 
 
 class StockMatchParams(_Strict):
@@ -1304,55 +1647,69 @@ def _consecutive_falling(series: StockSeries, params: ConsecutiveParams, ctx: Ev
 
 
 def _extreme(series: StockSeries, params: LookbackParams, ctx: EvalContext, highest: bool) -> bool:
-    lookback = int(params.m)
-    if len(series.bars) < lookback + 1:
+    """倒数第 n 日：收盘（复权）相对它之前的 M 根创出新高 / 新低（不含当天）。"""
+    index = _offset_index(series, ctx, int(params.n) - 1)
+    if index is None:
+        return False
+    result = _extreme_at(series, index, int(params.m), highest)
+    if result is None:
         ctx.insufficient = True
         return False
-    last = series.bars[-1].c_adj
-    previous = [bar.c_adj for bar in series.bars[-lookback - 1 : -1]]
-    return last > max(previous) if highest else last < min(previous)
+    return result
 
 
 def new_high(series: StockSeries, params: LookbackParams, ctx: EvalContext) -> bool:
-    """收盘（复权）创前 M 个交易日新高，不含当日。"""
+    """倒数第 n 日收盘（复权）创前 M 个交易日新高，不含当天。"""
     return _extreme(series, params, ctx, highest=True)
 
 
 def new_low(series: StockSeries, params: LookbackParams, ctx: EvalContext) -> bool:
-    """收盘（复权）创前 M 个交易日新低，不含当日。"""
+    """倒数第 n 日收盘（复权）创前 M 个交易日新低，不含当天。"""
     return _extreme(series, params, ctx, highest=False)
 
 
 def _cross(series: StockSeries, params: MaCrossParams, ctx: EvalContext, upward: bool) -> bool:
-    index = len(series.bars) - 1
-    if index < 1:
+    """倒数第 n 日是否发生金叉 / 死叉。"""
+    index = _offset_index(series, ctx, int(params.n) - 1)
+    if index is None:
+        return False
+    result = _cross_at(series, index, int(params.fast), int(params.slow), upward)
+    if result is None:
         ctx.insufficient = True
         return False
-    fast_now = _ma_at(series, index, params.fast)
-    slow_now = _ma_at(series, index, params.slow)
-    fast_prev = _ma_at(series, index - 1, params.fast)
-    slow_prev = _ma_at(series, index - 1, params.slow)
-    if None in (fast_now, slow_now, fast_prev, slow_prev):
-        ctx.insufficient = True
-        return False
-    # 上面的 None 检查之后 pyright 仍按 float|None 推断，这里显式收窄
-    f_now = float(fast_now)  # type: ignore[arg-type]
-    s_now = float(slow_now)  # type: ignore[arg-type]
-    f_prev = float(fast_prev)  # type: ignore[arg-type]
-    s_prev = float(slow_prev)  # type: ignore[arg-type]
-    if upward:
-        return f_prev <= s_prev and f_now > s_now
-    return f_prev >= s_prev and f_now < s_now
+    return result
 
 
 def ma_golden_cross(series: StockSeries, params: MaCrossParams, ctx: EvalContext) -> bool:
-    """快线上一交易日不高于慢线、今天高于慢线。"""
+    """倒数第 n 日：快线上一交易日不高于慢线、当天高于慢线。"""
     return _cross(series, params, ctx, upward=True)
 
 
 def ma_dead_cross(series: StockSeries, params: MaCrossParams, ctx: EvalContext) -> bool:
-    """快线上一交易日不低于慢线、今天低于慢线。"""
+    """倒数第 n 日：快线上一交易日不低于慢线、当天低于慢线。"""
     return _cross(series, params, ctx, upward=False)
+
+
+def ma_golden_cross_any(series: StockSeries, params: MaCrossParams, ctx: EvalContext) -> bool:
+    """D[n..m] 里至少有一天发生金叉。"""
+    return _some_day(
+        series,
+        ctx,
+        int(params.n) - 1,
+        int(params.m),
+        lambda index: _cross_at(series, index, int(params.fast), int(params.slow), True),
+    )
+
+
+def ma_dead_cross_any(series: StockSeries, params: MaCrossParams, ctx: EvalContext) -> bool:
+    """D[n..m] 里至少有一天发生死叉。"""
+    return _some_day(
+        series,
+        ctx,
+        int(params.n) - 1,
+        int(params.m),
+        lambda index: _cross_at(series, index, int(params.fast), int(params.slow), False),
+    )
 
 
 def _match_tokens(text: str) -> list[str]:
@@ -1404,9 +1761,11 @@ def consecutive_shrinking(series: StockSeries, params: Any, ctx: EvalContext) ->
 
 def _validate_lookback(params: LookbackParams, trading_days: int) -> list[str]:
     limit = min(max(1, int(trading_days)), 250)
+    errors: list[str] = []
     if not 1 <= int(params.m) <= limit:
-        return [f"回看天数需为 1 至 {limit} 的整数"]
-    return []
+        errors.append(f"回看天数需为 1 至 {limit} 的整数")
+    errors.extend(_check_day(params.n, trading_days))
+    return errors
 
 
 def _validate_ma_cross(params: MaCrossParams, trading_days: int) -> list[str]:
@@ -1415,6 +1774,14 @@ def _validate_ma_cross(params: MaCrossParams, trading_days: int) -> list[str]:
     if params.fast >= params.slow:
         return ["快线周期必须小于慢线周期"]
     return []
+
+
+def _validate_ma_cross_day(params: MaCrossParams, trading_days: int) -> list[str]:
+    return _validate_ma_cross(params, trading_days) + _check_day(params.n, trading_days)
+
+
+def _validate_ma_cross_span(params: MaCrossParams, trading_days: int) -> list[str]:
+    return _validate_ma_cross(params, trading_days) + _check_span(params.n, params.m, trading_days)
 
 
 def _validate_stock_match(params: StockMatchParams, trading_days: int) -> list[str]:
@@ -1448,30 +1815,44 @@ CONDITIONS.update(
         "new_high": ConditionSpec(
             name="new_high",
             params_model=LookbackParams,
-            required_bars=lambda p, w: int(p.m) + 1,
+            required_bars=lambda p, w: (int(p.n) - 1) + int(p.m) + 1,
             validate=_validate_lookback,
             evaluate=new_high,
         ),
         "new_low": ConditionSpec(
             name="new_low",
             params_model=LookbackParams,
-            required_bars=lambda p, w: int(p.m) + 1,
+            required_bars=lambda p, w: (int(p.n) - 1) + int(p.m) + 1,
             validate=_validate_lookback,
             evaluate=new_low,
         ),
         "ma_golden_cross": ConditionSpec(
             name="ma_golden_cross",
             params_model=MaCrossParams,
-            required_bars=lambda p, w: int(p.slow) + 1,
-            validate=_validate_ma_cross,
+            required_bars=lambda p, w: (int(p.n) - 1) + int(p.slow) + 1,
+            validate=_validate_ma_cross_day,
             evaluate=ma_golden_cross,
         ),
         "ma_dead_cross": ConditionSpec(
             name="ma_dead_cross",
             params_model=MaCrossParams,
-            required_bars=lambda p, w: int(p.slow) + 1,
-            validate=_validate_ma_cross,
+            required_bars=lambda p, w: (int(p.n) - 1) + int(p.slow) + 1,
+            validate=_validate_ma_cross_day,
             evaluate=ma_dead_cross,
+        ),
+        "ma_golden_cross_any": ConditionSpec(
+            name="ma_golden_cross_any",
+            params_model=MaCrossParams,
+            required_bars=lambda p, w: (int(p.m) - 1) + int(p.slow) + 1,
+            validate=_validate_ma_cross_span,
+            evaluate=ma_golden_cross_any,
+        ),
+        "ma_dead_cross_any": ConditionSpec(
+            name="ma_dead_cross_any",
+            params_model=MaCrossParams,
+            required_bars=lambda p, w: (int(p.m) - 1) + int(p.slow) + 1,
+            validate=_validate_ma_cross_span,
+            evaluate=ma_dead_cross_any,
         ),
         "stock_match": ConditionSpec(
             name="stock_match",

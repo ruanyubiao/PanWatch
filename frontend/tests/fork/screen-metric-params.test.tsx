@@ -99,7 +99,7 @@ describe('量价条件的参数表单', () => {
     await user.type(field('m'), '25')
     await user.click(confirmButton())
 
-    expect(onConfirm.mock.calls[0][0]).toEqual({ m: 25 })
+    expect(onConfirm.mock.calls[0][0]).toEqual({ m: 25, n: 1 })
   })
 
   it('均线金叉：两排周期按钮，默认 MA5 / MA10', async () => {
