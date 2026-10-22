@@ -215,6 +215,120 @@ def fetch_bars(
     return buckets
 
 
+def has_industry(conn: Any) -> bool:
+    """``stock_info.industry`` 是否存在（行业同步上线前，老库还没有这一列）。"""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM information_schema.columns "
+                "WHERE table_schema = DATABASE() AND table_name = 'stock_info' "
+                "AND column_name = 'industry'"
+            )
+            row = cursor.fetchone() or {}
+    except Exception:  # noqa: BLE001 - 查不到就当没有，行业一栏留空
+        return False
+    return int((row.get("n") if isinstance(row, dict) else 0) or 0) > 0
+
+
+def fetch_snapshots(conn: Any, d0: _dt.date, codes: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """信号当天的横截面（供「按变量分类」用）。
+
+    一次查完当天所有命中的股票：市值/PE/PB/换手/成交额/振幅都在 d0 那根 K 线上，
+    行业与上市日在 ``stock_info`` 上。行业列不存在时留空（不报错），这样功能
+    不需要等数据同步也能跑。
+    """
+    wanted = tuple(sorted({str(code) for code in codes if code}))
+    if not wanted:
+        return {}
+    industry_sql = (
+        "i.industry AS industry, i.industry_l1 AS industry_l1, "
+        if has_industry(conn) else "NULL AS industry, NULL AS industry_l1, "
+    )
+    sql = f"""
+SELECT d.code AS code, d.total_market_cap AS mcap, d.pe_ttm AS pe, d.pb AS pb,
+       d.turnover_rate AS turnover, d.amount AS amount, d.amplitude AS amplitude,
+       {industry_sql} i.list_date AS list_date
+FROM {_BARS_TABLE} d
+LEFT JOIN stock_info i ON i.symbol = d.symbol
+WHERE d.trade_date = %(d0)s AND d.code IN %(codes)s
+"""
+    with conn.cursor() as cursor:
+        cursor.execute(sql, {"d0": d0, "codes": wanted})
+        rows = cursor.fetchall() or []
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        code = str(row.get("code") or "")
+        if not code:
+            continue
+        list_date = row.get("list_date")
+        listed_days = None
+        if isinstance(list_date, _dt.datetime):
+            list_date = list_date.date()
+        if isinstance(list_date, _dt.date):
+            listed_days = max(0, (d0 - list_date).days)
+        mcap = row.get("mcap")
+        amount = row.get("amount")
+        out[code] = {
+            "industry": (str(row.get("industry") or "").strip() or None),
+            "industry_l1": (str(row.get("industry_l1") or "").strip() or None),
+            "mcap": round(float(mcap) / 1e8, 2) if mcap is not None else None,
+            "pe": float(row["pe"]) if row.get("pe") is not None else None,
+            "pb": float(row["pb"]) if row.get("pb") is not None else None,
+            "turnover": float(row["turnover"]) if row.get("turnover") is not None else None,
+            "amount": round(float(amount) / 1e8, 3) if amount is not None else None,
+            "amplitude": float(row["amplitude"]) if row.get("amplitude") is not None else None,
+            "listed_days": listed_days,
+        }
+    return out
+
+
+def market_breadth(conn: Any, d0: _dt.date) -> Optional[float]:
+    """当天「阳线占比」= 收盘 > 开盘的股票比例（0–1），当作大盘环境。
+
+    为什么不用「上涨家数占比」：真 ``pre_close`` 从 2026-09-24 起才可靠，2020–2026
+    的历史会被算成 NULL，这个维度就废了。阳线占比每根 K 线自带，七年一致。
+    """
+    sql = (
+        f"SELECT AVG(CASE WHEN close > open THEN 1.0 ELSE 0.0 END) AS breadth "
+        f"FROM {_BARS_TABLE} WHERE trade_date = %(d0)s AND traded = 1 AND open > 0 AND close > 0"
+    )
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(sql, {"d0": d0})
+            row = cursor.fetchone() or {}
+    except Exception:  # noqa: BLE001 - 环境维度算不出来不该毁掉任务
+        logger.exception("计算 %s 的大盘环境失败", d0)
+        return None
+    value = row.get("breadth") if isinstance(row, dict) else None
+    return round(float(value), 4) if value is not None else None
+
+
+def shift_back(conn: Any, latest: _dt.date, days: int) -> _dt.date:
+    """从 ``latest`` 往前数 ``days`` 个交易日（含 latest 为第 0 个）。
+
+    用来算「结束日期上限」：结束日不能晚于这个日期，否则最后几天没有足够的
+    前瞻行情来验证（用户 2026-10-22 第 2 条）。库里的交易日不够时返回最早的一天。
+    """
+    sql = (
+        f"SELECT DISTINCT trade_date FROM {_BARS_TABLE} "
+        "WHERE trade_date <= %(latest)s ORDER BY trade_date DESC LIMIT 1 OFFSET %(offset)s"
+    )
+    with conn.cursor() as cursor:
+        cursor.execute(sql, {"latest": latest, "offset": max(1, int(days))})
+        row = cursor.fetchone() or {}
+    value = row.get("trade_date") if isinstance(row, dict) else None
+    if value is None:
+        with conn.cursor() as cursor:
+            cursor.execute(f"SELECT MIN(trade_date) AS first FROM {_BARS_TABLE}")
+            row = cursor.fetchone() or {}
+        value = row.get("first") if isinstance(row, dict) else None
+    if isinstance(value, _dt.datetime):
+        return value.date()
+    if isinstance(value, _dt.date):
+        return value
+    return _dt.date.fromisoformat(str(value)[:10])
+
+
 def control_sample(
     conn: Any,
     d0: _dt.date,

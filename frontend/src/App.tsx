@@ -137,6 +137,9 @@ function App() {
       .catch(() => {})
   }, [version])
 
+  // 数据分析完整报告：独立页面，不显示任何导航（用户 2026-10-22 第 7 条）
+  const bareReport = location.pathname.startsWith('/analysis/report/')
+
   // 登录页面不显示导航
   if (location.pathname === '/login') {
     return (
@@ -157,10 +160,13 @@ function App() {
     <div
       className={isAssistantRoute
         ? 'relative flex h-dvh flex-col overflow-hidden bg-background'
-        : 'min-h-screen pb-16 md:pb-0 relative overflow-x-clip bg-background'}
+        : bareReport
+          ? 'min-h-screen relative overflow-x-clip bg-background'
+          : 'min-h-screen pb-16 md:pb-0 relative overflow-x-clip bg-background'}
     >
       <AmbientBackground />
       {/* Desktop Floating Nav */}
+      {!bareReport && (
       <div className="sticky top-0 z-50 shrink-0 px-4 md:px-6 pt-3 md:pt-4 pb-2 hidden md:block">
         <header className="card px-4 md:px-5">
           <div className="h-14 flex items-center justify-between">
@@ -234,8 +240,10 @@ function App() {
           </div>
         </header>
       </div>
+      )}
 
       {/* Mobile Top Bar */}
+      {!bareReport && (
       <div className="sticky top-0 z-50 shrink-0 px-4 pt-[max(0.75rem,env(safe-area-inset-top))] pb-2 md:hidden">
         <header className="card px-4">
           <div className="h-12 flex items-center justify-between">
@@ -273,8 +281,10 @@ function App() {
           </div>
         </header>
       </div>
+      )}
 
       {/* Mobile Bottom Nav */}
+      {!bareReport && (
       <nav className="fixed bottom-0 left-0 right-0 z-50 md:hidden bg-card border-t border-border px-2 pb-[env(safe-area-inset-bottom)]">
         <div className="flex items-center justify-around h-14">
           {mobilePrimaryNavItems.map(({ to, icon: Icon, label }) => {
@@ -298,12 +308,13 @@ function App() {
           })}
         </div>
       </nav>
+      )}
 
       {/* Content */}
       <main
         className={`${isAssistantRoute
           ? 'flex min-h-0 flex-1 flex-col overflow-hidden pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-6'
-          : 'pb-4 md:pb-6'} px-4 pt-4 md:px-6 md:pt-6 w-full`}
+          : bareReport ? 'pb-6' : 'pb-4 md:pb-6'} px-4 pt-4 md:px-6 md:pt-6 w-full`}
       >
         <AssistantOpenBridge />
         <RouteErrorBoundary>

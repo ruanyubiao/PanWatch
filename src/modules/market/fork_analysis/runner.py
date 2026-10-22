@@ -26,7 +26,14 @@ from ..fork_screen.models import ScreenRequest
 from ..fork_screen.service import run_screen
 from . import excel as excel_module
 from . import forward, store
-from .models import DEFAULT_SAMPLE_SIZE, FORWARD_DAYS, HORIZONS, MAX_CALENDAR_DAYS, AnalysisCreate
+from .models import (
+    DEFAULT_SAMPLE_SIZE,
+    FORWARD_DAYS,
+    HORIZONS,
+    MAX_CALENDAR_DAYS,
+    AnalysisCreate,
+    horizons_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,18 +80,22 @@ def _request_of(preset_name: str, markets: Optional[Sequence[str]], include_st: 
 
 
 def preview(payload: AnalysisCreate) -> dict[str, Any]:
-    """创建前的预估：区间内有几个交易日、条件叫什么、窗口多久。"""
+    """创建前的预估：区间内有几个交易日、条件叫什么、窗口多久、结束日上限。"""
     request = _request_of(payload.preset, payload.markets, payload.include_st)
     conn = fork_market._connect()
     try:
         latest = forward.latest_trade_date(conn)
         if latest is None:
             raise AnalysisParamsInvalid("行情库里没有任何数据")
-        end = payload.end_date or latest
-        if end > latest:
-            end = latest
+        # 结束日上限：再往后就没有 validate_days 个交易日的验证行情了（第 2 条）
+        max_end = forward.shift_back(conn, latest, payload.validate_days)
+        end = payload.end_date or max_end
+        if end > max_end:
+            end = max_end
         if payload.start_date > end:
-            raise AnalysisParamsInvalid("开始日期晚于结束日期")
+            raise AnalysisParamsInvalid(
+                f"开始日期晚于可验证的结束日期（{max_end.isoformat()}）"
+            )
         calendar = forward.trading_calendar(conn, payload.start_date, end)
     finally:
         conn.close()
@@ -97,6 +108,9 @@ def preview(payload: AnalysisCreate) -> dict[str, Any]:
         "first_day": str(calendar[0]),
         "last_day": str(calendar[-1]),
         "latest_trade_date": str(latest),
+        "max_end_date": str(max_end),
+        "validate_days": int(payload.validate_days),
+        "horizons": list(horizons_for(payload.validate_days)),
         "trading_days": int(request.trading_days),
         "markets": list(request.markets),
         "include_st": bool(request.include_st),
@@ -120,6 +134,11 @@ def create(payload: AnalysisCreate) -> dict[str, Any]:
         "start_date": payload.start_date.isoformat(),
         "end_date": info["last_day"],
         "end_date_requested": (payload.end_date or None) and payload.end_date.isoformat(),
+        "validate_days": info["validate_days"],
+        "horizons": info["horizons"],
+        # 口径版本：v2 = 验证天数可调 + 信号日快照分组（2026-10-22 第二次改版）
+        "caliber": "v2",
+        "max_end_date": info["max_end_date"],
         "markets": info["markets"],
         "include_st": info["include_st"],
         "sample_size": int(payload.sample_size) if payload.sample_size >= 0 else DEFAULT_SAMPLE_SIZE,
@@ -247,6 +266,17 @@ def _loop(preset_name: str, run_id: str) -> None:
                 symbols = [str(item.get("s") or item.get("symbol") or "") for item in items]
                 bars = forward.fetch_bars(conn, d0, symbols, last_day) if symbols else {}
                 rows = _rows_for(items, bars, fwd_dates, d0, 0)
+                # 信号当天的横截面（分组统计用）：一次查完当天命中的全部股票
+                if rows:
+                    snapshots = forward.fetch_snapshots(conn, d0, [row["code"] for row in rows])
+                    breadth = forward.market_breadth(conn, d0)
+                    crowd = len(rows)
+                    for row in rows:
+                        sample = snapshots.get(row["code"]) or {}
+                        for name in store.SNAPSHOT_COLUMNS:
+                            row[name] = sample.get(name)
+                        row["breadth"] = breadth
+                        row["crowd"] = crowd
 
                 control_rows: list[dict[str, Any]] = []
                 if sample_size > 0:

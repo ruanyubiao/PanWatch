@@ -5,8 +5,8 @@
  * 而用户要的是「数据多、图大的时候开到新页面」。弹窗只留结论卡 + 排行前 10。
  */
 import { useCallback, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Download, RefreshCw } from 'lucide-react'
+import { useParams } from 'react-router-dom'
+import { Download, RefreshCw } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { downloadAnalysisExcel, formatDuration, getAnalysisReport, type AnalysisReport } from '@/lib/analysis-api'
 import { AnalysisSummaryBody } from '@/components/fork/analysis/AnalysisSummary'
@@ -14,7 +14,6 @@ import { AnalysisStockTable } from '@/components/fork/analysis/AnalysisStockTabl
 
 export const ANALYSIS_REPORT_PAGE_TEXTS_ZH = {
   title: '数据分析报告',
-  back: '返回分析页',
   loading: '正在读取报告…',
   loadFailed: (message: string) => `读取报告失败：${message}`,
   refresh: '刷新',
@@ -65,13 +64,7 @@ export default function ForkAnalysisReportPage() {
   return (
     <div className="space-y-3" data-fork-analysis-report-page>
       <header className="flex flex-wrap items-center gap-2">
-        <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-[12px]">
-          <Link to="/analysis">
-            <ArrowLeft className="h-3.5 w-3.5" />
-            {T.back}
-          </Link>
-        </Button>
-        <h1 className="text-[14px] font-semibold">{T.title}</h1>
+        <h1 className="text-[15px] font-semibold">{T.title}</h1>
         {report && (
           <span className="text-[11px] text-muted-foreground">
             {T.meta(report.run.preset, report.run.start_date, report.run.end_date, report.run.days_done)}
@@ -104,7 +97,7 @@ export default function ForkAnalysisReportPage() {
             {T.counts(report.counts.hits, report.counts.control, formatDuration(report.run.elapsed_s ?? null))}
           </p>
           <AnalysisSummaryBody report={report} />
-          <AnalysisStockTable runId={runId} />
+          <AnalysisStockTable runId={runId} horizons={report.horizons} />
         </>
       )}
     </div>

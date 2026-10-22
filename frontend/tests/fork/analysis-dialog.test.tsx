@@ -26,6 +26,8 @@ const mocks = vi.hoisted(() => ({
   stocks: vi.fn(),
   signals: vi.fn(),
   download: vi.fn(),
+  detail: vi.fn(),
+  remove: vi.fn(),
 }))
 
 vi.mock('@/lib/analysis-api', () => ({
@@ -40,6 +42,9 @@ vi.mock('@/lib/analysis-api', () => ({
   getAnalysisStocks: mocks.stocks,
   getAnalysisSignals: mocks.signals,
   downloadAnalysisExcel: mocks.download,
+  getAnalysisDetail: mocks.detail,
+  deleteAnalysisRun: mocks.remove,
+  recomputeAnalysisRun: vi.fn(),
   formatDuration: (seconds: number | null) => (seconds === null ? '—' : `${Math.round(seconds)} 秒`),
 }))
 
@@ -137,7 +142,39 @@ const report = (): AnalysisReport => ({
   by_year: [],
   histograms: { edges: [-50, 0, 50], series: [] },
   density: [],
+  groups: [
+    {
+      dim: 'industry',
+      label: '行业',
+      hint: '',
+      focus_horizon: 30,
+      items: [
+        {
+          key: '半导体',
+          n: 320,
+          sample_total: 320,
+          win_rate: 58.4,
+          edge_pp: 9.2,
+          avg_return: 2.4,
+          q: 0.02,
+          z: 3.1,
+          significant: true,
+          verdict: 'edge',
+          horizons: { '30': { n: 320, win_rate: 58.4, ci_low: 52.9, ci_high: 63.7, avg_return: 2.4, edge_pp: 9.2 } },
+        },
+      ],
+    },
+  ],
+  arrival: {
+    buckets: [{ day: 1, n: 400 }, { day: 3, n: 200 }],
+    never_positive: 1200,
+    median_days: 4,
+    total: 1800,
+    within: { '5': 55.6, '10': 62.0 },
+  },
   horizons: [5, 10, 15, 20, 25, 30],
+  validate_days: 30,
+  control_hidden: true,
 })
 
 const renderDialog = () => {
@@ -155,6 +192,9 @@ describe('AnalysisDialog', () => {
       first_day: '2020-01-02',
       last_day: '2026-10-21',
       latest_trade_date: '2026-10-21',
+      max_end_date: '2026-09-09',
+      validate_days: 30,
+      horizons: [5, 10, 15, 20, 25, 30],
       trading_days: 30,
       markets: ['sh', 'sz', 'cyb', 'kcb'],
       include_st: false,
@@ -239,6 +279,76 @@ describe('AnalysisDialog', () => {
     expect(document.querySelector('[data-fork-analysis-verdict-text]')?.textContent).toContain('这个条件有用')
     expect(screen.getByRole('button', { name: /查看完整报告/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: '下载 Excel' })).toBeTruthy()
+  })
+
+  it('结束日期在开始日期下面一行，验证天数在再下一行，默认 30', async () => {
+    renderDialog()
+    await screen.findByText('创建数据分析任务')
+    const start = document.querySelector('[data-fork-analysis-start]') as HTMLElement
+    const end = document.querySelector('[data-fork-analysis-end]') as HTMLElement
+    const days = document.querySelector('[data-fork-analysis-validate-days]') as HTMLInputElement
+    expect(start && end && days).toBeTruthy()
+    // 三行竖排：DOM 顺序就是显示顺序
+    expect(start.compareDocumentPosition(end) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(end.compareDocumentPosition(days) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(days.value).toBe('30')
+    expect(days.getAttribute('min')).toBe('1')
+    // 结束日默认 = 最后一个「验证得完」的交易日（后端给的 max_end_date）
+    await waitFor(() => expect((document.querySelector('[data-fork-analysis-end]') as HTMLInputElement).value)
+      .toBe('2026-09-09'))
+  })
+
+  it('用户选的结束日不能晚于可验证的最后一天', async () => {
+    renderDialog()
+    const user = userEvent.setup()
+    const end = (await screen.findByLabelText('结束日期')) as HTMLInputElement
+    await waitFor(() => expect(end.value).toBe('2026-09-09'))
+    await user.clear(end)
+    await user.type(end, '2026-12-31')
+    expect(end.value <= '2026-09-09').toBe(true)
+  })
+
+  it('创建时把验证天数带给后端', async () => {
+    mocks.create.mockResolvedValue(runMeta())
+    renderDialog()
+    const user = userEvent.setup()
+    const days = (await screen.findByLabelText('验证天数')) as HTMLInputElement
+    await user.clear(days)
+    await user.type(days, '12')
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledTimes(1))
+    expect(mocks.create.mock.calls[0][0].validate_days).toBe(12)
+  })
+
+  it('点历史任务开的是任务详情窗口，不是数据分析界面', async () => {
+    mocks.listRuns.mockResolvedValue([
+      runMeta({ status: 'done', running: false, days_done: 1650, hits: 1800, excel_ready: true }),
+    ])
+    mocks.detail.mockResolvedValue({
+      run: runMeta({ status: 'done', running: false, excel_ready: true }),
+      condition: { name: 'xg1', saved_at: '2026-10-20T10:00:00+08:00', request: presets[0].request },
+      verdict: { usable: false, reason: 'no_edge', best_horizon: 10, best_excess_pp: 0.4, sample: 1800 },
+      horizons: [5, 10, 15, 20, 25, 30],
+    })
+    mocks.report.mockResolvedValue(report())
+    renderDialog()
+    const user = userEvent.setup()
+    const item = await screen.findByRole('button', { name: '打开任务详情' })
+    await user.click(item)
+    await waitFor(() => expect(document.querySelector('[data-fork-analysis-task-detail]')).toBeTruthy())
+    expect(document.body.textContent).toContain('条件详情')
+    // 详情窗口只给报告与 Excel，不给「新建任务」
+    expect(screen.queryByRole('button', { name: '新建任务' })).toBeNull()
+    expect(screen.getByRole('button', { name: /查看完整报告/ })).toBeTruthy()
+  })
+
+  it('「查看全部」打开完整任务列表', async () => {
+    mocks.listRuns.mockResolvedValue([runMeta({ status: 'done', running: false })])
+    renderDialog()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '查看全部' }))
+    await waitFor(() => expect(document.querySelector('[data-fork-analysis-run-list]')).toBeTruthy())
+    expect(document.body.textContent).toContain('全部历史任务')
   })
 
   it('打开时若有任务在跑，直接进那个任务的进度页', async () => {
