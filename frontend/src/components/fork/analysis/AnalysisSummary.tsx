@@ -14,7 +14,7 @@ export const ANALYSIS_SUMMARY_TEXTS_ZH = {
   noEdge: (horizon: number, excess: string, base: string) =>
     `没有优势：最好的周期（${horizon} 日）只比随机买入高 ${excess}pp（随机 ${base}%），建议重新设计条件。`,
   worse: (horizon: number, excess: string, rate: string, base: string) =>
-    `比随机买入还差：${horizon} 日胜率 ${rate}%，随机买入 ${base}%（低 ${excess}pp，统计显著）。这个条件要重新设计。`,
+    `比随机买入还差：${horizon} 日胜率 ${rate}%，随机买入 ${base}%（低 ${Math.abs(Number(excess)).toFixed(1)}pp，统计显著）。这个条件要重新设计。`,
   notSignificant: (z: string) => `差异不显著（z=${z}）：看着高一点，但统计上不能确认，不能据此下结论。`,
   insufficient: '样本不足 100 条，无法判断条件好坏。把日期区间放长再跑一次。',
   detailLine: (avg: string, payoff: string, touch: string) =>
@@ -63,7 +63,11 @@ function signed(value: number | null | undefined, digits = 1): string {
 export function AnalysisVerdictCard({ report }: { report: AnalysisReport }) {
   const T = ANALYSIS_SUMMARY_TEXTS_ZH
   const verdict = report.verdict
-  const best = report.summary.find(row => row.horizon === verdict.best_horizon) ?? null
+  // 卡片上的周期与明细必须讲同一个周期：'worse' 讲「显著跑输」的那个，
+  // 其余讲「最好」的那个（否则会出现「标题 5 日、正文 15 日」的自相矛盾）
+  const focusHorizon =
+    verdict.reason === 'worse' ? verdict.worst_horizon ?? verdict.best_horizon : verdict.best_horizon
+  const best = report.summary.find(row => row.horizon === focusHorizon) ?? null
   let text = T.insufficient
   if (verdict.reason === 'usable' && verdict.best_horizon !== null) {
     text = T.usable(
@@ -98,9 +102,9 @@ export function AnalysisVerdictCard({ report }: { report: AnalysisReport }) {
     <div data-fork-analysis-verdict className={`rounded-lg border p-3 text-[12px] leading-relaxed ${tone}`}>
       <div className="mb-1 flex items-center gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wide opacity-70">{T.verdictTitle}</span>
-        {verdict.best_horizon !== null && (
+        {focusHorizon !== null && focusHorizon !== undefined && (
           <span className="rounded bg-background/70 px-1.5 py-0.5 text-[10px] font-medium">
-            {T.days(verdict.best_horizon)}
+            {T.days(focusHorizon)}
           </span>
         )}
       </div>
