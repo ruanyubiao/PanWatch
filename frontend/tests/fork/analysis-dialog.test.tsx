@@ -279,6 +279,13 @@ describe('AnalysisDialog', () => {
     expect(document.querySelector('[data-fork-analysis-verdict-text]')?.textContent).toContain('这个条件有用')
     expect(screen.getByRole('button', { name: /查看完整报告/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: '下载 Excel' })).toBeTruthy()
+    // 界面不显示随机对照组（用户第 6 条）：没有「随机胜率」这一列、没有对照图例
+    expect(document.body.textContent).not.toContain('随机胜率')
+    expect(document.body.textContent).not.toContain('对照组随机')
+    // 分组统计与到达天数都要出现（第 11 条）
+    expect(document.body.textContent).toContain('哪类股票特别有效')
+    expect(document.body.textContent).toContain('半导体')
+    expect(document.body.textContent).toContain('中位到达天数')
   })
 
   it('结束日期在开始日期下面一行，验证天数在再下一行，默认 30', async () => {
