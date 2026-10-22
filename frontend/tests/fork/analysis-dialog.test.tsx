@@ -176,6 +176,30 @@ describe('AnalysisDialog', () => {
     expect(document.querySelector('[data-fork-analysis-create-button]')).toBeTruthy()
   })
 
+  it('股票范围与条件选股同款：市场 pill 组 + ST 开关', async () => {
+    mocks.create.mockResolvedValue(runMeta())
+    renderDialog()
+    const user = userEvent.setup()
+    const all = await screen.findByRole('button', { name: '全部' })
+    expect(all.getAttribute('aria-pressed')).toBe('true')
+    // 点「上证」= 从「全部」切成只选上证（其余三个也跟着取消，「全部」显示为半选）
+    await user.click(screen.getByRole('button', { name: '上证' }))
+    expect(all.getAttribute('aria-pressed')).toBe('mixed')
+    expect(screen.getByRole('button', { name: '上证' }).getAttribute('aria-pressed')).toBe('true')
+    // 点「全部」恢复四个市场
+    await user.click(all)
+    expect(all.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: '上证' }).getAttribute('aria-pressed')).toBe('false')
+    await user.click(screen.getByRole('button', { name: '上证' }))
+    // ST 开关（与条件选股同一个 Switch，不再是 checkbox）
+    await user.click(screen.getByRole('switch', { name: '包含 ST / *ST' }))
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledTimes(1))
+    const payload = mocks.create.mock.calls[0][0]
+    expect(payload.markets).toEqual(['sh'])
+    expect(payload.include_st).toBe(true)
+  })
+
   it('创建后切成进行中：进度、命中数与停止按钮', async () => {
     mocks.create.mockResolvedValue(runMeta())
     renderDialog()
