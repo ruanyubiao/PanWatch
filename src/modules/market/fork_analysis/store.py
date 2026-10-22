@@ -42,6 +42,23 @@ RUNS_DIR = PROJECT_ROOT / "data" / "analysis_runs"
 RETURN_COLUMNS: tuple[str, ...] = tuple(f"r{i}" for i in range(1, FORWARD_DAYS + 1))
 TOUCH_COLUMNS: tuple[str, ...] = tuple(f"t{horizon}" for horizon in HORIZONS)
 
+#: 信号当天的快照列（用户在 2026-10-22 第 11 条要的「按不同变量分类」都要靠它们）。
+#: 全部取自 d0 那一根 K 线 + ``stock_info``，不要在统计时回头查行情库 —— 一个任务
+#: 几十万条、跨七年，回头查会变成几千次往返。
+SNAPSHOT_COLUMNS: dict[str, str] = {
+    "industry": "TEXT",       # 行业大类（stock_info.industry，数据同步写入）
+    "industry_l1": "TEXT",    # 行业门类（stock_info.industry_l1）
+    "mcap": "REAL",           # 总市值（亿元）
+    "pe": "REAL",             # 市盈率 TTM（负值 = 亏损）
+    "pb": "REAL",             # 市净率
+    "turnover": "REAL",       # 换手率（%）
+    "amount": "REAL",         # 成交额（亿元）
+    "amplitude": "REAL",      # 振幅（%）
+    "listed_days": "INTEGER",  # 上市交易日数（次新股识别）
+    "breadth": "REAL",        # 当天全市场上涨家数占比（0–1，大盘环境）
+    "crowd": "INTEGER",       # 当天命中数（拥挤度：同一天有多少只同时命中）
+}
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS days (
     d0          TEXT PRIMARY KEY,
@@ -60,7 +77,8 @@ CREATE TABLE IF NOT EXISTS signals (
     d0_close    REAL NOT NULL,
     avail       INTEGER NOT NULL,
     {", ".join(f"{name} REAL" for name in RETURN_COLUMNS)},
-    {", ".join(f"{name} REAL" for name in TOUCH_COLUMNS)}
+    {", ".join(f"{name} REAL" for name in TOUCH_COLUMNS)},
+    {", ".join(f"{name} {kind}" for name, kind in SNAPSHOT_COLUMNS.items())}
 );
 CREATE INDEX IF NOT EXISTS idx_signals_code ON signals(code);
 CREATE INDEX IF NOT EXISTS idx_signals_group ON signals(is_control);
@@ -184,6 +202,19 @@ def stop_requested(preset: str, run_id: str) -> bool:
     return (run_dir(preset, run_id) / "stop").exists()
 
 
+def _migrate_signals(conn: sqlite3.Connection) -> None:
+    """给老任务的 ``signals.db`` 补新列（2026-10-22 之前建的表没有快照列）。
+
+    不重建表：老任务的 r1..r30 是几小时跑出来的，补列只加空列，值由
+    ``backfill.fill_snapshots`` 按天回填（几秒钟一天）。
+    """
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(signals)")}
+    for name, kind in SNAPSHOT_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {name} {kind}")
+    conn.commit()
+
+
 def open_db(preset: str, run_id: str) -> sqlite3.Connection:
     """读写连接（建表 + WAL）。WAL 让「跑着的同时前端能读进度/结果」。"""
     path = db_path(preset, run_id)
@@ -193,15 +224,28 @@ def open_db(preset: str, run_id: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA)
+    _migrate_signals(conn)
     conn.commit()
     return conn
 
 
 def open_db_readonly(preset: str, run_id: str) -> sqlite3.Connection:
-    """只读连接：任务还没建库（0 天命中）时也能安全打开。"""
+    """只读连接：任务还没建库（0 天命中）时也能安全打开。
+
+    老任务的 signals.db 可能缺快照列（v2 之前建的），只读连接改不了表结构，
+    所以先探一次 PRAGMA：缺列就用读写连接补上，再回到只读。否则报告接口会报
+    ``no such column: industry``。
+    """
     path = db_path(preset, run_id)
     if not path.is_file():
         raise RunNotFound(f"分析任务 {run_id} 还没有数据")
+    probe = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10.0)
+    try:
+        existing = {str(row[1]) for row in probe.execute("PRAGMA table_info(signals)")}
+    finally:
+        probe.close()
+    if existing and any(name not in existing for name in SNAPSHOT_COLUMNS):
+        open_db(preset, run_id).close()
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
@@ -213,10 +257,28 @@ def insert_signals(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> 
     if not payload:
         return 0
     columns = ["d0", "code", "symbol", "name", "board", "is_control", "d0_close", "avail",
-               *RETURN_COLUMNS, *TOUCH_COLUMNS]
+               *RETURN_COLUMNS, *TOUCH_COLUMNS, *SNAPSHOT_COLUMNS]
     placeholders = ", ".join("?" for _ in columns)
     sql = f"INSERT INTO signals ({', '.join(columns)}) VALUES ({placeholders})"
     conn.executemany(sql, [tuple(row.get(name) for name in columns) for row in payload])
+    conn.commit()
+    return len(payload)
+
+
+def update_snapshots(conn: sqlite3.Connection, d0: str, snapshots: dict[str, dict[str, Any]],
+                     crowd: int, breadth: float | None) -> int:
+    """把某一天的快照写回老信号（补列/回填共用）。"""
+    if not snapshots:
+        return 0
+    columns = list(SNAPSHOT_COLUMNS)
+    sql = (
+        f"UPDATE signals SET {', '.join(f'{name} = ?' for name in columns)}, crowd = ?, breadth = ? "
+        "WHERE d0 = ? AND code = ?"
+    )
+    payload = []
+    for code, values in snapshots.items():
+        payload.append(tuple(values.get(name) for name in columns) + (int(crowd), breadth, d0, code))
+    conn.executemany(sql, payload)
     conn.commit()
     return len(payload)
 

@@ -161,18 +161,25 @@ describe('条件选股 / 校验（规格 §10）', () => {
       messages(validateScreenRequest(req(group([cond('close_above_ma', { period: 7 })])))),
     ).toContain('均线周期不合法')
 
-    // 连续天数上限 = min(W, 30)
+    // 连续天数上限 = 统计窗口（不再是常数 30）
     expect(
       messages(
         validateScreenRequest(
           req(group([cond('consecutive_bullish', { days: 31 })]), { trading_days: 60 }),
         ),
       ),
-    ).toContain('连续天数需为 1 至 30 的整数')
+    ).not.toContain('连续天数需为')
+    expect(
+      messages(
+        validateScreenRequest(
+          req(group([cond('consecutive_bullish', { days: 61 })]), { trading_days: 60 }),
+        ),
+      ),
+    ).toContain('连续天数需为 1 至 60 的整数')
 
     expect(
       messages(validateScreenRequest(req(group([cond('change_pct', { n: 31, min: -5, max: 5 })])))),
-    ).toContain('N 需为 1 至 30 之间的整数')
+    ).toContain('n 需为 1 至 30 之间的整数')
 
     expect(
       messages(validateScreenRequest(req(group([cond('change_pct', { n: 1, min: 10, max: -10 })])))),
@@ -569,13 +576,14 @@ describe('量价条件（指标 × 形状）', () => {
     ).toBe(9)
   })
 
-  it('区间形状的校验：M ≥ N、跨度 ≤ 30、下限 < 上限', () => {
+  it('区间形状的校验：f ≥ n、跨度 ≤ 统计窗口、下限 < 上限', () => {
     const issues = (params: object, tradingDays = 30) =>
       CONDITION_DEFS_ZH.turnover_all.validate(params as never, tradingDays)
 
-    expect(issues({ n: 5, m: 3, min: 0, max: 1 }).join()).toContain('M ≥ N')
-    // 窗口给到 250 才可能触发「跨度」这条（窗口 30 时 M 先被上界拦住）
-    expect(issues({ n: 1, m: 31, min: 0, max: 1 }, 250).join()).toContain('区间跨度不能超过 30')
+    expect(issues({ n: 5, m: 3, min: 0, max: 1 }).join()).toContain('f ≥ n')
+    // 跨度上限 = 统计窗口：窗口 250 时 m=31 合法，窗口 30 时越界
+    expect(issues({ n: 1, m: 31, min: 0, max: 1 }, 250).join()).toBe('')
+    expect(issues({ n: 1, m: 31, min: 0, max: 1 }, 30).join()).toContain('f 需为 n 至 30 之间的整数')
     expect(issues({ n: 1, m: 5, min: 9, max: 1 }).join()).toContain('下限必须小于上限')
     // 换手率不能为负（与后端 `_METRIC_BOUNDS` 一致）
     expect(issues({ n: 1, m: 5, min: -3, max: 1 }).join()).toContain('需在 0 至 1000 之间')

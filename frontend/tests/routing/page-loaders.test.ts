@@ -8,6 +8,7 @@ describe('route page loaders', () => {
       'login',
       // fork: 分析页（A 股全市场行情表），挂在 /analysis
       'forkAnalysis',
+    'forkAnalysisReport',
       'dashboard',
       'gettingStarted',
       'stocks',
