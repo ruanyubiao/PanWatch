@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ScreenParamForm } from '@/components/fork/ScreenParamEditor'
 import {
   CONDITION_DEFS_ZH,
+  METRIC_TEXTS_ZH,
   dayEnd,
   daySlot,
   type ConditionName,
@@ -96,6 +97,14 @@ describe('按日定位：校验', () => {
     expect(def('ma_bullish_all').validate(params('ma_bullish_all', { n: 5, m: 3 }), 30)).toEqual([
       '终点 f 需为 5 至 30 的整数（f ≥ n）',
     ])
+  })
+
+  it('提示文案里的跨度上限跟着统计窗口走（不是常数 30）', () => {
+    expect(METRIC_TEXTS_ZH.hintRange(60)).toContain('跨度不超过 60 个交易日')
+    expect(METRIC_TEXTS_ZH.hintRange(60)).toContain('起点 n')
+    expect(METRIC_TEXTS_ZH.hintRange(60)).toContain('终点 f')
+    expect(METRIC_TEXTS_ZH.startLabel).toBe('起点 n')
+    expect(METRIC_TEXTS_ZH.endLabel).toBe('终点 f')
   })
 
   it('跨度上限 = 统计窗口；阴阳线的「整个窗口」也合法', () => {
