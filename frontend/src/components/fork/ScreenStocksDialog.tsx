@@ -82,6 +82,17 @@ const DEFAULT_TRADING_DAYS = 30
 interface DraftForm {
   daysText: string
   markets: ScreenMarket[]
+  /**
+   * 「全部市场」是否处于选中态（用户 2026-10-23 第 1 条）。
+   *
+   * 以前「全部」就是「四个市场都在 markets 里」，于是勾了「全部」之后四个市场的
+   * 复选框**一起显示成选中** —— 用户看到的是「所有复选框都选中了」，而他要的是
+   * 「全部和其他几个组成 radio 组」：勾全部 → 其他取消；点其他 → 全部取消。
+   *
+   * 所以把「全部」提成独立状态：``marketAll = true`` 时 markets 仍是四个市场
+   * （提交给后端的形式不变），但四个复选框一律渲染成**未选中**。
+   */
+  marketAll: boolean
   includeSt: boolean
   rule: GroupNode
   /** 窗口结束日（`YYYY-MM-DD`）；空 = 库里最新交易日 */
@@ -109,6 +120,7 @@ function toDraft(request: ScreenRequest | null): DraftForm {
     return {
       daysText: String(DEFAULT_TRADING_DAYS),
       markets: [...SCREEN_MARKETS],
+      marketAll: true,
       includeSt: false,
       rule: createGroup('AND'),
       asofText: '',
@@ -119,6 +131,8 @@ function toDraft(request: ScreenRequest | null): DraftForm {
     daysText: String(request.trading_days),
     // 市场至少留一个（老请求里如果空着，退回「全部」）
     markets: request.markets.length ? [...request.markets] : [...SCREEN_MARKETS],
+    // 四个市场都在 = 「全部」（老请求没有这个区分，按等价语义还原）
+    marketAll: !request.markets.length || request.markets.length === SCREEN_MARKETS.length,
     includeSt: request.include_st,
     // 老条件文件里的基础市值区间 → 两条市值条件（见 migrateLegacyMarketCap）
     rule: migrateLegacyMarketCap({ ...request, rule: stripCollapsed(request.rule) }),
@@ -360,17 +374,18 @@ export function ScreenStocksDialog({
   )
 
   /**
-   * 市场选择是「全部 / 其它」二选一的组（用户第 3 条）：
+   * 市场是「全部 / 其他」组成的 **radio 组**（用户 2026-10-23 第 1 条）：
    *
-   * - 点「全部」→ 四个市场全选（已经全选时再点也不清空）；
-   * - 点某个市场 → 该市场加入 / 退出；退出后自然就不再是「全部」；
+   * - 点「全部」→ 全部选中、其他四个**取消选中**（再点「全部」不会取消，只能选不能取消）；
+   * - 全部状态下点某个市场 → 全部取消、只留这一个；
+   * - 其他状态下点某个市场 → 该市场加入 / 退出，可以多选；
    * - **不允许一个都不选**（最后一个市场不能被取消）。
    */
   const toggleMarket = (market: ScreenMarket) => {
     setForm(current => {
       // 「全部」状态下点某个市场 → 只保留它（全部被取消选中）
-      if (current.markets.length === SCREEN_MARKETS.length) {
-        return { ...current, markets: [market] }
+      if (current.marketAll) {
+        return { ...current, marketAll: false, markets: [market] }
       }
       const selected = current.markets.includes(market)
       if (selected && current.markets.length === 1) return current
@@ -378,11 +393,17 @@ export function ScreenStocksDialog({
         ? current.markets.filter(item => item !== market)
         : [...current.markets, market]
       // 保持 SCREEN_MARKETS 的顺序（请求里顺序无所谓，但 UI 与预览要稳定）
-      return { ...current, markets: SCREEN_MARKETS.filter(item => next.includes(item)) }
+      const ordered = SCREEN_MARKETS.filter(item => next.includes(item))
+      return {
+        ...current,
+        markets: ordered,
+        // 手动凑齐四个市场 = 又回到「全部」态：否则四个复选框全亮、和「全部」重复
+        marketAll: ordered.length === SCREEN_MARKETS.length,
+      }
     })
   }
 
-  const allSelected = form.markets.length === SCREEN_MARKETS.length
+  const allSelected = form.marketAll
   const noneSelected = form.markets.length === 0
 
   const handleSubmit = async () => {
@@ -547,7 +568,8 @@ export function ScreenStocksDialog({
                   onClick={() =>
                     setForm(current => ({
                       ...current,
-                      // 「全部」只能选中，不能取消（取消要逐个点掉其他市场）
+                      // 「全部」只能选中，不能取消（要取消就逐个点掉其他市场）
+                      marketAll: true,
                       markets: [...SCREEN_MARKETS],
                     }))
                   }
@@ -572,7 +594,8 @@ export function ScreenStocksDialog({
                     cyb: '创业',
                     kcb: '科创',
                   }[market]
-                  const selected = form.markets.includes(market)
+                  // 「全部」选中时，其他四个一律显示为未选中（radio 组语义）
+                  const selected = !form.marketAll && form.markets.includes(market)
                   return (
                     <button
                       key={market}
