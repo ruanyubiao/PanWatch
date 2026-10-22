@@ -61,12 +61,58 @@ export interface RatioConsecutiveParams extends MetricConsecutiveParams {
   window: number
 }
 
+/**
+ * 按日定位：``n`` = 倒数第几个交易日（1 = 窗口末日）。
+ *
+ * ``m`` 只给「范围内每日 / 范围内任意一天」用（倒数第 n～m 日）；
+ * 单日条件也带着 `m`，让同一份参数形状在两种模式下都能提交。
+ */
+export interface DaySlot {
+  n: number
+  m: number
+}
+/** 均线排列（周期可多选）+ 按日定位。 */
+export interface MaOrderDayParams extends DaySlot {
+  periods: MaPeriod[]
+}
+/** 股价站上均线（单周期）+ 按日定位。 */
+export interface MaDayParams extends DaySlot {
+  period: MaPeriod
+}
+/** 金叉 / 死叉 + 按日定位。 */
+export interface MaCrossDayParams extends DaySlot {
+  fast: MaPeriod
+  slow: MaPeriod
+}
+/**
+ * 阴阳线计数的统计区间：D[n..m]。
+ *
+ * ``m = 0`` 是哨兵，表示「统计窗口的最后一天」—— 换统计窗口时跟着走，
+ * 而不是钉死在保存那天的窗口长度（后端同名口径）。
+ */
+export interface CandleRangeParams {
+  n: number
+  m: number
+}
+
 export interface ConditionParamsMap {
-  ma_bullish: { periods: MaPeriod[] }
-  ma_bearish: { periods: MaPeriod[] }
-  close_above_ma: { period: MaPeriod }
-  more_bullish_candles: Record<string, never>
-  more_bearish_candles: Record<string, never>
+  ma_bullish: MaOrderDayParams
+  ma_bearish: MaOrderDayParams
+  /** 均线多头排列 · 范围内每日 */
+  ma_bullish_all: MaOrderDayParams
+  /** 均线多头排列 · 范围内任意一天 */
+  ma_bullish_any: MaOrderDayParams
+  /** 均线空头排列 · 范围内每日 */
+  ma_bearish_all: MaOrderDayParams
+  /** 均线空头排列 · 范围内任意一天 */
+  ma_bearish_any: MaOrderDayParams
+  close_above_ma: MaDayParams
+  /** 股价站上均线 · 范围内每日 */
+  close_above_ma_all: MaDayParams
+  /** 股价站上均线 · 范围内任意一天 */
+  close_above_ma_any: MaDayParams
+  more_bullish_candles: CandleRangeParams
+  more_bearish_candles: CandleRangeParams
   consecutive_bullish: { start: number; days: number }
   consecutive_rising: { start: number; days: number }
   change_pct: { n: number; min: number; max: number }
@@ -98,17 +144,21 @@ export interface ConditionParamsMap {
   // ---- 第二批
   consecutive_falling: { start: number; days: number }
   consecutive_shrinking: RatioConsecutiveParams
-  new_high: { m: number }
-  new_low: { m: number }
-  ma_golden_cross: { fast: MaPeriod; slow: MaPeriod }
-  ma_dead_cross: { fast: MaPeriod; slow: MaPeriod }
+  new_high: { m: number; n: number }
+  new_low: { m: number; n: number }
+  ma_golden_cross: MaCrossDayParams
+  ma_dead_cross: MaCrossDayParams
+  /** 均线金叉 · 范围内任意一天 */
+  ma_golden_cross_any: MaCrossDayParams
+  /** 均线死叉 · 范围内任意一天 */
+  ma_dead_cross_any: MaCrossDayParams
   stock_match: { text: string }
   /** 股票代码（6 位）完整匹配；与「股票名称」是两个独立条件 */
   stock_code: { text: string }
   /** 股票名称完整匹配（可不带 ST / *ST 前缀） */
   stock_name: { text: string }
-  /** 总市值阈值（亿元）：> / ≥ / < / ≤，比较窗口末日那根 */
-  market_cap: { op: MarketCapOp; value: number }
+  /** 总市值阈值（亿元）：> / ≥ / < / ≤，比较倒数第 n 日那根 */
+  market_cap: { op: MarketCapOp; value: number; n: number }
   /** 第 N 日总市值 */
   market_cap_single: MetricSingleParams
   /** 范围内每一天总市值 */
@@ -301,6 +351,33 @@ export const SCREEN_TEXTS_ZH = {
   daysLabel: '连续天数',
   nLabel: 'N（倒数第几个交易日）',
   nShortLabel: 'N',
+  // ---- 按日定位（2026-10-23 第 6 条：所有条件都能指定倒数第 N 日）
+  dayLabel: '倒数第几个交易日',
+  dayShortLabel: '倒数第 N 日',
+  spanStartLabel: '起点 N',
+  spanEndLabel: '终点 M',
+  candleSpanTitle: '统计范围（倒数第 N ～ M 日）',
+  dayInvalid: (max: number) => `倒数第几个交易日需为 1 至 ${max} 的整数`,
+  spanStartInvalid: (max: number) => `起点 N 需为 1 至 ${max} 的整数`,
+  spanEndInvalid: (n: number, max: number) => `终点 M 需为 ${n} 至 ${max} 的整数（M ≥ N）`,
+  candleEndHint: '终点 M 留空 = 统计窗口的最后一天（默认）',
+  /** 「倒数第 n 日」/「倒数第 m～n 日」——摘要里统一用这两个 */
+  slotDay: (n: number) => `倒数第${n}日`,
+  slotSpan: (n: number, m: number) => (n === m ? `倒数第${n}日` : `倒数第${m}～${n}日`),
+  summaryMaOrderAt: (periods: string, suffix: string) => `均线多头排列(${periods})${suffix}`,
+  summaryMaBearAt: (periods: string, suffix: string) => `均线空头排列(${periods})${suffix}`,
+  summaryMaOrderSpan: (periods: string, slot: string) => `${slot} 每天均线多头排列(${periods})`,
+  summaryMaBearSpan: (periods: string, slot: string) => `${slot} 每天均线空头排列(${periods})`,
+  summaryMaOrderAny: (periods: string, slot: string) => `${slot} 任意一天均线多头排列(${periods})`,
+  summaryMaBearAny: (periods: string, slot: string) => `${slot} 任意一天均线空头排列(${periods})`,
+  summaryAboveAt: (period: number, suffix: string) => `收盘价站上 MA${period}${suffix}`,
+  summaryAboveSpan: (period: number, slot: string) => `${slot} 每天收盘价站上 MA${period}`,
+  summaryAboveAny: (period: number, slot: string) => `${slot} 任意一天收盘价站上 MA${period}`,
+  summaryCrossAt: (fast: number, slow: number, label: string, slot: string) => `${label} MA${fast}/MA${slow} · ${slot}`,
+  summaryCrossAny: (fast: number, slow: number, label: string, slot: string) =>
+    `${slot} 任意一天${label}：MA${fast} / MA${slow}`,
+  summaryCandleSpan: (slot: string, label: string) => `${slot} ${label}`,
+  summaryCandleWindow: (label: string) => `${label}（统计窗口内）`,
   changePctHint: (max: number) => `N = 倒数第几个交易日（1 – ${max}），下限/上限为百分比、开区间`,
   consecutiveHint: (start: number, days: number) =>
     `自倒数第 ${start} 个交易日起连续 ${days} 个交易日都收阳（收盘价 > 开盘价）`,
@@ -330,6 +407,41 @@ export const SCREEN_TEXTS_ZH = {
   consecutiveRisingHint: (start: number, days: number) =>
     `自倒数第 ${start} 个交易日起连续 ${days} 个交易日都上涨（收盘价 > 前收）`,
   summaryPeriodsJoin: '/',
+
+  // ---- 均线 / 阴阳线的按日形态（2026-10-23 第 3、4、5 条）
+  labelMaOrder: '均线多头排列',
+  labelMaBear: '均线空头排列',
+  labelAboveMa: '股价站上均线',
+  labelMoreBullish: '阳线多于阴线',
+  labelMoreBearish: '阴线多于阳线',
+  modeAll: '范围内每日',
+  modeAny: '范围内任意一天',
+  descMaOrder: (mode: 'day' | 'all' | 'any') =>
+    mode === 'day'
+      ? '倒数第 N 个交易日：短期均线在上、长期均线在下（MA5 > MA10 > MA20 > …）'
+      : mode === 'all'
+        ? '倒数第 N ～ M 个交易日的**每一天**都满足「短期均线在上、长期均线在下」'
+        : '倒数第 N ～ M 个交易日里**至少有一天**满足「短期均线在上、长期均线在下」',
+  descMaBear: (mode: 'day' | 'all' | 'any') =>
+    mode === 'day'
+      ? '倒数第 N 个交易日：短期均线在下、长期均线在上（MA5 < MA10 < MA20 < …）'
+      : mode === 'all'
+        ? '倒数第 N ～ M 个交易日的**每一天**都满足「短期均线在下、长期均线在上」'
+        : '倒数第 N ～ M 个交易日里**至少有一天**满足「短期均线在下、长期均线在上」',
+  descAboveMa: (mode: 'day' | 'all' | 'any') =>
+    mode === 'day'
+      ? '倒数第 N 个交易日的收盘价（复权）高于指定周期的均线'
+      : mode === 'all'
+        ? '倒数第 N ～ M 个交易日的每一天，收盘价（复权）都高于指定周期的均线'
+        : '倒数第 N ～ M 个交易日里，至少有一天的收盘价（复权）高于指定周期的均线',
+  descCrossDaySuffix: '；只看倒数第 N 个交易日当天',
+  descCrossAnySuffix: '；倒数第 N ～ M 个交易日里任意一天发生就算命中',
+  descMoreBullish:
+    '在指定的 D[n..m] 窗口内，收阳的天数多于收阴的天数（平盘不计）。' +
+    '终点 M 留空 = 整个统计窗口；N 默认 1（最近一个交易日）',
+  descMoreBearish:
+    '在指定的 D[n..m] 窗口内，收阴的天数多于收阳的天数（平盘不计）。' +
+    '终点 M 留空 = 整个统计窗口；N 默认 1（最近一个交易日）',
 }
 
 /** 参数表单的形态（新增量价条件按这个渲染，不再按条件名写分支）。 */
@@ -365,6 +477,15 @@ export interface ConditionDef<K extends ConditionName> {
   validate: (p: ConditionParamsMap[K], tradingDays: number) => string[]
   /** 缺省时按条件名走老的专用表单（均线周期 / 连续阳线 / 涨跌幅） */
   editor?: ParamEditorKind
+  /**
+   * 按日选择器（2026-10-23 第 6 条：所有条件都能指定「倒数第 N 日」）。
+   *
+   * - ``single``：一个 N 输入框（默认 1 = 窗口末日，与以前完全一致）；
+   * - ``range``：N + M 两个输入框（范围内每日 / 任意一天 / 阴阳线统计区间）。
+   *
+   * 表单按这个字段统一渲染，不再为每个条件各写一份 N 输入框。
+   */
+  daySelector?: 'single' | 'range' | 'range-window'
   /**
    * 不在「+ 条件」的选择列表里露出来（但注册表里保留）。
    *
@@ -808,7 +929,7 @@ function metricValidate(
   return issues
 }
 
-/** 第二批：创 M 日新高 / 新低。 */
+/** 第二批：创 M 日新高 / 新低（可按倒数第 N 日判断）。 */
 function lookbackDef<K extends ConditionName>(name: K, high: boolean): ConditionDef<K> {
   const M = METRIC_TEXTS_ZH
   const label = high ? M.labelNewHigh : M.labelNewLow
@@ -817,37 +938,64 @@ function lookbackDef<K extends ConditionName>(name: K, high: boolean): Condition
     label,
     category: 'K 线',
     description: high ? M.descNewHigh : M.descNewLow,
-    defaults: { m: 20 } as ConditionParamsMap[K],
-    summary: p => M.summaryLookback((p as { m: number }).m, label),
-    requiredBars: p => Math.max(1, (p as { m: number }).m) + 1,
+    defaults: { m: 20, n: 1 } as ConditionParamsMap[K],
+    summary: p => {
+      const params = p as { m: number; n?: number }
+      return `${M.summaryLookback(params.m, label)}${daySuffix(daySlot(params))}`
+    },
+    requiredBars: p => {
+      const params = p as { m: number; n?: number }
+      return daySlot(params) - 1 + Math.max(1, params.m) + 1
+    },
     validate: (p, tradingDays) => {
-      const m = Number((p as { m: number }).m)
+      const params = p as { m: number; n?: number }
+      const m = Number(params.m)
       const limit = Math.min(Math.max(1, tradingDays || 1), 250)
-      return Number.isInteger(m) && m >= 1 && m <= limit ? [] : [M.lookbackInvalid(limit)]
+      if (!Number.isInteger(m) || m < 1 || m > limit) return [M.lookbackInvalid(limit)]
+      return checkDay(rawDay(params), tradingDays)
     },
     editor: 'lookback',
+    daySelector: 'single',
   }
 }
 
-/** 第二批：均线金叉 / 死叉。 */
-function crossDef<K extends ConditionName>(name: K, upward: boolean): ConditionDef<K> {
+/**
+ * 均线金叉 / 死叉。
+ *
+ * ``mode='day'`` 看倒数第 N 日当天；``mode='any'`` 看 D[n..m] 里任意一天
+ * （用户第 4 条：金叉 / 死叉只要「倒数第 N 日」和「范围内任意一天」两种）。
+ */
+function crossDef<K extends ConditionName>(name: K, upward: boolean, mode: MaDayMode = 'day'): ConditionDef<K> {
   const M = METRIC_TEXTS_ZH
   const label = upward ? M.labelCrossUp : M.labelCrossDown
   return {
     name,
-    label,
+    label: mode === 'day' ? label : `${label} · ${T.modeAny}`,
     category: '均线',
-    description: upward ? M.descCrossUp : M.descCrossDown,
-    defaults: { fast: 5, slow: 10 } as ConditionParamsMap[K],
-    summary: p => M.summaryCross((p as { fast: number }).fast, (p as { slow: number }).slow, label),
-    requiredBars: p => Math.max(1, (p as { slow: number }).slow) + 1,
-    validate: p => {
-      const { fast, slow } = p as { fast: MaPeriod; slow: MaPeriod }
+    description: (upward ? M.descCrossUp : M.descCrossDown) + (mode === 'any' ? T.descCrossAnySuffix : T.descCrossDaySuffix),
+    defaults: { fast: 5, slow: 10, n: 1, m: mode === 'day' ? 1 : 5 } as ConditionParamsMap[K],
+    summary: p => {
+      const params = p as MaCrossDayParams
+      return mode === 'day'
+        ? M.summaryCross(params.fast, params.slow, label) + daySuffix(daySlot(params))
+        : T.summaryCrossAny(params.fast, params.slow, label, T.slotSpan(daySlot(params), dayEnd(params, 1)))
+    },
+    requiredBars: p => {
+      const params = p as MaCrossDayParams
+      const need = Math.max(1, params.slow) + 1
+      return mode === 'day' ? daySlot(params) - 1 + need : dayEnd(params, 1) - 1 + need
+    },
+    validate: (p, tradingDays) => {
+      const { fast, slow } = p as MaCrossDayParams
+      const params = p as MaCrossDayParams
       if (!MA_PERIODS.includes(fast) || !MA_PERIODS.includes(slow)) return [T.periodInvalid]
       if (fast >= slow) return [M.crossInvalid]
-      return []
+      return mode === 'day'
+        ? checkDay(rawDay(params), tradingDays)
+        : checkSpan(rawDay(params), rawEnd(params), tradingDays)
     },
     editor: 'ma-cross',
+    daySelector: mode === 'day' ? 'single' : 'range',
   }
 }
 
@@ -902,7 +1050,7 @@ function stockNameDef(): ConditionDef<'stock_name'> {
   }
 }
 
-/** 总市值阈值（> / ≥ / < / ≤，单位亿元）。 */
+/** 总市值阈值（> / ≥ / < / ≤，单位亿元），可按倒数第 N 日比较。 */
 function marketCapDef(): ConditionDef<'market_cap'> {
   const M = METRIC_TEXTS_ZH
   return {
@@ -910,7 +1058,7 @@ function marketCapDef(): ConditionDef<'market_cap'> {
     label: M.labelMarketCap,
     category: '总市值',
     description: M.descMarketCap,
-    defaults: { op: 'gte', value: 100 },
+    defaults: { op: 'gte', value: 100, n: 1 },
     // 摘要用符号（大于/大于等于写进摘要太长，一眼看不出比较方向）
     summary: p =>
       M.summaryMarketCap(
@@ -922,17 +1070,18 @@ function marketCapDef(): ConditionDef<'market_cap'> {
               ? M.opLteSymbol
               : M.opGteSymbol,
         p.value,
-      ),
-    // 只用窗口末日那一根
-    requiredBars: () => 1,
-    validate: p => {
+      ) + daySuffix(daySlot(p)),
+    // 倒数第 N 日那一根
+    requiredBars: p => daySlot(p),
+    validate: (p, tradingDays) => {
       const value = Number(p.value)
       if (!Number.isFinite(value) || value < 0 || value > MAX_MARKET_CAP_YI) {
         return [M.marketCapInvalid(MAX_MARKET_CAP_YI)]
       }
-      return []
+      return checkDay(rawDay(p), tradingDays)
     },
     editor: 'market-cap-op',
+    daySelector: 'single',
   }
 }
 
@@ -961,57 +1110,187 @@ function fallingDef(): ConditionDef<'consecutive_falling'> {
   }
 }
 
+// ---------------------------------------------------------------- 按日定位的工具
+
+/** 倒数第 n 日（缺失 / 非法按 1：老预设里没有这个字段）。 */
+export function daySlot(params: { n?: number }): number {
+  const value = Number(params.n)
+  return Number.isFinite(value) && value >= 1 ? Math.trunc(value) : 1
+}
+
+/**
+ * 区间终点 M：``0`` / 空 = 整个统计窗口（'' 哨兵，见 ``CandleRangeParams``）。
+ * 摘要与校验都走它，保证界面上写的和提交的一致。
+ */
+export function dayEnd(params: { m?: number }, tradingDays: number): number {
+  const value = Number(params.m)
+  if (!Number.isFinite(value) || value <= 0) return Math.max(1, Math.trunc(tradingDays || 1))
+  return Math.trunc(value)
+}
+
+function checkDay(n: number, tradingDays: number): string[] {
+  const limit = Math.max(1, Math.trunc(tradingDays || 1))
+  return Number.isInteger(n) && n >= 1 && n <= limit ? [] : [T.dayInvalid(limit)]
+}
+
+/**
+ * 校验用的原始 N：**缺失**按 1（老预设没有这个字段），但显式写的非法值
+ * （0 / 负数 / 小数 / 超窗口）原样进入校验 —— 不能被 ``daySlot`` 悄悄夹回 1。
+ */
+function rawDay(params: { n?: number }): number {
+  const value = params.n
+  if (value === undefined || value === null) return 1
+  return Number(value)
+}
+
+/** 校验用的原始 M（同上；0 / 缺失都交给调用方决定含义）。 */
+function rawEnd(params: { m?: number }): number {
+  const value = params.m
+  if (value === undefined || value === null) return 1
+  return Number(value)
+}
+
+/**
+ * 单日条件的摘要后缀：``n = 1``（默认）不写 —— 「没指定 = 倒数第 1 日」，
+ * 每条摘要都拖一句「· 倒数第1日」只是噪音；指定了才写出来。
+ */
+function daySuffix(n: number): string {
+  return n === 1 ? '' : ` · ${T.slotDay(n)}`
+}
+
+function checkSpan(n: number, m: number, tradingDays: number): string[] {
+  const limit = Math.max(1, Math.trunc(tradingDays || 1))
+  const issues: string[] = []
+  if (!Number.isInteger(n) || n < 1 || n > limit) issues.push(T.spanStartInvalid(limit))
+  if (!Number.isInteger(m) || m < n || m > limit) issues.push(T.spanEndInvalid(n, limit))
+  else if (issues.length === 0 && m - n + 1 > MAX_VALUE_SPAN) issues.push(METRIC_TEXTS_ZH.spanTooWide(MAX_VALUE_SPAN))
+  return issues
+}
+
+type MaDayMode = 'day' | 'all' | 'any'
+
+/**
+ * 均线排列的三种按日形态（用户第 3 条）：倒数第 N 日 / 范围内每日 / 范围内任意一天。
+ *
+ * 三种形态共用「周期多选」这一个参数块，差别只在按日定位与摘要措辞 ——
+ * 所以用工厂生成，避免三段几乎一样的代码各自漂移。
+ */
+function maOrderDef<K extends ConditionName>(name: K, mode: MaDayMode, bullish: boolean): ConditionDef<K> {
+  const M = T
+  const periodText = (p: MaOrderDayParams) =>
+    [...p.periods].sort((a, b) => a - b).join(T.summaryPeriodsJoin)
+  const label = bullish ? M.labelMaOrder : M.labelMaBear
+  return {
+    name,
+    label: mode === 'day' ? label : `${label} · ${mode === 'all' ? M.modeAll : M.modeAny}`,
+    category: '均线',
+    description: bullish ? M.descMaOrder(mode) : M.descMaBear(mode),
+    defaults: { periods: [5, 10, 20, 60], n: 1, m: mode === 'day' ? 1 : 5 } as ConditionParamsMap[K],
+    summary: p => {
+      const params = p as MaOrderDayParams
+      if (mode === 'day') {
+        return bullish
+          ? M.summaryMaOrderAt(periodText(params), daySuffix(daySlot(params)))
+          : M.summaryMaBearAt(periodText(params), daySuffix(daySlot(params)))
+      }
+      const slot = M.slotSpan(daySlot(params), dayEnd(params, 1))
+      if (mode === 'all')
+        return bullish ? M.summaryMaOrderSpan(periodText(params), slot) : M.summaryMaBearSpan(periodText(params), slot)
+      return bullish ? M.summaryMaOrderAny(periodText(params), slot) : M.summaryMaBearAny(periodText(params), slot)
+    },
+    requiredBars: p => {
+      const params = p as MaOrderDayParams
+      const need = Math.max(...params.periods, 1)
+      return mode === 'day' ? daySlot(params) - 1 + need : dayEnd(params, 1) - 1 + need
+    },
+    validate: (p, tradingDays) => {
+      const params = p as MaOrderDayParams
+      const issues = validateMaPeriods(params.periods)
+      return issues.length
+        ? issues
+        : mode === 'day'
+          ? checkDay(rawDay(params), tradingDays)
+          : checkSpan(rawDay(params), rawEnd(params), tradingDays)
+    },
+    daySelector: mode === 'day' ? 'single' : 'range',
+  }
+}
+
+/** 股价站上均线的三种按日形态。 */
+function maAboveDef<K extends ConditionName>(name: K, mode: MaDayMode): ConditionDef<K> {
+  const M = T
+  return {
+    name,
+    label: mode === 'day' ? M.labelAboveMa : `${M.labelAboveMa} · ${mode === 'all' ? M.modeAll : M.modeAny}`,
+    category: '均线',
+    description: M.descAboveMa(mode),
+    defaults: { period: 5, n: 1, m: mode === 'day' ? 1 : 5 } as ConditionParamsMap[K],
+    summary: p => {
+      const params = p as MaDayParams
+      if (mode === 'day') return M.summaryAboveAt(params.period, daySuffix(daySlot(params)))
+      const slot = M.slotSpan(daySlot(params), dayEnd(params, 1))
+      return mode === 'all' ? M.summaryAboveSpan(params.period, slot) : M.summaryAboveAny(params.period, slot)
+    },
+    requiredBars: p => {
+      const params = p as MaDayParams
+      return mode === 'day'
+        ? daySlot(params) - 1 + params.period
+        : dayEnd(params, 1) - 1 + params.period
+    },
+    validate: (p, tradingDays) => {
+      const params = p as MaDayParams
+      if (!MA_PERIODS.includes(params.period)) return [T.periodInvalid]
+      return mode === 'day'
+        ? checkDay(rawDay(params), tradingDays)
+        : checkSpan(rawDay(params), rawEnd(params), tradingDays)
+    },
+    daySelector: mode === 'day' ? 'single' : 'range',
+  }
+}
+
+/** 阴阳线计数：D[n..m]，M 留空 = 整个统计窗口。 */
+function candleDef<K extends ConditionName>(name: K, bullish: boolean): ConditionDef<K> {
+  const M = T
+  const label = bullish ? M.labelMoreBullish : M.labelMoreBearish
+  return {
+    name,
+    label,
+    category: 'K 线',
+    description: bullish ? M.descMoreBullish : M.descMoreBearish,
+    defaults: { n: 1, m: 0 } as ConditionParamsMap[K],
+    summary: p => {
+      const params = p as CandleRangeParams
+      return Number(params.m) > 0
+        ? M.summaryCandleSpan(M.slotSpan(daySlot(params), dayEnd(params, 1)), label)
+        : M.summaryCandleWindow(label)
+    },
+    requiredBars: p => {
+      const params = p as CandleRangeParams
+      return Number(params.m) > 0 ? dayEnd(params, 1) : 0
+    },
+    validate: (p, tradingDays) => {
+      const params = p as CandleRangeParams
+      // M 留空 = 整个统计窗口（最多 250 天），不能再套 30 根跨度上限
+      return Number(params.m) > 0
+        ? checkSpan(rawDay(params), rawEnd(params), tradingDays)
+        : checkDay(rawDay(params), tradingDays)
+    },
+    daySelector: 'range-window',
+  }
+}
+
 export const CONDITION_DEFS_ZH: ConditionDefMap = {
-  ma_bullish: {
-    name: 'ma_bullish',
-    label: '均线多头排列',
-    category: '均线',
-    description: '短期均线在上、长期均线在下（MA5 > MA10 > MA20 > …）',
-    defaults: { periods: [5, 10, 20, 60] },
-    summary: p => T.summaryMaOrder([...p.periods].sort((a, b) => a - b).join(T.summaryPeriodsJoin)),
-    requiredBars: p => Math.max(...p.periods, 1),
-    validate: p => validateMaPeriods(p.periods),
-  },
-  ma_bearish: {
-    name: 'ma_bearish',
-    label: '均线空头排列',
-    category: '均线',
-    description: '短期均线在下、长期均线在上（MA5 < MA10 < MA20 < …）',
-    defaults: { periods: [5, 10, 20, 60] },
-    summary: p => T.summaryMaBear([...p.periods].sort((a, b) => a - b).join(T.summaryPeriodsJoin)),
-    requiredBars: p => Math.max(...p.periods, 1),
-    validate: p => validateMaPeriods(p.periods),
-  },
-  close_above_ma: {
-    name: 'close_above_ma',
-    label: '股价站上均线',
-    category: '均线',
-    description: '最新收盘价（复权）高于指定周期的均线',
-    defaults: { period: 5 },
-    summary: p => T.summaryAboveMa(p.period),
-    requiredBars: p => p.period,
-    validate: p => (MA_PERIODS.includes(p.period) ? [] : [T.periodInvalid]),
-  },
-  more_bullish_candles: {
-    name: 'more_bullish_candles',
-    label: '阳线多于阴线',
-    category: 'K 线',
-    description: '统计窗口内收阳的天数多于收阴的天数（平盘不计）',
-    defaults: {},
-    summary: () => '阳线多于阴线（统计窗口内）',
-    requiredBars: () => 0,
-    validate: () => [],
-  },
-  more_bearish_candles: {
-    name: 'more_bearish_candles',
-    label: '阴线多于阳线',
-    category: 'K 线',
-    description: '统计窗口内收阴的天数多于收阳的天数（平盘不计）',
-    defaults: {},
-    summary: () => '阴线多于阳线（统计窗口内）',
-    requiredBars: () => 0,
-    validate: () => [],
-  },
+  ma_bullish: maOrderDef('ma_bullish', 'day', true),
+  ma_bullish_all: maOrderDef('ma_bullish_all', 'all', true),
+  ma_bullish_any: maOrderDef('ma_bullish_any', 'any', true),
+  ma_bearish: maOrderDef('ma_bearish', 'day', false),
+  ma_bearish_all: maOrderDef('ma_bearish_all', 'all', false),
+  ma_bearish_any: maOrderDef('ma_bearish_any', 'any', false),
+  close_above_ma: maAboveDef('close_above_ma', 'day'),
+  close_above_ma_all: maAboveDef('close_above_ma_all', 'all'),
+  close_above_ma_any: maAboveDef('close_above_ma_any', 'any'),
+  more_bullish_candles: candleDef('more_bullish_candles', true),
+  more_bearish_candles: candleDef('more_bearish_candles', false),
   consecutive_bullish: {
     name: 'consecutive_bullish',
     label: '连续阳线（收盘 > 开盘）',
@@ -1112,6 +1391,8 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
   new_low: lookbackDef('new_low', false),
   ma_golden_cross: crossDef('ma_golden_cross', true),
   ma_dead_cross: crossDef('ma_dead_cross', false),
+  ma_golden_cross_any: crossDef('ma_golden_cross_any', true, 'any'),
+  ma_dead_cross_any: crossDef('ma_dead_cross_any', false, 'any'),
   stock_match: stockMatchDef(),
   stock_code: stockCodeDef(),
   stock_name: stockNameDef(),
@@ -1287,7 +1568,7 @@ export function migrateLegacyMarketCap(request: ScreenRequest): GroupNode {
       type: 'condition',
       id: newNodeId(),
       name: 'market_cap',
-      params: { op: 'gt', value: min },
+      params: { op: 'gt', value: min, n: 1 },
     })
   }
   if (max < MAX_MARKET_CAP_YI) {
@@ -1295,7 +1576,7 @@ export function migrateLegacyMarketCap(request: ScreenRequest): GroupNode {
       type: 'condition',
       id: newNodeId(),
       name: 'market_cap',
-      params: { op: 'lt', value: max },
+      params: { op: 'lt', value: max, n: 1 },
     })
   }
   if (children.length === 0) return request.rule
