@@ -44,6 +44,11 @@ function fmt(value: number | null | undefined, digits = 1): string {
   return value.toFixed(digits)
 }
 
+function pct(value: number | null | undefined, digits = 1): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—'
+  return `${value.toFixed(digits)}%`
+}
+
 function signed(value: number | null | undefined, digits = 1): string {
   if (value === null || value === undefined) return '—'
   return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`
@@ -214,7 +219,7 @@ export function AnalysisStockTable({
                 <td className="px-2 py-1 text-right tabular-nums">{row.n}</td>
                 {horizonKeys.map(horizon => (
                   <td key={horizon} className="px-2 py-1 text-right tabular-nums">
-                    {fmt(row.win[String(horizon)])}%
+                    {pct(row.win[String(horizon)])}
                   </td>
                 ))}
                 <td className="px-2 py-1 text-right tabular-nums" style={{ color: excessColor(row.excess['10']) }}>
