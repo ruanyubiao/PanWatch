@@ -1,0 +1,261 @@
+/**
+ * 数据分析接口（条件在历史上的准确率）。
+ *
+ * 后端：``/api/stocks/analysis/*``（``src/modules/market/api/fork_analysis.py``）。
+ * 一个任务 = 一个已保存条件 × 一段日期，逐日跑条件选股，再算 d0 之后 30 个交易日
+ * 的涨幅，最后给「这个条件有没有用」的统计。
+ */
+import { fetchAPI, getToken } from '@panwatch/api'
+import type { ScreenMarket } from '@/lib/screen-rule'
+
+export const ANALYSIS_POLL_MS = 2000
+
+export type AnalysisStatus = 'pending' | 'running' | 'interrupted' | 'done' | 'stopped' | 'failed'
+
+export interface AnalysisRunMeta {
+  run_id: string
+  preset: string
+  created_at: string
+  status: AnalysisStatus
+  start_date: string
+  end_date: string
+  markets: ScreenMarket[]
+  include_st: boolean
+  sample_size: number
+  trading_days: number
+  days_total: number
+  days_done: number
+  hits: number
+  control: number
+  failures: number
+  error?: string | null
+  finished_at?: string | null
+  elapsed_s?: number
+  running?: boolean
+  excel_ready?: boolean
+  counts?: { signals: number; hits: number; control: number; days: number }
+  recent_days?: { d0: string; hits: number; control: number; elapsed_ms: number }[]
+  progress?: {
+    days_total: number
+    days_done: number
+    hits: number
+    control: number
+    avg_ms: number
+    elapsed_s: number
+    eta_s: number | null
+    current_d0: string | null
+    recent_days?: { d0: string; hits: number; control: number; elapsed_ms: number }[]
+  }
+}
+
+export interface AnalysisHorizonMetrics {
+  horizon: number
+  n: number
+  wins: number
+  win_rate: number | null
+  ci_low: number | null
+  ci_high: number | null
+  touch_rate: number | null
+  avg_return: number | null
+  avg_win: number | null
+  avg_loss: number | null
+  payoff: number | null
+}
+
+export interface AnalysisSummaryRow {
+  horizon: number
+  signal: AnalysisHorizonMetrics
+  control: AnalysisHorizonMetrics
+  excess_pp: number | null
+  z: number
+}
+
+export interface AnalysisVerdict {
+  usable: boolean
+  reason: 'usable' | 'not_significant' | 'no_edge' | 'insufficient'
+  best_horizon: number | null
+  best_excess_pp: number | null
+  best_win_rate?: number | null
+  baseline_win_rate?: number | null
+  best_avg_return?: number | null
+  best_payoff?: number | null
+  sample?: number
+  z?: number
+  significant?: boolean
+}
+
+export interface AnalysisStockRow {
+  code: string
+  name: string
+  board: string
+  n: number
+  win: Record<string, number | null>
+  avg: Record<string, number | null>
+  excess: Record<string, number | null>
+  sufficient: boolean
+}
+
+export interface AnalysisBreakdownRow {
+  key: string
+  signal: Record<string, AnalysisHorizonMetrics> | null
+  control: Record<string, AnalysisHorizonMetrics> | null
+  excess: Record<string, number | null>
+}
+
+export interface AnalysisReport {
+  run: AnalysisRunMeta
+  counts: { signals: number; hits: number; control: number; days: number }
+  summary: AnalysisSummaryRow[]
+  verdict: AnalysisVerdict
+  by_board: AnalysisBreakdownRow[]
+  by_year: AnalysisBreakdownRow[]
+  histograms: {
+    edges: number[]
+    series: { horizon: number; counts: number[]; below: number; above: number }[]
+  }
+  density: { d0: string; hits: number; control: number }[]
+  horizons: number[]
+}
+
+export interface AnalysisPreview {
+  days: number
+  first_day: string
+  last_day: string
+  latest_trade_date: string
+  trading_days: number
+  markets: ScreenMarket[]
+  include_st: boolean
+  sample_size: number
+}
+
+export interface AnalysisCreateBody {
+  preset: string
+  start_date: string
+  end_date?: string | null
+  markets?: ScreenMarket[]
+  include_st?: boolean
+  sample_size?: number
+}
+
+export function previewAnalysis(body: AnalysisCreateBody): Promise<AnalysisPreview> {
+  return fetchAPI<AnalysisPreview>('/stocks/analysis/preview', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    timeoutMs: 20000,
+  })
+}
+
+export async function createAnalysis(body: AnalysisCreateBody): Promise<AnalysisRunMeta> {
+  const data = await fetchAPI<{ item: AnalysisRunMeta }>('/stocks/analysis/runs', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    timeoutMs: 30000,
+  })
+  return data.item
+}
+
+export async function listAnalysisRuns(preset?: string): Promise<AnalysisRunMeta[]> {
+  const query = preset ? `?preset=${encodeURIComponent(preset)}` : ''
+  const data = await fetchAPI<{ items: AnalysisRunMeta[] }>(`/stocks/analysis/runs${query}`)
+  return data?.items ?? []
+}
+
+export async function getAnalysisRun(runId: string): Promise<AnalysisRunMeta> {
+  const data = await fetchAPI<{ item: AnalysisRunMeta }>(`/stocks/analysis/runs/${runId}`)
+  return data.item
+}
+
+export async function stopAnalysisRun(runId: string): Promise<AnalysisRunMeta> {
+  const data = await fetchAPI<{ item: AnalysisRunMeta }>(`/stocks/analysis/runs/${runId}/stop`, {
+    method: 'POST',
+  })
+  return data.item
+}
+
+export async function resumeAnalysisRun(runId: string): Promise<AnalysisRunMeta> {
+  const data = await fetchAPI<{ item: AnalysisRunMeta }>(`/stocks/analysis/runs/${runId}/resume`, {
+    method: 'POST',
+  })
+  return data.item
+}
+
+export function getAnalysisReport(runId: string): Promise<AnalysisReport> {
+  return fetchAPI<AnalysisReport>(`/stocks/analysis/runs/${runId}/report`, { timeoutMs: 30000 })
+}
+
+export interface StockQuery {
+  offset?: number
+  limit?: number
+  sort?: string
+  order?: 'asc' | 'desc'
+  board?: string
+  minSamples?: number
+  q?: string
+  sufficientOnly?: boolean
+}
+
+export async function getAnalysisStocks(
+  runId: string,
+  query: StockQuery = {},
+): Promise<{ total: number; items: AnalysisStockRow[] }> {
+  const params = new URLSearchParams()
+  params.set('offset', String(query.offset ?? 0))
+  params.set('limit', String(query.limit ?? 50))
+  params.set('sort', query.sort ?? 'win10')
+  params.set('order', query.order ?? 'desc')
+  if (query.board) params.set('board', query.board)
+  if (query.minSamples) params.set('min_samples', String(query.minSamples))
+  if (query.q) params.set('q', query.q)
+  if (query.sufficientOnly) params.set('sufficient_only', 'true')
+  const data = await fetchAPI<{ total: number; items: AnalysisStockRow[] }>(
+    `/stocks/analysis/runs/${runId}/stocks?${params.toString()}`,
+  )
+  return { total: data.total ?? 0, items: data.items ?? [] }
+}
+
+export interface AnalysisSignalRow {
+  d0: string
+  d0_close: number | null
+  avail: number
+  returns: (number | null)[]
+}
+
+export function getAnalysisSignals(runId: string, code: string): Promise<AnalysisSignalRow[]> {
+  return fetchAPI<{ items: AnalysisSignalRow[] }>(
+    `/stocks/analysis/runs/${runId}/signals?code=${encodeURIComponent(code)}`,
+  ).then(data => data.items ?? [])
+}
+
+/**
+ * 下载 Excel。不能用 ``fetchAPI``（它按 JSON 解析），所以自己带 Bearer 取 blob。
+ * 鉴权走应用登录的 token，不靠 cookie。
+ */
+export async function downloadAnalysisExcel(runId: string, filename: string): Promise<void> {
+  const token = getToken()
+  const response = await fetch(`/api/stocks/analysis/runs/${runId}/excel`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  })
+  if (!response.ok) {
+    throw new Error(`下载失败（HTTP ${response.status}）`)
+  }
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+export function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '—'
+  const total = Math.max(0, Math.round(seconds))
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const rest = total % 60
+  if (hours > 0) return `${hours} 小时 ${minutes} 分`
+  if (minutes > 0) return `${minutes} 分 ${rest} 秒`
+  return `${rest} 秒`
+}

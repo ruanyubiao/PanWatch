@@ -29,6 +29,7 @@ from src.modules.assistant.export_jobs import context_export_runner
 from src.modules.automation.api import agents, suggestions, templates
 from src.modules.market.api import (
     discovery,
+    fork_analysis,
     fork_market,
     fork_screen,
     klines,
@@ -84,6 +85,11 @@ app.include_router(
 # 路径 /api/stocks/screen；业务逻辑在 src/modules/market/fork_screen/。
 app.include_router(
     fork_screen.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
+)
+# fork: 数据分析（条件在历史上的准确率）。逐日复用 run_screen，结果落
+# data/analysis_runs/<条件>/<任务id>/，路径 /api/stocks/analysis/*。
+app.include_router(
+    fork_analysis.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
 )
 app.include_router(
     quotes.router, prefix="/api/quotes", tags=["quotes"], dependencies=protected

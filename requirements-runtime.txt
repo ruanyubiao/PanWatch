@@ -49,6 +49,10 @@ tradingagents @ git+https://github.com/TauricResearch/TradingAgents.git@v0.5.0
 pymysql>=1.1
 cryptography>=41
 
+# fork: 数据分析的 Excel 导出(明细.xlsx)。惰性 import,缺包时该接口报 404/500
+# 并提示安装,不影响其他功能。
+openpyxl>=3.1
+
 # OpenTelemetry 导出为「可选依赖组」,不在主依赖内(默认关闭,未装即 no-op)。
 # 需要把 trace 导出到 Jaeger/Tempo/Langfuse 时:pip install -r requirements-otel.txt
 # 详见 requirements-otel.txt 与 README「OTel 导出」。
