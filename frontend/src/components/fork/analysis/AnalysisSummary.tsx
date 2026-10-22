@@ -47,6 +47,12 @@ function fmt(value: number | null | undefined, digits = 1): string {
   return value.toFixed(digits)
 }
 
+/** 百分数：值为空时只留一个破折号，不写成「—%」。 */
+function pct(value: number | null | undefined, digits = 1): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return '—'
+  return `${value.toFixed(digits)}%`
+}
+
 function signed(value: number | null | undefined, digits = 1): string {
   if (value === null || value === undefined) return '—'
   return `${value > 0 ? '+' : ''}${value.toFixed(digits)}`
@@ -123,12 +129,12 @@ export function AnalysisHorizonTable({ report }: { report: AnalysisReport }) {
               }`}
             >
               <td className="px-2 py-1">{T.days(row.horizon)}</td>
-              <td className="px-2 py-1 text-right tabular-nums">{fmt(row.signal.win_rate)}%</td>
-              <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">{fmt(row.control.win_rate)}%</td>
+              <td className="px-2 py-1 text-right tabular-nums">{pct(row.signal.win_rate)}</td>
+              <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">{pct(row.control.win_rate)}</td>
               <td className="px-2 py-1 text-right tabular-nums" style={{ color: excessColor(row.excess_pp) }}>
                 {T.excessValue(signed(row.excess_pp))}
               </td>
-              <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">{fmt(row.signal.touch_rate)}%</td>
+              <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">{pct(row.signal.touch_rate)}</td>
               <td className="px-2 py-1 text-right tabular-nums">{signed(row.signal.avg_return, 2)}%</td>
               <td className="px-2 py-1 text-right tabular-nums">{fmt(row.signal.payoff, 2)}</td>
               <td className="px-2 py-1 text-right tabular-nums text-muted-foreground">{row.signal.n}</td>
