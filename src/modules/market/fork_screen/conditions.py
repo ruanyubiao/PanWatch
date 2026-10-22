@@ -280,7 +280,7 @@ def _offset_index(series: StockSeries, ctx: EvalContext, offset: int) -> int | N
 
 
 def _effective_m(params: Any, ctx: EvalContext) -> int:
-    """区间终点 M：``0`` 是「窗口最后一天」的哨兵（见 ``CandleRangeParams``）。"""
+    """区间终点 f：``0`` 是「窗口最后一天」的哨兵（见 ``CandleRangeParams``）。"""
     m = int(getattr(params, "m", 0) or 0)
     return ctx.trading_days if m <= 0 else m
 
@@ -655,11 +655,12 @@ def _check_span(n: int, m: int, trading_days: int) -> list[str]:
     limit = _day_limit(trading_days)
     errors: list[str] = []
     if not 1 <= int(n) <= limit:
-        errors.append(f"起点 N 需为 1 至 {limit} 的整数")
+        errors.append(f"起点 n 需为 1 至 {limit} 的整数")
     if not int(n) <= int(m) <= limit:
-        errors.append(f"终点 M 需为 {n} 至 {limit} 的整数（M ≥ N）")
-    elif int(m) - int(n) + 1 > MAX_CONSECUTIVE_SPAN:
-        errors.append(f"区间跨度不能超过 {MAX_CONSECUTIVE_SPAN} 个交易日")
+        errors.append(f"终点 f 需为 {n} 至 {limit} 的整数（f ≥ n）")
+    elif int(m) - int(n) + 1 > limit:
+        # 跨度上限 = 统计窗口（用户 2026-10-22 第 8 条：30 不是常数）
+        errors.append(f"区间跨度不能超过 {limit} 个交易日")
     return errors
 
 
@@ -696,8 +697,8 @@ def _validate_candle_range(params: Any, trading_days: int) -> list[str]:
 
 
 def _validate_consecutive(params: ConsecutiveParams, trading_days: int) -> list[str]:
-    # 起点与天数各自 ≤ 窗口（再压到 30 根跨度上限），且两者合起来必须落在窗口内
-    limit = min(int(trading_days), MAX_CONSECUTIVE_SPAN)
+    # 起点与天数各自 ≤ 窗口（跨度上限 = 统计窗口，见第 8 条），且两者合起来必须落在窗口内
+    limit = _day_limit(trading_days)
     errors: list[str] = []
     if not 1 <= params.start <= limit:
         errors.append(f"倒数第几个交易日需为 1 至 {limit} 的整数")
@@ -1180,11 +1181,11 @@ def _validate_value_range(metric: str):
         limit = max(1, int(trading_days))
         errors: list[str] = []
         if not 1 <= int(params.n) <= limit:
-            errors.append(f"起点 N 需为 1 至 {limit} 的整数")
+            errors.append(f"起点 n 需为 1 至 {limit} 的整数")
         if not int(params.n) <= int(params.m) <= limit:
-            errors.append(f"终点 M 需为 N 至 {limit} 的整数（M ≥ N）")
-        elif int(params.m) - int(params.n) + 1 > MAX_VALUE_SPAN:
-            errors.append(f"区间跨度不能超过 {MAX_VALUE_SPAN} 个交易日")
+            errors.append(f"终点 f 需为 n 至 {limit} 的整数（f ≥ n）")
+        elif int(params.m) - int(params.n) + 1 > _day_limit(trading_days):
+            errors.append(f"区间跨度不能超过 {_day_limit(trading_days)} 个交易日")
         errors.extend(_check_value_range(params, metric))
         if metric == "vol_ratio":
             errors.extend(_check_window(params))

@@ -265,10 +265,12 @@ def test_股票代码必须完整相等():
 def test_区间形状的校验文案():
     spec = CONDITIONS["turnover_all"]
     issues = spec.validate(spec.params_model.model_validate({"n": 5, "m": 3}), 30)
-    assert any("M ≥ N" in issue for issue in issues)
+    assert any("f ≥ n" in issue for issue in issues)
 
-    issues = spec.validate(spec.params_model.model_validate({"n": 1, "m": 31}), 40)
-    assert any("跨度" in issue for issue in issues)
+    # 跨度上限 = 统计窗口：窗口 30 时 31 越界，窗口 40 时合法
+    issues = spec.validate(spec.params_model.model_validate({"n": 1, "m": 31}), 30)
+    assert any("终点 f" in issue for issue in issues)
+    assert spec.validate(spec.params_model.model_validate({"n": 1, "m": 31}), 40) == []
 
     issues = spec.validate(spec.params_model.model_validate({"n": 1, "m": 5, "min": 9, "max": 1}), 30)
     assert any("下限必须小于上限" in issue for issue in issues)

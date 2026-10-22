@@ -206,11 +206,16 @@ def test_年度与市场分组带对照组(db):
     _signal(db, "600000", "2025-06-03", {i: 0.02 for i in range(1, 31)})
     _signal(db, "300001", "2026-06-03", {i: 0.02 for i in range(1, 31)}, board="cyb")
     _signal(db, "600010", "2026-06-03", {i: -0.02 for i in range(1, 31)}, is_control=1)
-    years = {row["key"]: row for row in stats.by_year(db)}
+    rows = stats.summary(db)
+    baseline = stats.overall_win(rows)
+    control = stats.control_win_rates(rows)
+    years = {row["key"]: row for row in stats.by_year(db, stats.HORIZONS, baseline, control)}
     assert years["2025"]["control"] is None
     assert years["2026"]["signal"]["5"]["win_rate"] == pytest.approx(100.0)
-    boards = {row["key"]: row for row in stats.by_board(db)}
+    boards = {row["key"]: row for row in stats.by_board(db, stats.HORIZONS, baseline, control)}
     assert set(boards) == {"sh", "cyb"}
+    # 界面上不显示对照组：分组里的 excess 是「相对条件整体」，不是相对随机买入
+    assert years["2026"]["excess"]["5"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +256,7 @@ def test_Excel_列序与文件名(tmp_path, monkeypatch, db):
     from openpyxl import load_workbook
 
     workbook = load_workbook(path)
-    assert workbook.sheetnames == ["明细", "按股票", "汇总"]
+    assert workbook.sheetnames == ["明细", "按股票", "汇总", "分组胜率", "年度稳定性", "行业×市值"]
     header = [cell.value for cell in workbook["明细"][1]]
     assert header[:5] == ["日期", "股票代码", "股票名称", "d0收盘价", "第1天涨幅"]
     assert header[-2] == "第30天涨幅"
@@ -307,3 +312,118 @@ def test_重启后_running_线程已死的任务显示中断(tmp_path, monkeypat
     view = fork_analysis._meta_view("sx", store.load_meta("sx", meta["run_id"]))
     assert view["status"] == "interrupted"
     assert view["running"] is False
+
+
+# ---------------------------------------------------------------------------
+# v2 口径（2026-10-22 第二次改版）
+# ---------------------------------------------------------------------------
+
+
+def test_验证天数决定统计周期():
+    from src.modules.market.fork_analysis.models import horizons_for
+
+    assert horizons_for(30) == (5, 10, 15, 20, 25, 30)
+    assert horizons_for(12) == (5, 10)      # 不额外补 12
+    assert horizons_for(10) == (5, 10)
+    assert horizons_for(3) == (3,)          # 少于 5 天只剩自己
+    assert horizons_for(1) == (1,)
+
+
+def test_创建请求校验验证天数():
+    from pydantic import ValidationError
+
+    from src.modules.market.fork_analysis.models import AnalysisCreate
+
+    with pytest.raises(ValidationError):
+        AnalysisCreate(preset="sx", start_date=dt.date(2026, 1, 1), validate_days=0)
+    with pytest.raises(ValidationError):
+        AnalysisCreate(preset="sx", start_date=dt.date(2026, 1, 1), validate_days=31)
+    assert AnalysisCreate(preset="sx", start_date=dt.date(2026, 1, 1)).validate_days == 30
+
+
+def test_BH_校正保持单调且不超一():
+    qvalues = stats.bh_qvalues([0.001, 0.02, 0.5, 0.9])
+    assert all(0.0 <= q <= 1.0 for q in qvalues)
+    assert qvalues[0] <= qvalues[1] <= qvalues[3]
+
+
+def test_分组统计能按行业与市值分桶(db):
+    for index, industry in enumerate(["半导体", "半导体", "白酒"]):
+        _signal(db, f"60000{index}", f"2026-01-0{index + 5}",
+                {i: 0.02 for i in range(1, 31)}, industry=industry)
+    rows = stats.summary(db)
+    blocks = {block["dim"]: block for block in
+              stats.groups(db, stats.HORIZONS, stats.overall_win(rows))}
+    industries = {item["key"]: item["n"] for item in blocks["industry"]["items"]}
+    assert industries == {"半导体": 2, "白酒": 1}
+    # 样本 < 100 的分组必须标成「样本不足」，不能让 1 条 100% 胜率排到前面
+    assert all(item["verdict"] == "insufficient" for item in blocks["industry"]["items"])
+
+
+def test_到达天数分布回答几天内能走出来(db):
+    # 第 3 天才第一次收涨
+    _signal(db, "600000", "2026-01-05", {1: -0.01, 2: -0.01, 3: 0.02,
+                                         4: 0.02, 5: 0.02, 10: 0.02, 15: 0.02, 20: 0.02,
+                                         25: 0.02, 30: 0.02})
+    _signal(db, "600001", "2026-01-05", {i: -0.01 for i in range(1, 31)})
+    data = stats.arrival(db, stats.HORIZONS)
+    assert data["median_days"] == 3
+    assert data["within"]["5"] == pytest.approx(50.0)
+    assert data["within"]["30"] == pytest.approx(50.0)
+
+
+def test_Excel_明细列数跟随验证天数(tmp_path, monkeypatch, db):
+    monkeypatch.setattr(store, "RUNS_DIR", tmp_path / "runs")
+    store.open_db("sx", "run-12").close()
+    conn = store.open_db("sx", "run-12")
+    store.save_meta("sx", {"run_id": "run-12", "preset": "sx", "created_at": store._now(),
+                           "status": store.STATUS_DONE, "validate_days": 12})
+    _signal(conn, "000001", "2026-01-05", {1: 0.01, 12: 0.05})
+    path = excel.write_workbook(conn, "sx", "run-12")
+    conn.close()
+
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(path)
+    header = [cell.value for cell in workbook["明细"][1]]
+    assert header[-2] == "第12天涨幅"
+    assert header[-1] == "实际可取天数"
+    assert "第13天涨幅" not in header
+
+
+def test_老库缺快照列时报告不炸且能自动补列(tmp_path, monkeypatch):
+    """v2 之前的 signals.db 没有 industry/mcap… 列：报告要能跑，列要能自动补上。"""
+    monkeypatch.setattr(store, "RUNS_DIR", tmp_path / "runs")
+    run_id = "legacy-1"
+    directory = store.run_dir("sx", run_id)
+    directory.mkdir(parents=True)
+    legacy = sqlite3.connect(directory / "signals.db")
+    legacy.executescript(
+        "CREATE TABLE days (d0 TEXT PRIMARY KEY, hits INTEGER, control INTEGER, elapsed_ms INTEGER);"
+        "CREATE TABLE signals (id INTEGER PRIMARY KEY, d0 TEXT, code TEXT, symbol TEXT, name TEXT,"
+        " board TEXT, is_control INTEGER, d0_close REAL, avail INTEGER);"
+    )
+    legacy.execute("INSERT INTO days VALUES ('2026-01-05', 1, 0, 100)")
+    legacy.execute(
+        "INSERT INTO signals (d0, code, symbol, name, board, is_control, d0_close, avail) "
+        "VALUES ('2026-01-05', '600000', 'sh600000', '浦发银行', 'sh', 0, 10.0, 30)"
+    )
+    for index in range(1, 31):
+        legacy.execute(f"ALTER TABLE signals ADD COLUMN r{index} REAL")
+    for horizon in (5, 10, 15, 20, 25, 30):
+        legacy.execute(f"ALTER TABLE signals ADD COLUMN t{horizon} REAL")
+    legacy.execute("UPDATE signals SET r5 = 0.02, r10 = 0.03, r30 = -0.01")
+    legacy.commit()
+    legacy.close()
+    store.save_meta("sx", {"run_id": run_id, "preset": "sx", "created_at": store._now(),
+                           "status": store.STATUS_DONE, "validate_days": 30})
+
+    conn = store.open_db_readonly("sx", run_id)      # 只读打开时要先补列
+    report = stats.build_report(conn, store.load_meta("sx", run_id))
+    conn.close()
+    assert report["validate_days"] == 30
+    assert any(block["dim"] == "industry" for block in report["groups"])
+    # 老数据没有行业 → 全部落在「未知」，不能报错
+    industries = {item["key"] for block in report["groups"] if block["dim"] == "industry"
+                  for item in block["items"]}
+    assert industries == {"未知"}

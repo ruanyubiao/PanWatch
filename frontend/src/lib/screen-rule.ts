@@ -342,24 +342,24 @@ export const SCREEN_TEXTS_ZH = {
   daysInvalid: (max: number) => `连续天数需为 1 至 ${max} 的整数`,
   startInvalid: (max: number) => `倒数第几个交易日需为 1 至 ${max} 的整数`,
   spanInvalid: (max: number) => `起点与天数之和不能超过 ${max}（统计窗口上限）`,
-  nInvalid: (max: number) => `N 需为 1 至 ${max} 之间的整数`,
+  nInvalid: (max: number) => `n 需为 1 至 ${max} 之间的整数`,
   pctInvalid: '涨跌幅下限必须小于上限',
   pctRangeInvalid: '涨跌幅需在 -100 至 1000 之间',
   periodsLabel: '周期（可多选）',
   periodLabel: '周期',
   startLabel: '倒数第几个交易日',
   daysLabel: '连续天数',
-  nLabel: 'N（倒数第几个交易日）',
-  nShortLabel: 'N',
+  nLabel: 'n（倒数第几个交易日）',
+  nShortLabel: 'n',
   // ---- 按日定位（2026-10-23 第 6 条：所有条件都能指定倒数第 N 日）
   dayLabel: '倒数第几个交易日',
-  dayShortLabel: '倒数第 N 日',
+  dayShortLabel: '倒数第 n 日',
   spanStartLabel: '起点 N',
   spanEndLabel: '终点 M',
-  candleSpanTitle: '统计范围（倒数第 N ～ M 日）',
+  candleSpanTitle: '统计范围（起点 n ～ 终点 f）',
   dayInvalid: (max: number) => `倒数第几个交易日需为 1 至 ${max} 的整数`,
   spanStartInvalid: (max: number) => `起点 N 需为 1 至 ${max} 的整数`,
-  spanEndInvalid: (n: number, max: number) => `终点 M 需为 ${n} 至 ${max} 的整数（M ≥ N）`,
+  spanEndInvalid: (n: number, max: number) => `终点 f 需为 ${n} 至 ${max} 的整数（f ≥ n）`,
   candleEndHint: '终点 M 留空 = 统计窗口的最后一天（默认）',
   /** 「倒数第 n 日」/「倒数第 m～n 日」——摘要里统一用这两个 */
   slotDay: (n: number) => `倒数第${n}日`,
@@ -378,7 +378,7 @@ export const SCREEN_TEXTS_ZH = {
     `${slot} 任意一天${label}：MA${fast} / MA${slow}`,
   summaryCandleSpan: (slot: string, label: string) => `${slot} ${label}`,
   summaryCandleWindow: (label: string) => `${label}（统计窗口内）`,
-  changePctHint: (max: number) => `N = 倒数第几个交易日（1 – ${max}），下限/上限为百分比、开区间`,
+  changePctHint: (max: number) => `n = 倒数第几个交易日（1 – ${max}），下限/上限为百分比、开区间`,
   consecutiveHint: (start: number, days: number) =>
     `自倒数第 ${start} 个交易日起连续 ${days} 个交易日都收阳（收盘价 > 开盘价）`,
   pctMinLabel: '下限 %',
@@ -540,13 +540,13 @@ export const METRIC_TEXTS_ZH = {
   consecutiveSummary: (span: string, days: number, label: string, unit: string, min: number, max: number) =>
     `${span}连续${days}日${label} ∈ (${min}${unit}, ${max}${unit})`,
   ratioWindowSuffix: (window: number) => `，量比回看 ${window} 日`,
-  hintSingle: (max: number) => `N = 倒数第几个交易日（1 – ${max}），上下限为开区间`,
+  hintSingle: (max: number) => `n = 倒数第几个交易日（1 – ${max}），上下限为开区间`,
   hintRange: (max: number) =>
-    `N 距今天最近、M 更早（N ≤ M，1 – ${max}），跨度不超过 ${30} 个交易日；上下限为开区间`,
+    `起点 n 距今天最近、终点 f 更早（n ≤ f，1 – ${max}），跨度不超过 ${max} 个交易日；上下限为开区间`,
   hintConsecutive: '自倒数第 X 个交易日起连续 Y 个交易日都落在区间内；缺一根即不成立',
   hintVolRatio: '量比 = 当日成交量 ÷ 前若干交易日均量（不含当日），1 倍 = 平量',
-  startLabel: '起点 N',
-  endLabel: '终点 M',
+  startLabel: '起点 n',
+  endLabel: '终点 f',
   minLabel: '下限',
   maxLabel: '上限',
   windowLabel: '回看天数',
@@ -559,8 +559,8 @@ export const METRIC_TEXTS_ZH = {
   summaryLookback: (m: number, label: string) => `${label}（回看 ${m} 日）`,
   summaryCross: (fast: number, slow: number, label: string) => `${label}：MA${fast} / MA${slow}`,
   summaryStock: (text: string) => (text.trim() ? `股票 ∈ { ${text.trim()} }` : '股票（未填写）'),
-  nInvalid: (max: number) => `N 需为 1 至 ${max} 之间的整数`,
-  mInvalid: (max: number) => `M 需为 N 至 ${max} 之间的整数（M ≥ N）`,
+  nInvalid: (max: number) => `n 需为 1 至 ${max} 之间的整数`,
+  mInvalid: (max: number) => `f 需为 n 至 ${max} 之间的整数（f ≥ n）`,
   spanTooWide: (max: number) => `区间跨度不能超过 ${max} 个交易日`,
   rangeInvalid: (label: string) => `${label}下限必须小于上限`,
   boundsInvalid: (label: string, lo: number, hi: number) => `${label}需在 ${lo} 至 ${hi} 之间`,
@@ -586,8 +586,8 @@ export const METRIC_TEXTS_ZH = {
   unitSuffix: (unit: string) => `单位：${unit}`,
   lookbackHint: (max: number) => `回看 1 – ${max} 个交易日（不含当日）`,
   crossHint: '快线必须小于慢线；金叉 = 快线今天上穿慢线，死叉 = 下穿',
-  nShortLabel: 'N',
-  consecutiveStartLabel: '起点（倒数第几个交易日）',
+  nShortLabel: 'n',
+  consecutiveStartLabel: '起点 n（倒数第几个交易日）',
   consecutiveDaysLabel: '连续天数',
   // ---- 总市值（2026-10-22 从基础筛选搬进条件列表）
   labelMarketCap: '总市值',
@@ -620,7 +620,7 @@ export const METRIC_TEXTS_ZH = {
   summaryStockName: (text: string) => (text.trim() ? `名称 ∈ { ${text.trim()} }` : '名称（未填写）'),
 } as const
 
-/** 区间形状的跨度上限（与后端 `MAX_VALUE_SPAN` 一致）。 */
+/** 区间形状的跨度上限：= 统计窗口（用户第 8 条，30 不是常数）。保留导出给老调用方。 */
 export const MAX_VALUE_SPAN = 30
 
 /** 指标的取值边界（与后端 `_METRIC_BOUNDS` 一致）。 */
@@ -908,7 +908,7 @@ function metricValidate(
   const issues: string[] = []
 
   if (shape === 'consecutive') {
-    const span = Math.min(limit, MAX_CONSECUTIVE_DAYS)
+    const span = limit
     if (!Number.isInteger(p.start) || p.start < 1 || p.start > span) issues.push(T.startInvalid(span))
     if (!Number.isInteger(p.days) || p.days < 1 || p.days > span) issues.push(T.daysInvalid(span))
     if (issues.length === 0 && p.start - 1 + p.days > span) issues.push(T.spanInvalid(span))
@@ -916,7 +916,8 @@ function metricValidate(
     if (!Number.isInteger(p.n) || p.n < 1 || p.n > limit) issues.push(M.nInvalid(limit))
     if (shape !== 'single') {
       if (!Number.isInteger(p.m) || p.m < p.n || p.m > limit) issues.push(M.mInvalid(limit))
-      else if (p.m - p.n + 1 > MAX_VALUE_SPAN) issues.push(M.spanTooWide(MAX_VALUE_SPAN))
+      // 跨度上限 = 统计窗口（用户第 8 条：30 不是常数）
+      else if (p.m - p.n + 1 > limit) issues.push(M.spanTooWide(limit))
     }
   }
 
@@ -1100,7 +1101,7 @@ function fallingDef(): ConditionDef<'consecutive_falling'> {
     },
     requiredBars: p => Math.max(1, consecutiveStart(p)) - 1 + consecutiveDays(p, 3) + 1,
     validate: (p, tradingDays) => {
-      const limit = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
+      const limit = Math.max(1, Math.trunc(tradingDays || 1))
       const issues: string[] = []
       if (!Number.isInteger(p.start) || p.start < 1 || p.start > limit) issues.push(T.startInvalid(limit))
       if (!Number.isInteger(p.days) || p.days < 1 || p.days > limit) issues.push(T.daysInvalid(limit))
@@ -1163,7 +1164,7 @@ function checkSpan(n: number, m: number, tradingDays: number): string[] {
   const issues: string[] = []
   if (!Number.isInteger(n) || n < 1 || n > limit) issues.push(T.spanStartInvalid(limit))
   if (!Number.isInteger(m) || m < n || m > limit) issues.push(T.spanEndInvalid(n, limit))
-  else if (issues.length === 0 && m - n + 1 > MAX_VALUE_SPAN) issues.push(METRIC_TEXTS_ZH.spanTooWide(MAX_VALUE_SPAN))
+  else if (issues.length === 0 && m - n + 1 > limit) issues.push(METRIC_TEXTS_ZH.spanTooWide(limit))
   return issues
 }
 
@@ -1305,7 +1306,7 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
     summary: p => T.summaryConsecutive(p.start, p.days),
     requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + consecutiveDays(p, 4)),
     validate: (p, tradingDays) => {
-      const limit = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
+      const limit = Math.max(1, Math.trunc(tradingDays || 1))
       const issues: string[] = []
       if (!Number.isInteger(p.start) || p.start < 1 || p.start > limit) issues.push(T.startInvalid(limit))
       if (!Number.isInteger(p.days) || p.days < 1 || p.days > limit) issues.push(T.daysInvalid(limit))
@@ -1334,7 +1335,7 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
     // +1：前收缺失时要往回多取一根做回退
     requiredBars: p => Math.max(1, consecutiveStart(p) - 1 + consecutiveDays(p, 3) + 1),
     validate: (p, tradingDays) => {
-      const limit = Math.min(tradingDays, MAX_CONSECUTIVE_DAYS)
+      const limit = Math.max(1, Math.trunc(tradingDays || 1))
       const issues: string[] = []
       if (!Number.isInteger(p.start) || p.start < 1 || p.start > limit) issues.push(T.startInvalid(limit))
       if (!Number.isInteger(p.days) || p.days < 1 || p.days > limit) issues.push(T.daysInvalid(limit))

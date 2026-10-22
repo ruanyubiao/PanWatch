@@ -38,8 +38,10 @@ import {
   type AnalysisReport,
   type AnalysisRunMeta,
 } from '@/lib/analysis-api'
+import { AnalysisRunListDialog } from './analysis/AnalysisRunList'
 import { AnalysisStockTable } from './analysis/AnalysisStockTable'
 import { AnalysisSummaryBody } from './analysis/AnalysisSummary'
+import { AnalysisTaskDetailDialog } from './analysis/AnalysisTaskDetail'
 
 export const ANALYSIS_DIALOG_TEXTS_ZH = {
   button: '数据分析',
@@ -52,7 +54,10 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   presetEmpty: '还没有已保存的条件，先去「条件选股」保存一个',
   start: '开始日期',
   end: '结束日期',
-  endHint: '留空 = 库里最新交易日',
+  endHint: (last: string) => `不能晚于 ${last}（再往后验证行情不够）`,
+  validateDays: '验证天数',
+  validateDaysHint: (max: number) => `向前看几个交易日，1 – ${max}`,
+  validateDaysUnit: '个交易日',
   market: '股票范围',
   marketAll: '全部',
   marketSh: '上证',
@@ -62,7 +67,7 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   includeSt: '包含 ST / *ST',
   estimate: (days: number, hours: string) => `区间内 ${days} 个交易日，预计约 ${hours}`,
   estimatePending: '正在估算交易日数…',
-  sampleNote: '每天另外随机抽 200 只做对照（判断「是不是本来就会涨」）',
+  sampleNote: '创建后会在后台逐日回放这个条件，可以关掉页面。',
   create: '创建任务',
   creating: '创建中…',
   running: '进行中',
@@ -85,8 +90,10 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   excelPending: 'Excel 生成中',
   newTask: '新建任务',
   historyTitle: '历史任务',
+  historyViewAll: '查看全部',
   historyEmpty: '这个条件还没有跑过',
   historyItem: (created: string, days: number, hits: number) => `${created} · ${days} 天 · ${hits} 条`,
+  openTask: '打开任务详情',
   statusPending: '排队中',
   statusRunning: '进行中',
   statusInterrupted: '已中断',
@@ -110,10 +117,15 @@ interface FormState {
   preset: string
   startDate: string
   endDate: string
+  /** 验证天数（向前看几个交易日），默认 30，最小 1 */
+  validateDays: number
   marketAll: boolean
   markets: ScreenMarket[]
   includeSt: boolean
 }
+
+/** 验证天数上限：signals.db 只有 r1..r30 列（再多就要改表结构） */
+const MAX_VALIDATE_DAYS = 30
 
 const MARKET_LABELS: Record<ScreenMarket, string> = {
   sh: ANALYSIS_DIALOG_TEXTS_ZH.marketSh,
@@ -164,11 +176,16 @@ export function AnalysisDialog({
     preset: '',
     startDate: DEFAULT_START,
     endDate: '',
+    validateDays: 30,
     marketAll: true,
     markets: [...SCREEN_MARKETS],
     includeSt: false,
   })
+  // 用户手选过结束日就不再自动跟随验证天数（否则改天数会把他选的日期盖掉）
+  const endTouchedRef = useRef(false)
   const [preview, setPreview] = useState<AnalysisPreview | null>(null)
+  // 验证天数的输入框文本单独存：数字输入框清空时若立刻夹回 1，用户打字会变成「1x」
+  const [daysText, setDaysText] = useState('30')
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [runs, setRuns] = useState<AnalysisRunMeta[]>([])
   const [run, setRun] = useState<AnalysisRunMeta | null>(null)
@@ -176,6 +193,9 @@ export function AnalysisDialog({
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [stopping, setStopping] = useState(false)
+  // 历史任务点开的是「任务详情」窗口；「查看全部」是完整列表
+  const [detailRunId, setDetailRunId] = useState<string | null>(null)
+  const [listOpen, setListOpen] = useState(false)
   const timer = useRef<number | null>(null)
 
   const reset = useCallback(() => {
@@ -186,10 +206,14 @@ export function AnalysisDialog({
     setPreview(null)
     setPreviewError(null)
     setStopping(false)
+    setDaysText('30')
+    endTouchedRef.current = false
     setForm({
       preset: presets[0]?.name ?? '',
       startDate: DEFAULT_START,
+      // 预估回来之前先给条件选股的日期，回来后由 max_end_date 覆盖（用户没手选时）
       endDate: asof ?? '',
+      validateDays: 30,
       marketAll: true,
       markets: [...SCREEN_MARKETS],
       includeSt: false,
@@ -234,12 +258,17 @@ export function AnalysisDialog({
             preset: form.preset,
             start_date: form.startDate,
             end_date: form.endDate || null,
+            validate_days: form.validateDays,
             markets: form.marketAll ? [...SCREEN_MARKETS] : form.markets,
             include_st: form.includeSt,
           })
           if (!cancelled) {
             setPreview(data)
             setPreviewError(null)
+            // 结束日默认 = 最后一个「验证得完」的交易日；用户手选过就不动
+            if (!endTouchedRef.current && data.max_end_date) {
+              setForm(current => ({ ...current, endDate: data.max_end_date }))
+            }
           }
         } catch (exc) {
           if (!cancelled) {
@@ -253,7 +282,8 @@ export function AnalysisDialog({
       cancelled = true
       window.clearTimeout(handle)
     }
-  }, [form.endDate, form.includeSt, form.marketAll, form.markets, form.preset, form.startDate, mode, open])
+  }, [form.endDate, form.includeSt, form.marketAll, form.markets, form.preset, form.startDate,
+      form.validateDays, mode, open])
 
   // 进行中：轮询；到终态后拉统计
   useEffect(() => {
@@ -317,6 +347,7 @@ export function AnalysisDialog({
         preset: form.preset,
         start_date: form.startDate,
         end_date: form.endDate || null,
+        validate_days: form.validateDays,
         markets: form.marketAll ? [...SCREEN_MARKETS] : form.markets,
         include_st: form.includeSt,
       })
@@ -390,7 +421,7 @@ export function AnalysisDialog({
   }, [progress, run])
 
   const presetRuns = useMemo(
-    () => runs.filter(item => !form.preset || item.preset === form.preset).slice(0, 8),
+    () => runs.filter(item => !form.preset || item.preset === form.preset).slice(0, 10),
     [form.preset, runs],
   )
 
@@ -438,8 +469,9 @@ export function AnalysisDialog({
                     )}
                   </div>
 
+                  {/* 三行竖排（用户第 2 条）：开始日期 / 结束日期 / 验证天数 */}
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="w-20 shrink-0 text-[11px] text-muted-foreground">{T.start}</span>
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.start}</span>
                     <input
                       type="date"
                       value={form.startDate}
@@ -448,16 +480,65 @@ export function AnalysisDialog({
                       onChange={event => setForm(current => ({ ...current, startDate: event.target.value }))}
                       className="h-7 rounded-md border border-input bg-background px-2 text-[12px]"
                     />
-                    <span className="text-[11px] text-muted-foreground">{T.end}</span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.end}</span>
                     <input
                       type="date"
                       value={form.endDate}
                       aria-label={T.end}
                       data-fork-analysis-end
-                      onChange={event => setForm(current => ({ ...current, endDate: event.target.value }))}
+                      max={preview?.max_end_date ?? undefined}
+                      onChange={event => {
+                        const value = event.target.value
+                        const cap = preview?.max_end_date
+                        endTouchedRef.current = true
+                        // 用户手选也不能晚于可验证的最后一天（第 2 条）
+                        setForm(current => ({
+                          ...current,
+                          endDate: cap && value > cap ? cap : value,
+                        }))
+                      }}
                       className="h-7 rounded-md border border-input bg-background px-2 text-[12px]"
                     />
-                    <span className="text-[10px] text-muted-foreground">{T.endHint}</span>
+                    <span className="text-[10px] text-muted-foreground">
+                      {preview ? T.endHint(preview.max_end_date) : ''}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.validateDays}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_VALIDATE_DAYS}
+                      step={1}
+                      value={daysText}
+                      aria-label={T.validateDays}
+                      data-fork-analysis-validate-days
+                      onChange={event => {
+                        const raw = event.target.value
+                        setDaysText(raw)
+                        const parsed = Math.trunc(Number(raw))
+                        if (!Number.isFinite(parsed) || raw === '') return
+                        const next = Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
+                        endTouchedRef.current = false  // 改天数 → 结束日跟着上限走
+                        setForm(current => ({ ...current, validateDays: next }))
+                      }}
+                      onBlur={() => {
+                        const parsed = Math.trunc(Number(daysText))
+                        const next = Number.isFinite(parsed) && daysText !== ''
+                          ? Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
+                          : 30
+                        setDaysText(String(next))
+                        setForm(current => ({ ...current, validateDays: next }))
+                      }}
+                      className="h-7 w-[80px] rounded-md border border-input bg-background px-2 text-[12px]"
+                    />
+                    <span className="text-[10px] text-muted-foreground">
+                      {T.validateDaysHint(MAX_VALIDATE_DAYS)}
+                    </span>
                   </div>
 
                   {/* 市场：与条件选股界面完全同一套样式（带 ✓ 的 pill 组 + ST 开关） */}
@@ -550,8 +631,19 @@ export function AnalysisDialog({
                 </Button>
               </div>
 
-              <section>
-                <p className="mb-1 text-[11px] font-medium">{T.historyTitle}</p>
+              {/* 历史任务：标题加粗放大到和「创建数据分析任务」同级，和创建按钮留出间距 */}
+              <section className="mt-4">
+                <div className="mb-1.5 flex items-center gap-2">
+                  <p className="text-[12px] font-medium">{T.historyTitle}</p>
+                  <button
+                    type="button"
+                    className="text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                    onClick={() => setListOpen(true)}
+                    data-fork-analysis-view-all
+                  >
+                    {T.historyViewAll}
+                  </button>
+                </div>
                 {presetRuns.length === 0 ? (
                   <p className="text-[10px] text-muted-foreground">{T.historyEmpty}</p>
                 ) : (
@@ -561,10 +653,10 @@ export function AnalysisDialog({
                         <button
                           type="button"
                           className="flex w-full items-center justify-between rounded border border-transparent px-1.5 py-1 text-[11px] hover:border-border/60 hover:bg-accent/20"
+                          aria-label={T.openTask}
                           onClick={() => {
-                            setRun(item)
-                            setMode('run')
-                            setReport(null)
+                            // 历史任务 → 任务详情窗口（用户第 5 条），不再进数据分析界面
+                            setDetailRunId(item.run_id)
                           }}
                         >
                           <span>
@@ -662,7 +754,7 @@ export function AnalysisDialog({
                 <div className="space-y-3" data-fork-analysis-result>
                   {/* 结论卡由 AnalysisSummaryBody 内部渲染，这里不要再放一份（会重复） */}
                   <AnalysisSummaryBody report={report} compact />
-                  <AnalysisStockTable runId={run.run_id} compact />
+                  <AnalysisStockTable runId={run.run_id} compact horizons={report.horizons} />
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
                       size="sm"
@@ -698,6 +790,20 @@ export function AnalysisDialog({
           )}
         </div>
       </DialogContent>
+
+      <AnalysisTaskDetailDialog
+        runId={detailRunId}
+        open={detailRunId !== null}
+        onOpenChange={next => !next && setDetailRunId(null)}
+      />
+      <AnalysisRunListDialog
+        open={listOpen}
+        onOpenChange={setListOpen}
+        onOpenRun={item => {
+          setListOpen(false)
+          setDetailRunId(item.run_id)
+        }}
+      />
     </Dialog>
   )
 }

@@ -91,22 +91,20 @@ describe('按日定位：默认值与根数', () => {
 })
 
 describe('按日定位：校验', () => {
-  it('N 超窗口 / M < N 都报错', () => {
+  it('n 超窗口 / f < n 都报错', () => {
     expect(def('ma_bullish').validate(params('ma_bullish', { n: 0 }), 30)).toEqual(['倒数第几个交易日需为 1 至 30 的整数'])
     expect(def('ma_bullish_all').validate(params('ma_bullish_all', { n: 5, m: 3 }), 30)).toEqual([
-      '终点 M 需为 5 至 30 的整数（M ≥ N）',
+      '终点 f 需为 5 至 30 的整数（f ≥ n）',
     ])
   })
 
-  it('区间跨度上限 30 根；阴阳线的「整个窗口」不受这条限制', () => {
-    expect(def('ma_bullish_any').validate(params('ma_bullish_any', { n: 1, m: 30 }), 250)).toEqual([])
-    expect(def('ma_bullish_any').validate(params('ma_bullish_any', { n: 1, m: 31 }), 250)).toEqual([
-      '区间跨度不能超过 30 个交易日',
-    ])
-    // 统计窗口 250 天的老条件不能被误伤
-    expect(def('more_bullish_candles').validate(params('more_bullish_candles'), 250)).toEqual([])
-    expect(def('more_bullish_candles').validate(params('more_bullish_candles', { n: 1, m: 250 }), 250)).toEqual([
-      '区间跨度不能超过 30 个交易日',
+  it('跨度上限 = 统计窗口；阴阳线的「整个窗口」也合法', () => {
+    // 窗口 250：跨度 31 / 250 都合法（旧规则会报「跨度不能超过 30」）
+    expect(def('ma_bullish_any').validate(params('ma_bullish_any', { n: 1, m: 31 }), 250)).toEqual([])
+    expect(def('more_bullish_candles').validate(params('more_bullish_candles', { n: 1, m: 250 }), 250)).toEqual([])
+    // 窗口 30：31 越界
+    expect(def('ma_bullish_any').validate(params('ma_bullish_any', { n: 1, m: 31 }), 30)).toEqual([
+      '终点 f 需为 1 至 30 的整数（f ≥ n）',
     ])
   })
 

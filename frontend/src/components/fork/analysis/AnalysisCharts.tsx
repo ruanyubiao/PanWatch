@@ -49,12 +49,15 @@ export function BarPairChart({
   height = 230,
   width = 620,
   unit = '%',
+  showControl = true,
 }: {
   items: BarPairItem[]
   height?: number
   width?: number
   /** 顶部留白给图例 */
   unit?: string
+  /** false = 不画对照组（用户第 6 条：数据分析界面不显示随机对照） */
+  showControl?: boolean
 }) {
   const margin = { left: 38, right: 12, top: 26, bottom: 28 }
   const plotW = width - margin.left - margin.right
@@ -63,7 +66,7 @@ export function BarPairChart({
   const maxValue = Math.max(10, ...values)
   const top = Math.ceil(maxValue / 10) * 10 + 5
   const slot = plotW / Math.max(1, items.length)
-  const barW = Math.min(26, slot * 0.3)
+  const barW = Math.min(26, slot * (showControl ? 0.3 : 0.42))
 
   if (items.length === 0) {
     return <EmptyChart height={height} width={width} />
@@ -82,10 +85,14 @@ export function BarPairChart({
         <text x={13} y={1} fill="currentColor" fillOpacity={0.65} fontSize={10}>
           {CHART_TEXTS_ZH.signal}
         </text>
-        <rect x={78} y={-8} width={9} height={9} fill={CONTROL_COLOR} rx={1} />
-        <text x={91} y={1} fill="currentColor" fillOpacity={0.65} fontSize={10}>
-          {CHART_TEXTS_ZH.control}
-        </text>
+        {showControl && (
+          <>
+            <rect x={78} y={-8} width={9} height={9} fill={CONTROL_COLOR} rx={1} />
+            <text x={91} y={1} fill="currentColor" fillOpacity={0.65} fontSize={10}>
+              {CHART_TEXTS_ZH.control}
+            </text>
+          </>
+        )}
       </g>
 
       {/* 纵轴网格（0 / 25 / 50 / 75 / 100 的相对刻度） */}
@@ -118,7 +125,7 @@ export function BarPairChart({
         return (
           <g key={item.label}>
             <rect
-              x={centre - barW - 2}
+              x={showControl ? centre - barW - 2 : centre - barW / 2}
               y={margin.top + plotH - signalH}
               width={barW}
               height={Math.max(0, signalH)}
@@ -127,16 +134,18 @@ export function BarPairChart({
             >
               <title>{`${item.label} ${CHART_TEXTS_ZH.signal} ${fmt(item.signal)}${unit}`}</title>
             </rect>
-            <rect
-              x={centre + 2}
-              y={margin.top + plotH - controlH}
-              width={barW}
-              height={Math.max(0, controlH)}
-              fill={CONTROL_COLOR}
-              rx={1}
-            >
-              <title>{`${item.label} ${CHART_TEXTS_ZH.control} ${fmt(item.control)}${unit}`}</title>
-            </rect>
+            {showControl && (
+              <rect
+                x={centre + 2}
+                y={margin.top + plotH - controlH}
+                width={barW}
+                height={Math.max(0, controlH)}
+                fill={CONTROL_COLOR}
+                rx={1}
+              >
+                <title>{`${item.label} ${CHART_TEXTS_ZH.control} ${fmt(item.control)}${unit}`}</title>
+              </rect>
+            )}
             <text
               x={centre}
               y={margin.top + plotH - Math.max(signalH, controlH) - 14}

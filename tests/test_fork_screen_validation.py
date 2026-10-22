@@ -145,9 +145,12 @@ def test_V7_均线周期不在白名单():
     assert "均线周期不合法" in messages(validate_rule(req))
 
 
-def test_V7_连续天数超过30上限():
-    req = request(trading_days=60, rule=group(condition("consecutive_bullish", days=31)))
-    assert "连续天数需为 1 至 30 的整数" in messages(validate_rule(req))
+def test_连续天数超过统计窗口():
+    """跨度上限 = 统计窗口（不再是常数 30）。"""
+    req = request(trading_days=60, rule=group(condition("consecutive_bullish", days=61)))
+    assert "连续天数需为 1 至 60 的整数" in messages(validate_rule(req))
+    ok = request(trading_days=60, rule=group(condition("consecutive_bullish", days=31)))
+    assert messages(validate_rule(ok)) == ""
 
 
 def test_V7_连续阳线的起点超窗口():
@@ -156,9 +159,12 @@ def test_V7_连续阳线的起点超窗口():
     assert "倒数第几个交易日需为 1 至 10 的整数" in messages(validate_rule(req))
 
 
-def test_V7_连续阳线起点加天数超上限():
-    req = request(trading_days=60, rule=group(condition("consecutive_bullish", start=20, days=20)))
+def test_连续阳线起点加天数超窗口():
+    req = request(trading_days=30, rule=group(condition("consecutive_bullish", start=20, days=20)))
     assert "起点与天数之和不能超过 30" in messages(validate_rule(req))
+    # 窗口放开到 60 后同一组参数就是合法的
+    wide = request(trading_days=60, rule=group(condition("consecutive_bullish", start=20, days=20)))
+    assert messages(validate_rule(wide)) == ""
 
 
 def test_V7_连续阳线起点天数都在窗口内则通过():
