@@ -172,6 +172,25 @@ def test_样本不足时结论标为不能用(db):
     assert stats.verdict(rows)["reason"] == "insufficient"
 
 
+def test_显著跑输随机时结论是_worse(db):
+    """120 条条件信号里 30% 上涨，200 条对照里 60% 上涨 → 显著为负。
+
+    这是真实场景的形态（云端 xg1 在 2026 年就是这个结果）：胜率不是「高一点」，
+    而是**统计显著地比随机买入差**，结论必须说「要重新设计」，不能只说「没优势」。
+    """
+    for index in range(120):
+        _signal(db, f"60{index:04d}", "2026-01-05",
+                {i: (0.02 if index % 10 < 3 else -0.02) for i in range(1, 31)})
+    for index in range(200):
+        _signal(db, f"00{index:04d}", "2026-01-05",
+                {i: (0.02 if index % 10 < 6 else -0.02) for i in range(1, 31)}, is_control=1)
+    result = stats.verdict(stats.summary(db))
+    assert result["usable"] is False
+    assert result["reason"] == "worse"
+    assert result["worst_horizon"] == 5
+    assert result["worst_excess_pp"] < 0
+
+
 def test_个股排行按十日在榜且带样本是否足够(db):
     for index in range(3):
         _signal(db, "600000", f"2026-01-{5 + index:02d}", {i: 0.02 for i in range(1, 31)})

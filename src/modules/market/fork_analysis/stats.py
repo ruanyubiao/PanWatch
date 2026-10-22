@@ -128,7 +128,14 @@ def summary(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def verdict(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """结论：挑超额胜率最高的那个周期，并明确说「能不能用」。"""
+    """结论：挑超额胜率最高的那个周期，并明确说「能不能用」。
+
+    四种结论（前端各有一句人话）：
+    - ``usable``            超额 ≥ 2pp 且统计显著 → 这个条件有用
+    - ``worse``             **显著跑输**随机买入（z ≤ −1.96）→ 反着用都不行，得重新设计
+    - ``not_significant``   看着有超额但样本不够（z 不显著）
+    - ``no_edge``           超额小且不显著 → 与随机买入没区别
+    """
     candidates = [
         row for row in rows
         if row["excess_pp"] is not None and row["signal"]["n"] >= MIN_TOTAL_SAMPLES
@@ -148,9 +155,22 @@ def verdict(rows: list[dict[str, Any]]) -> dict[str, Any]:
         and significant
         and best["signal"]["n"] >= MIN_TOTAL_SAMPLES
     )
-    return {
+    worst_significant = min(
+        (row for row in candidates if float(row["z"] or 0) <= -1.96),
+        key=lambda row: row["excess_pp"],
+        default=None,
+    )
+    if usable:
+        reason = "usable"
+    elif worst_significant is not None:
+        reason = "worse"
+    elif best["excess_pp"] >= EXCESS_THRESHOLD_PP:
+        reason = "not_significant"
+    else:
+        reason = "no_edge"
+    result: dict[str, Any] = {
         "usable": usable,
-        "reason": "usable" if usable else ("not_significant" if not significant else "no_edge"),
+        "reason": reason,
         "best_horizon": best["horizon"],
         "best_excess_pp": best["excess_pp"],
         "best_win_rate": best["signal"]["win_rate"],
@@ -161,6 +181,12 @@ def verdict(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "z": best["z"],
         "significant": significant,
     }
+    if worst_significant is not None:
+        result["worst_horizon"] = worst_significant["horizon"]
+        result["worst_excess_pp"] = worst_significant["excess_pp"]
+        result["worst_win_rate"] = worst_significant["signal"]["win_rate"]
+        result["worst_baseline"] = worst_significant["control"]["win_rate"]
+    return result
 
 
 def by_stock(conn: sqlite3.Connection, control_rows: dict[int, float]) -> list[dict[str, Any]]:
