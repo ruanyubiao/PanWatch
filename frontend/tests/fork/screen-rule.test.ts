@@ -376,18 +376,24 @@ describe('条件选股 / 注册表', () => {
     ])
     const fixed = fillDefaultParams(broken)
     expect((fixed.children[0] as ConditionNode).params).toEqual({ start: 1, days: 3 })
-    // 已有值原样保留
-    expect((fixed.children[1] as ConditionNode).params).toEqual({ period: 20 })
+    // 已有值原样保留；缺失的按日参数补默认（n=1，与以前语义一致）
+    expect((fixed.children[1] as ConditionNode).params).toEqual({ period: 20, n: 1, m: 1 })
     // 补完之后能正常摘要、正常校验
     expect(formatRule(fixed)).toContain('倒数第3～1天连续3日上涨')
     expect(messages(validateScreenRequest(req(fixed)))).toHaveLength(0)
   })
 
-  it('条件齐全（8 条原有 + 20 条量价 + 3 条总市值区间 + 7 条第二批 + 3 条新增），分类与默认值符合规格', () => {
+  it('条件齐全（原有 + 量价 + 总市值 + 第二批 + 按日变体），分类与默认值符合规格', () => {
     expect(Object.keys(CONDITION_DEFS_ZH)).toEqual([
       'ma_bullish',
+      'ma_bullish_all',
+      'ma_bullish_any',
       'ma_bearish',
+      'ma_bearish_all',
+      'ma_bearish_any',
       'close_above_ma',
+      'close_above_ma_all',
+      'close_above_ma_any',
       'more_bullish_candles',
       'more_bearish_candles',
       'consecutive_bullish',
@@ -422,14 +428,16 @@ describe('条件选股 / 注册表', () => {
       'new_low',
       'ma_golden_cross',
       'ma_dead_cross',
+      'ma_golden_cross_any',
+      'ma_dead_cross_any',
       'stock_match',
       'stock_code',
       'stock_name',
       'market_cap',
     ])
-    expect(Object.keys(CONDITION_DEFS_ZH)).toHaveLength(41)
-    expect(CONDITION_DEFS_ZH.ma_bullish.defaults).toEqual({ periods: [5, 10, 20, 60] })
-    expect(CONDITION_DEFS_ZH.close_above_ma.defaults).toEqual({ period: 5 })
+    expect(Object.keys(CONDITION_DEFS_ZH)).toHaveLength(49)
+    expect(CONDITION_DEFS_ZH.ma_bullish.defaults).toEqual({ periods: [5, 10, 20, 60], n: 1, m: 1 })
+    expect(CONDITION_DEFS_ZH.close_above_ma.defaults).toEqual({ period: 5, n: 1, m: 1 })
     expect(CONDITION_DEFS_ZH.consecutive_bullish.defaults).toEqual({ start: 1, days: 4 })
     expect(CONDITION_DEFS_ZH.change_pct.defaults).toEqual({ n: 1, min: -30, max: 30 })
     expect(CONDITION_DEFS_ZH.ma_bullish.category).toBe('均线')
@@ -458,8 +466,8 @@ describe('条件选股 / 注册表', () => {
     expect(CONDITION_DEFS_ZH.vol_ratio_avg.category).toBe('量比')
 
     // 第二批
-    expect(CONDITION_DEFS_ZH.new_high.defaults).toEqual({ m: 20 })
-    expect(CONDITION_DEFS_ZH.ma_golden_cross.defaults).toEqual({ fast: 5, slow: 10 })
+    expect(CONDITION_DEFS_ZH.new_high.defaults).toEqual({ m: 20, n: 1 })
+    expect(CONDITION_DEFS_ZH.ma_golden_cross.defaults).toEqual({ fast: 5, slow: 10, n: 1, m: 1 })
     expect(CONDITION_DEFS_ZH.stock_match.defaults).toEqual({ text: '' })
     // 分类顺序覆盖全部分类，选择列表不会漏掉一整组
     expect(new Set(CONDITION_CATEGORIES)).toEqual(

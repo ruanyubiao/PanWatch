@@ -21,10 +21,13 @@ import {
   METRIC_TEXTS_ZH,
   MIN_CHANGE_PCT,
   SCREEN_TEXTS_ZH,
+  daySlot,
   metricBounds,
   metricOf,
   type ConditionName,
   type ConditionParamsMap,
+  type MaDayParams,
+  type MaOrderDayParams,
   type MaPeriod,
   type MarketCapOp,
   type ParamEditorKind,
@@ -46,6 +49,134 @@ import {
  */
 
 const T = SCREEN_TEXTS_ZH
+
+/** 均线排列的 6 个变体（周期多选 + 按日定位）。 */
+const MA_ORDER_NAMES: ConditionName[] = [
+  'ma_bullish',
+  'ma_bullish_all',
+  'ma_bullish_any',
+  'ma_bearish',
+  'ma_bearish_all',
+  'ma_bearish_any',
+]
+
+/** 股价站上均线的 3 个变体（单周期 + 按日定位）。 */
+const MA_ABOVE_NAMES: ConditionName[] = ['close_above_ma', 'close_above_ma_all', 'close_above_ma_any']
+
+const PARAM_TEXTS_ZH = {
+  /** 单日：一个 N */
+  dayOnly: '只看倒数第 N 个交易日；N = 1 就是数据截至那天（默认）',
+  /** 区间：N ～ M */
+  spanOnly: '倒数第 N ～ M 个交易日（N 更近、M 更早，跨度不超过 30 个交易日）',
+  nLabel: '倒数第 N 日',
+  spanStart: '起点 N（更近）',
+  spanEnd: '终点 M（更早）',
+  endEmpty: '留空 = 统计窗口的最后一天',
+}
+
+/**
+ * 按日定位的输入（2026-10-23 第 6 条）。
+ *
+ * 所有需要「倒数第 N 日」的条件都走这一份，不再各写一遍 N 输入框：
+ * - ``single``：一个 N；
+ * - ``range``：N + M（范围内每日 / 任意一天）；
+ * - ``range-window``：N + M，但 M 允许留空 = 整个统计窗口（阴阳线计数）。
+ */
+function DayFields({
+  mode,
+  draft,
+  tradingDays,
+  invalid,
+  onTouched,
+  onPatch,
+}: {
+  mode: 'single' | 'range' | 'range-window'
+  draft: Record<string, unknown>
+  tradingDays: number
+  invalid: boolean
+  onTouched: () => void
+  onPatch: (patch: Record<string, number>) => void
+}) {
+  const limit = Math.max(1, Math.trunc(tradingDays || 1))
+  const n = daySlot(draft as { n?: number })
+  const m = Number((draft as { m?: number }).m)
+
+  const field = (key: 'n' | 'm', label: string, value: number, min: number) => (
+    <div className="min-w-0 space-y-1">
+      <Label className="block truncate text-[11px] text-muted-foreground">{label}</Label>
+      <ScreenNumberField
+        paramField={key}
+        ariaLabel={label}
+        value={value}
+        min={min}
+        max={limit}
+        invalid={invalid}
+        onTouched={onTouched}
+        onChange={next => onPatch({ [key]: next })}
+      />
+    </div>
+  )
+
+  if (mode === 'single') {
+    return (
+      <div className="space-y-1" data-fork-screen-day="single">
+        <div className="grid grid-cols-2 gap-2">
+          {field('n', PARAM_TEXTS_ZH.nLabel, n, 1)}
+          <div className="flex items-end pb-1 text-[11px] leading-4 text-muted-foreground">
+            {PARAM_TEXTS_ZH.dayOnly}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-1" data-fork-screen-day={mode}>
+      <div className="grid grid-cols-2 gap-2">
+        {field('n', PARAM_TEXTS_ZH.spanStart, n, 1)}
+        {mode === 'range-window' ? (
+          <div className="min-w-0 space-y-1">
+            <Label className="block truncate text-[11px] text-muted-foreground">{PARAM_TEXTS_ZH.spanEnd}</Label>
+            {/*
+              M 用 0 当「整个统计窗口」的哨兵，所以这里不能用 ScreenNumberField
+              （它不接受空串）：留空 → 0，输入框显示空、占位符写窗口长度。
+            */}
+            <input
+              type="text"
+              inputMode="numeric"
+              role="spinbutton"
+              aria-label={PARAM_TEXTS_ZH.spanEnd}
+              aria-valuemin={1}
+              aria-valuemax={limit}
+              data-screen-param-field="m"
+              value={Number.isFinite(m) && m > 0 ? String(m) : ''}
+              placeholder={String(limit)}
+              onChange={event => {
+                const digits = event.target.value.replace(/[^0-9]/g, '')
+                onTouched()
+                if (digits === '') {
+                  onPatch({ m: 0 })
+                  return
+                }
+                const parsed = Math.min(limit, Math.max(1, Number(digits)))
+                onPatch({ m: parsed })
+              }}
+              onBlur={onTouched}
+              className={`h-7 w-full rounded-md border bg-background px-2 text-[12px] text-foreground ${
+                invalid ? 'border-destructive' : 'border-input'
+              }`}
+            />
+          </div>
+        ) : (
+          field('m', PARAM_TEXTS_ZH.spanEnd, Number.isFinite(m) && m > 0 ? m : Math.max(n, 1), n)
+        )}
+      </div>
+      <div className="text-[11px] leading-4 text-muted-foreground">
+        {mode === 'range-window' ? PARAM_TEXTS_ZH.endEmpty : PARAM_TEXTS_ZH.spanOnly}
+      </div>
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------- 表单
 
@@ -81,23 +212,24 @@ export function ScreenParamForm({
 
   return (
     <div className="space-y-2" data-fork-screen-param={name}>
-      {name === 'ma_bullish' || name === 'ma_bearish' ? (
+      {MA_ORDER_NAMES.includes(name) ? (
         <div className="space-y-1.5">
           <Label className="text-[11px] text-muted-foreground">{T.periodsLabel}</Label>
           <div className="flex flex-wrap gap-1">
             {MA_PERIODS.map(period => {
-              const selected = (draft as ConditionParamsMap['ma_bullish']).periods.includes(period)
+              const selected = (draft as MaOrderDayParams).periods.includes(period)
               return (
                 <button
                   key={period}
                   type="button"
                   aria-pressed={selected}
                   onClick={() => {
-                    const current = (draft as ConditionParamsMap['ma_bullish']).periods
+                    const current = (draft as MaOrderDayParams).periods
                     const next = selected
                       ? current.filter(item => item !== period)
                       : [...current, period]
-                    setDraft({ periods: next } as ConditionParamsMap[ConditionName])
+                    // 保留 n / m（按日定位）：只改周期，不能把「倒数第 N 日」清掉
+                    setDraft({ ...(draft as MaOrderDayParams), periods: next } as ConditionParamsMap[ConditionName])
                   }}
                   className={`rounded border px-1.5 py-0.5 text-[11px] font-mono transition-colors ${
                     selected
@@ -113,19 +245,19 @@ export function ScreenParamForm({
         </div>
       ) : null}
 
-      {name === 'close_above_ma' ? (
+      {MA_ABOVE_NAMES.includes(name) ? (
         <div className="space-y-1.5">
           <Label className="text-[11px] text-muted-foreground">{T.periodLabel}</Label>
           <div className="flex flex-wrap gap-1">
             {MA_PERIODS.map(period => {
-              const selected = (draft as ConditionParamsMap['close_above_ma']).period === period
+              const selected = (draft as MaDayParams).period === period
               return (
                 <button
                   key={period}
                   type="button"
                   aria-pressed={selected}
                   onClick={() =>
-                    setDraft({ period: period as MaPeriod } as ConditionParamsMap[ConditionName])
+                    setDraft({ ...(draft as MaDayParams), period: period as MaPeriod } as ConditionParamsMap[ConditionName])
                   }
                   className={`rounded border px-1.5 py-0.5 text-[11px] font-mono transition-colors ${
                     selected
@@ -276,6 +408,22 @@ export function ScreenParamForm({
           name={name}
           editor={def.editor}
           draft={draft as unknown as Record<string, number | string>}
+          tradingDays={tradingDays}
+          invalid={invalid}
+          onTouched={markTouched}
+          onPatch={patch =>
+            setDraft({
+              ...(draft as Record<string, unknown>),
+              ...patch,
+            } as ConditionParamsMap[ConditionName])
+          }
+        />
+      ) : null}
+
+      {def.daySelector ? (
+        <DayFields
+          mode={def.daySelector}
+          draft={draft as unknown as Record<string, unknown>}
           tradingDays={tradingDays}
           invalid={invalid}
           onTouched={markTouched}
