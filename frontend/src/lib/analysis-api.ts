@@ -72,7 +72,7 @@ export interface AnalysisSummaryRow {
 
 export interface AnalysisVerdict {
   usable: boolean
-  reason: 'usable' | 'not_significant' | 'no_edge' | 'insufficient'
+  reason: 'usable' | 'not_significant' | 'no_edge' | 'worse' | 'insufficient'
   best_horizon: number | null
   best_excess_pp: number | null
   best_win_rate?: number | null
@@ -82,6 +82,11 @@ export interface AnalysisVerdict {
   sample?: number
   z?: number
   significant?: boolean
+  /** reason='worse' 时给出「显著跑输」的那个周期 */
+  worst_horizon?: number
+  worst_excess_pp?: number | null
+  worst_win_rate?: number | null
+  worst_baseline?: number | null
 }
 
 export interface AnalysisStockRow {
