@@ -38,7 +38,7 @@ import {
   type AnalysisRunMeta,
 } from '@/lib/analysis-api'
 import { AnalysisStockTable } from './analysis/AnalysisStockTable'
-import { AnalysisSummaryBody, AnalysisVerdictCard } from './analysis/AnalysisSummary'
+import { AnalysisSummaryBody } from './analysis/AnalysisSummary'
 
 export const ANALYSIS_DIALOG_TEXTS_ZH = {
   button: '数据分析',
@@ -630,7 +630,7 @@ export function AnalysisDialog({
 
               {terminal && report && (
                 <div className="space-y-3" data-fork-analysis-result>
-                  <AnalysisVerdictCard report={report} />
+                  {/* 结论卡由 AnalysisSummaryBody 内部渲染，这里不要再放一份（会重复） */}
                   <AnalysisSummaryBody report={report} compact />
                   <AnalysisStockTable runId={run.run_id} compact />
                   <div className="flex flex-wrap items-center gap-2">
