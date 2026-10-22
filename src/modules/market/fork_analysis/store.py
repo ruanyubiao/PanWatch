@@ -1,0 +1,252 @@
+"""分析任务的磁盘存储：一个任务一个目录，任务状态在 ``meta.json``，明细在 SQLite。
+
+目录布局（与「条件代号/id.xlsx」的要求一致）::
+
+    data/analysis_runs/<条件名>/<任务id>/
+        meta.json     任务参数 + 状态 + 进度（原子写）
+        signals.db    逐条信号（SQLite，统计和分页直接查库，不走 Excel）
+        明细.xlsx     结果工作簿（跑完/停止后生成）
+
+为什么不上 PanWatch 自己的库
+---------------------------
+上游的 ``panwatch.db`` 是应用状态库（自选、AI 配置…），本功能是「一次跑几小时、
+可随时删掉」的批量产物，混进去会让备份与迁移都变复杂。任务目录整块删掉即可。
+
+为什么进度写在文件而不是 SQLite
+------------------------------
+进度要能在**进程被杀**之后原样读出来判断「跑到哪一天了」，而 SQLite 里的
+``days`` 表天然就是断点（按着它有记录 = 那天完成了）。``meta.json`` 只额外记住
+「有没有被要求停止」这类状态，两者都不会互相覆盖。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import random
+import sqlite3
+import string
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+from ..fork_screen import presets
+from .models import FORWARD_DAYS, HORIZONS
+
+#: src/modules/market/fork_analysis/store.py → 仓库根
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
+RUNS_DIR = PROJECT_ROOT / "data" / "analysis_runs"
+
+#: 涨幅列 r1..r30 + 触及列 t5..t30（组合成宽表：一条信号一行，统计用 SUM(CASE …)）
+RETURN_COLUMNS: tuple[str, ...] = tuple(f"r{i}" for i in range(1, FORWARD_DAYS + 1))
+TOUCH_COLUMNS: tuple[str, ...] = tuple(f"t{horizon}" for horizon in HORIZONS)
+
+_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS days (
+    d0          TEXT PRIMARY KEY,
+    hits        INTEGER NOT NULL,
+    control     INTEGER NOT NULL,
+    elapsed_ms  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS signals (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    d0          TEXT NOT NULL,
+    code        TEXT NOT NULL,
+    symbol      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    board       TEXT NOT NULL,
+    is_control  INTEGER NOT NULL,
+    d0_close    REAL NOT NULL,
+    avail       INTEGER NOT NULL,
+    {", ".join(f"{name} REAL" for name in RETURN_COLUMNS)},
+    {", ".join(f"{name} REAL" for name in TOUCH_COLUMNS)}
+);
+CREATE INDEX IF NOT EXISTS idx_signals_code ON signals(code);
+CREATE INDEX IF NOT EXISTS idx_signals_group ON signals(is_control);
+CREATE INDEX IF NOT EXISTS idx_signals_d0 ON signals(d0);
+"""
+
+_LOCK = threading.Lock()
+
+STATUS_PENDING = "pending"
+STATUS_RUNNING = "running"
+STATUS_DONE = "done"
+STATUS_STOPPED = "stopped"
+STATUS_FAILED = "failed"
+
+_TERMINAL = {STATUS_DONE, STATUS_STOPPED, STATUS_FAILED}
+
+
+class RunNotFound(LookupError):
+    """任务 id 找不到（目录被删或 id 写错）。"""
+
+
+def _now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def new_run_id() -> str:
+    """``20261022-153012-a1b2``：可按文件名排序 = 按创建时间排序。"""
+    suffix = "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(4))
+    return f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{suffix}"
+
+
+def run_dir(preset: str, run_id: str) -> Path:
+    return RUNS_DIR / presets.normalize_name(preset) / run_id
+
+
+def db_path(preset: str, run_id: str) -> Path:
+    return run_dir(preset, run_id) / "signals.db"
+
+
+def excel_path(preset: str, run_id: str) -> Path:
+    return run_dir(preset, run_id) / "明细.xlsx"
+
+
+def _write_json(path: Path, payload: Any) -> None:
+    """临时文件 + ``os.replace``：进程中途被杀也不会留下半个 JSON。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".tmp-{path.name}")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+    os.replace(tmp, path)
+
+
+def save_meta(preset: str, meta: dict[str, Any]) -> dict[str, Any]:
+    with _LOCK:
+        _write_json(run_dir(preset, meta["run_id"]) / "meta.json", meta)
+    return meta
+
+
+def load_meta(preset: str, run_id: str) -> dict[str, Any]:
+    path = run_dir(preset, run_id) / "meta.json"
+    if not path.is_file():
+        raise RunNotFound(f"分析任务 {run_id} 不存在")
+    with path.open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def patch_meta(preset: str, run_id: str, **fields: Any) -> dict[str, Any]:
+    """读-改-写。单进程单写者（一个任务只有一个线程），加锁够用。"""
+    with _LOCK:
+        path = run_dir(preset, run_id) / "meta.json"
+        if not path.is_file():
+            raise RunNotFound(f"分析任务 {run_id} 不存在")
+        with path.open(encoding="utf-8") as handle:
+            meta = json.load(handle)
+        meta.update(fields)
+        _write_json(path, meta)
+        return meta
+
+
+def list_runs(preset: Optional[str] = None) -> list[dict[str, Any]]:
+    """全部任务（新的在前）。读不懂的目录跳过，不让一个坏文件挡住列表。"""
+    if preset is not None:
+        roots = [RUNS_DIR / presets.normalize_name(preset)]
+    else:
+        roots = sorted([p for p in RUNS_DIR.glob("*") if p.is_dir()]) if RUNS_DIR.is_dir() else []
+    items: list[dict[str, Any]] = []
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for path in root.glob("*/meta.json"):
+            try:
+                with path.open(encoding="utf-8") as handle:
+                    meta = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if isinstance(meta, dict) and meta.get("run_id"):
+                items.append(meta)
+    items.sort(key=lambda item: (item.get("created_at") or "", item.get("run_id") or ""), reverse=True)
+    return items
+
+
+def find_run(run_id: str) -> tuple[str, dict[str, Any]]:
+    """按 id 找任务 → ``(条件名, meta)``。id 全局唯一，所以扫一层子目录即可。"""
+    if RUNS_DIR.is_dir():
+        for root in RUNS_DIR.glob("*"):
+            if not (root / run_id / "meta.json").is_file():
+                continue
+            with (root / run_id / "meta.json").open(encoding="utf-8") as handle:
+                return root.name, json.load(handle)
+    raise RunNotFound(f"分析任务 {run_id} 不存在")
+
+
+def request_stop(preset: str, run_id: str) -> None:
+    """放一个停止标记文件；主循环每跑完一天看一眼（选股单次要几秒，不必更细）。"""
+    path = run_dir(preset, run_id) / "stop"
+    path.write_text(_now(), encoding="utf-8")
+
+
+def stop_requested(preset: str, run_id: str) -> bool:
+    return (run_dir(preset, run_id) / "stop").exists()
+
+
+def open_db(preset: str, run_id: str) -> sqlite3.Connection:
+    """读写连接（建表 + WAL）。WAL 让「跑着的同时前端能读进度/结果」。"""
+    path = db_path(preset, run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), timeout=30.0, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.executescript(_SCHEMA)
+    conn.commit()
+    return conn
+
+
+def open_db_readonly(preset: str, run_id: str) -> sqlite3.Connection:
+    """只读连接：任务还没建库（0 天命中）时也能安全打开。"""
+    path = db_path(preset, run_id)
+    if not path.is_file():
+        raise RunNotFound(f"分析任务 {run_id} 还没有数据")
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10.0, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def insert_signals(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> int:
+    """批量写信号（一条 SQL，一条信号一行）。返回写入行数。"""
+    payload = list(rows)
+    if not payload:
+        return 0
+    columns = ["d0", "code", "symbol", "name", "board", "is_control", "d0_close", "avail",
+               *RETURN_COLUMNS, *TOUCH_COLUMNS]
+    placeholders = ", ".join("?" for _ in columns)
+    sql = f"INSERT INTO signals ({', '.join(columns)}) VALUES ({placeholders})"
+    conn.executemany(sql, [tuple(row.get(name) for name in columns) for row in payload])
+    conn.commit()
+    return len(payload)
+
+
+def record_day(conn: sqlite3.Connection, d0: str, hits: int, control: int, elapsed_ms: int) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO days (d0, hits, control, elapsed_ms) VALUES (?, ?, ?, ?)",
+        (d0, int(hits), int(control), int(elapsed_ms)),
+    )
+    conn.commit()
+
+
+def done_days(conn: sqlite3.Connection) -> list[str]:
+    """已完成日期（断点续跑用：有记录的日子直接跳过）。"""
+    return [str(row["d0"]) for row in conn.execute("SELECT d0 FROM days ORDER BY d0")]
+
+
+def day_rows(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT d0, hits, control, elapsed_ms FROM days ORDER BY d0 DESC LIMIT ?", (int(limit),)
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def counts(conn: sqlite3.Connection) -> dict[str, int]:
+    total = conn.execute("SELECT COUNT(*) AS n FROM signals").fetchone()["n"]
+    hits = conn.execute("SELECT COUNT(*) AS n FROM signals WHERE is_control = 0").fetchone()["n"]
+    days = conn.execute("SELECT COUNT(*) AS n FROM days").fetchone()["n"]
+    return {"signals": int(total), "hits": int(hits), "control": int(total) - int(hits), "days": int(days)}
+
+
+def is_terminal(meta: dict[str, Any]) -> bool:
+    return str(meta.get("status")) in _TERMINAL
