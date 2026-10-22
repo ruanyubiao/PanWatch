@@ -19,6 +19,7 @@ import {
   DialogTitle,
 } from '@panwatch/base-ui/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@panwatch/base-ui/components/ui/select'
+import { Switch } from '@panwatch/base-ui/components/ui/switch'
 import { toLocalDateTimeInput } from '@panwatch/base-ui/datetime'
 import { SCREEN_MARKETS, type ScreenMarket } from '@/lib/screen-rule'
 import type { ScreenPreset } from '@/lib/screen-presets'
@@ -459,43 +460,72 @@ export function AnalysisDialog({
                     <span className="text-[10px] text-muted-foreground">{T.endHint}</span>
                   </div>
 
-                  {/* 市场：与条件选股同一套「全部 / 四个市场」radio 组（全部是独立状态） */}
+                  {/* 市场：与条件选股界面完全同一套样式（带 ✓ 的 pill 组 + ST 开关） */}
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="w-20 shrink-0 text-[11px] text-muted-foreground">{T.market}</span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setForm(current => ({ ...current, marketAll: true, markets: [...SCREEN_MARKETS] }))
-                      }
-                      className={`h-7 rounded-md border px-2 text-[11px] ${
-                        form.marketAll ? 'border-primary/60 bg-primary/10 text-primary' : 'border-border/60'
-                      }`}
-                    >
-                      {T.marketAll}
-                    </button>
-                    {SCREEN_MARKETS.map(key => (
-                      <label
-                        key={key}
-                        className="inline-flex items-center gap-1 text-[11px] text-muted-foreground"
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.market}</span>
+                    <div className="flex flex-wrap items-center gap-1" role="group" aria-label={T.market}>
+                      <button
+                        type="button"
+                        aria-pressed={form.marketAll ? true : form.markets.length === 0 ? false : 'mixed'}
+                        aria-label={T.marketAll}
+                        data-fork-analysis-market-all
+                        onClick={() =>
+                          setForm(current => ({ ...current, marketAll: true, markets: [...SCREEN_MARKETS] }))
+                        }
+                        className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ${
+                          form.marketAll
+                            ? 'border-primary/60 bg-primary/10 text-primary'
+                            : 'border-border text-muted-foreground hover:text-foreground'
+                        }`}
                       >
-                        <input
-                          type="checkbox"
-                          className="h-3.5 w-3.5 accent-primary"
-                          checked={!form.marketAll && form.markets.includes(key)}
-                          onChange={() => toggleMarket(key)}
-                        />
-                        {MARKET_LABELS[key]}
-                      </label>
-                    ))}
-                    <label className="ml-2 inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-                      <input
-                        type="checkbox"
-                        className="h-3.5 w-3.5 accent-primary"
+                        <span
+                          className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] border border-current/60 text-[8px] leading-none"
+                          aria-hidden
+                        >
+                          {form.marketAll ? '✓' : form.markets.length === 0 ? '' : '–'}
+                        </span>
+                        {T.marketAll}
+                      </button>
+                      {/* 「全部」选中时其余四个显示为未选中（radio 组语义，与条件选股一致） */}
+                      {SCREEN_MARKETS.map(key => {
+                        const selected = !form.marketAll && form.markets.includes(key)
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            aria-pressed={selected}
+                            aria-label={MARKET_LABELS[key]}
+                            data-fork-analysis-market={key}
+                            onClick={() => toggleMarket(key)}
+                            className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ${
+                              selected
+                                ? 'border-primary/60 bg-primary/10 text-primary'
+                                : 'border-border text-muted-foreground hover:text-foreground'
+                            }`}
+                          >
+                            <span
+                              className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] border border-current/60 text-[8px] leading-none"
+                              aria-hidden
+                            >
+                              {selected ? '✓' : ''}
+                            </span>
+                            {MARKET_LABELS[key]}
+                          </button>
+                        )
+                      })}
+                    </div>
+                    {/* 含 ST：与条件选股同一个 Switch 组件，跟在市场按钮后面 */}
+                    <div className="ml-3 flex items-center gap-1.5">
+                      <Switch
                         checked={form.includeSt}
-                        onChange={event => setForm(current => ({ ...current, includeSt: event.target.checked }))}
+                        aria-label={T.includeSt}
+                        data-fork-analysis-include-st
+                        onCheckedChange={checked =>
+                          setForm(current => ({ ...current, includeSt: checked }))
+                        }
                       />
-                      {T.includeSt}
-                    </label>
+                      <span className="text-[11px] text-muted-foreground">{T.includeSt}</span>
+                    </div>
                   </div>
 
                   <p className="text-[10px] text-muted-foreground" data-fork-analysis-estimate>
