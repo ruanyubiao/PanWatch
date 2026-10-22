@@ -260,21 +260,28 @@ def test_倒数第N日超窗口要报错():
 
 def test_区间M必须不小于N():
     errors = CONDITIONS["ma_bullish_all"].validate(MaOrderParams(periods=[5, 10], n=5, m=3), 30)
-    assert errors == ["终点 M 需为 5 至 30 的整数（M ≥ N）"]
+    assert errors == ["终点 f 需为 5 至 30 的整数（f ≥ n）"]
 
 
-def test_区间跨度上限30根():
-    errors = CONDITIONS["ma_bullish_any"].validate(MaOrderParams(periods=[5, 10], n=1, m=30), 250)
-    assert errors == []
-    errors = CONDITIONS["ma_bullish_all"].validate(MaOrderParams(periods=[5, 10], n=1, m=31), 250)
-    assert errors and "区间跨度不能超过 30 个交易日" in errors[0]
+def test_区间跨度上限跟随统计窗口():
+    """跨度上限 = 统计窗口（用户 2026-10-22 第 8 条：30 不是常数）。"""
+    # 窗口 30：跨度 30 合法，31 越界（上限就是窗口本身）
+    assert CONDITIONS["ma_bullish_any"].validate(MaOrderParams(periods=[5, 10], n=1, m=30), 30) == []
+    errors = CONDITIONS["ma_bullish_all"].validate(MaOrderParams(periods=[5, 10], n=1, m=31), 30)
+    assert errors and "终点 f 需为 1 至 30 的整数" in errors[0]
+    # 窗口 250：跨度 31 / 120 都合法（老规则会在这里误伤）
+    assert CONDITIONS["ma_bullish_all"].validate(MaOrderParams(periods=[5, 10], n=1, m=31), 250) == []
+    assert CONDITIONS["ma_bullish_any"].validate(MaOrderParams(periods=[5, 10], n=1, m=120), 250) == []
+    # 窗口 60：上限跟着降到 60
+    errors = CONDITIONS["ma_bullish_any"].validate(MaOrderParams(periods=[5, 10], n=1, m=61), 60)
+    assert errors and "至 60 的整数" in errors[0]
 
 
-def test_阴阳线M为0时不受30根跨度限制():
-    """老条件（整个统计窗口 250 天）不能被新加的跨度上限误伤。"""
+def test_阴阳线M为0时不受跨度上限限制():
+    """M 留空 = 整个统计窗口；显式写满窗口也合法（上限就是窗口本身）。"""
     assert CONDITIONS["more_bullish_candles"].validate(CandleRangeParams(n=1, m=0), 250) == []
-    # 显式写 250 也不行（跨度上限仍然生效）
-    assert CONDITIONS["more_bullish_candles"].validate(CandleRangeParams(n=1, m=250), 250) != []
+    assert CONDITIONS["more_bullish_candles"].validate(CandleRangeParams(n=1, m=250), 250) == []
+    assert CONDITIONS["more_bullish_candles"].validate(CandleRangeParams(n=1, m=251), 250) != []
 
 
 @pytest.mark.parametrize(

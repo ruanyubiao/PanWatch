@@ -19,6 +19,12 @@ export interface AnalysisRunMeta {
   status: AnalysisStatus
   start_date: string
   end_date: string
+  /** 结束日上限：再往后就没有足够的验证行情（后端算好的最后一个可验证交易日） */
+  max_end_date?: string | null
+  /** 验证天数（向前看几个交易日） */
+  validate_days?: number
+  /** 统计周期（验证天数决定，12 → 5、10） */
+  horizons?: number[]
   markets: ScreenMarket[]
   include_st: boolean
   sample_size: number
@@ -107,18 +113,68 @@ export interface AnalysisBreakdownRow {
   excess: Record<string, number | null>
 }
 
+export interface AnalysisGroupCell {
+  n: number
+  win_rate: number | null
+  ci_low: number | null
+  ci_high: number | null
+  avg_return: number | null
+  edge_pp: number | null
+}
+
+export interface AnalysisGroupItem {
+  key: string
+  n: number
+  sample_total: number
+  win_rate: number | null
+  edge_pp: number | null
+  avg_return: number | null
+  q: number
+  z: number
+  significant: boolean
+  verdict: 'edge' | 'no_edge' | 'insufficient'
+  horizons: Record<string, AnalysisGroupCell>
+}
+
+export interface AnalysisGroupBlock {
+  dim: string
+  label: string
+  hint: string
+  focus_horizon: number
+  items: AnalysisGroupItem[]
+}
+
+export interface AnalysisArrival {
+  buckets: { day: number; n: number }[]
+  never_positive: number
+  median_days: number | null
+  total: number
+  within: Record<string, number | null>
+}
+
 export interface AnalysisReport {
   run: AnalysisRunMeta
   counts: { signals: number; hits: number; control: number; days: number }
   summary: AnalysisSummaryRow[]
   verdict: AnalysisVerdict
+  groups: AnalysisGroupBlock[]
+  arrival: AnalysisArrival
   by_board: AnalysisBreakdownRow[]
   by_year: AnalysisBreakdownRow[]
   histograms: {
     edges: number[]
     series: { horizon: number; counts: number[]; below: number; above: number }[]
   }
-  density: { d0: string; hits: number; control: number }[]
+  density: { d0: string; hits: number }[]
+  horizons: number[]
+  validate_days: number
+  control_hidden: boolean
+}
+
+export interface AnalysisDetail {
+  run: AnalysisRunMeta
+  condition: { name: string; saved_at?: string | null; request?: unknown; missing?: string }
+  verdict: AnalysisVerdict | null
   horizons: number[]
 }
 
@@ -127,6 +183,9 @@ export interface AnalysisPreview {
   first_day: string
   last_day: string
   latest_trade_date: string
+  max_end_date: string
+  validate_days: number
+  horizons: number[]
   trading_days: number
   markets: ScreenMarket[]
   include_st: boolean
@@ -137,6 +196,7 @@ export interface AnalysisCreateBody {
   preset: string
   start_date: string
   end_date?: string | null
+  validate_days?: number
   markets?: ScreenMarket[]
   include_st?: boolean
   sample_size?: number
@@ -186,6 +246,22 @@ export async function resumeAnalysisRun(runId: string): Promise<AnalysisRunMeta>
 
 export function getAnalysisReport(runId: string): Promise<AnalysisReport> {
   return fetchAPI<AnalysisReport>(`/stocks/analysis/runs/${runId}/report`, { timeoutMs: 30000 })
+}
+
+export function getAnalysisDetail(runId: string): Promise<AnalysisDetail> {
+  return fetchAPI<AnalysisDetail>(`/stocks/analysis/runs/${runId}/detail`, { timeoutMs: 20000 })
+}
+
+export async function deleteAnalysisRun(runId: string): Promise<void> {
+  await fetchAPI(`/stocks/analysis/runs/${runId}`, { method: 'DELETE' })
+}
+
+export async function recomputeAnalysisRun(runId: string): Promise<AnalysisRunMeta> {
+  const data = await fetchAPI<{ run: AnalysisRunMeta }>(`/stocks/analysis/runs/${runId}/recompute`, {
+    method: 'POST',
+    timeoutMs: 120000,
+  })
+  return data.run
 }
 
 export interface StockQuery {
