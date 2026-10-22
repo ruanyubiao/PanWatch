@@ -87,7 +87,8 @@ describe('条件选股弹窗', () => {
     // 焦点确实被接住了（落在弹窗容器上），不是「谁都没聚焦」的空过
     expect(document.activeElement).toBe(document.querySelector('[data-fork-screen-dialog]'))
     for (const name of ['上证', '深证', '创业', '科创']) {
-      expect(marketButton(name).getAttribute('aria-pressed')).toBe('true')
+      // 「全部」选中时，四个市场一律显示为未选中（radio 组语义，2026-10-23 第 1 条）
+      expect(marketButton(name).getAttribute('aria-pressed')).toBe('false')
     }
     expect(marketButton('全部').getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByText('未添加技术条件：将仅按基础筛选选股')).toBeTruthy()
@@ -96,14 +97,14 @@ describe('条件选股弹窗', () => {
     expect(screen.getByText(/数据截至 2026-10-16/)).toBeTruthy()
   })
 
-  it('D1 市场是「全部 / 其他」二选一的组：全选状态不能再点「全部」取消', async () => {
+  it('D1 市场是「全部 / 其他」radio 组：全部选中时其他取消、点其他则全部取消', async () => {
     renderDialog()
 
-    // ① 全选状态下点「全部」→ 仍然是全选（不能取消）
+    // ① 全选状态下点「全部」→ 仍然只有「全部」选中（不能取消）
     await userEvent.click(marketButton('全部'))
     expect(marketButton('全部').getAttribute('aria-pressed')).toBe('true')
     for (const name of ['上证', '深证', '创业', '科创']) {
-      expect(marketButton(name).getAttribute('aria-pressed')).toBe('true')
+      expect(marketButton(name).getAttribute('aria-pressed')).toBe('false')
     }
 
     // ② 全选状态下点「上证」→ 只剩上证（「全部」被取消选中）
@@ -118,12 +119,20 @@ describe('条件选股弹窗', () => {
     await userEvent.click(marketButton('上证'))
     expect(marketButton('上证').getAttribute('aria-pressed')).toBe('true')
 
-    // ④ 点「全部」→ 四个全选
+    // ④ 点「全部」→ 只有「全部」选中，四个市场全部取消
     await userEvent.click(marketButton('全部'))
     expect(marketButton('全部').getAttribute('aria-pressed')).toBe('true')
     for (const name of ['上证', '深证', '创业', '科创']) {
-      expect(marketButton(name).getAttribute('aria-pressed')).toBe('true')
+      expect(marketButton(name).getAttribute('aria-pressed')).toBe('false')
     }
+
+    // ⑤ 手动把四个市场凑齐 → 又回到「全部」态（四个复选框不会同时亮）
+    await userEvent.click(marketButton('上证'))
+    await userEvent.click(marketButton('深证'))
+    await userEvent.click(marketButton('创业'))
+    await userEvent.click(marketButton('科创'))
+    expect(marketButton('全部').getAttribute('aria-pressed')).toBe('true')
+    expect(marketButton('科创').getAttribute('aria-pressed')).toBe('false')
   })
 
   it('D2 控件挡住非法窗口值；留空提交被拦并给出错误', async () => {
@@ -160,6 +169,8 @@ describe('条件选股弹窗', () => {
     const addConditionButtons = screen.getAllByRole('button', { name: '+ 条件' })
     await userEvent.click(addConditionButtons[addConditionButtons.length - 1])
     await userEvent.click(await screen.findByText('阳线多于阴线'))
+    // 阴阳线计数现在带按日参数（倒数第 N 日 / 终点 M），所以先展开参数表单再确定
+    await userEvent.click(await screen.findByRole('button', { name: '确定' }))
     await waitFor(() => expect(condRows()).toHaveLength(1))
     expect(condRows()[0].textContent).toContain('阳线多于阴线（统计窗口内）')
 
@@ -465,14 +476,21 @@ describe('条件选股弹窗', () => {
     expect(addGroup.querySelector('svg')).toBeNull()
   })
 
-  it('L6 条件列表：浮层加宽 + 滚轮真的能滚（自己 preventDefault 改 scrollTop）', async () => {
+  it('L6 条件列表：浮层与条件窗口同宽对齐 + 滚轮真的能滚（自己 preventDefault 改 scrollTop）', async () => {
     renderDialog()
+    // jsdom 没有布局：给条件窗口和触发器各声明一个矩形，才能验证「同宽对齐」
+    const dialog = document.querySelector('[data-fork-screen-dialog]') as HTMLElement
+    dialog.getBoundingClientRect = () =>
+      ({ width: 968, height: 600, top: 20, left: 100, right: 1068, bottom: 620, x: 100, y: 20, toJSON: () => ({}) }) as DOMRect
+
     await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
     await screen.findByText('均线多头排列')
 
     const panel = document.querySelector('[data-fork-screen-picker]') as HTMLElement
-    // w-80（320px）下说明文字会折行；27rem = 432px
-    expect(panel.className).toContain('w-[27rem]')
+    // 宽度 = 条件窗口宽度（968），左边缘靠 marginLeft 推过去（触发器在 left≈320）
+    expect(panel.style.width).toBe('968px')
+    // 触发器在 jsdom 里 left=0、窗口 left=100 → 浮层要往右推 100px 才和窗口左边缘对齐
+    expect(panel.style.marginLeft).toBe('100px')
 
     const list = document.querySelector('[data-fork-screen-picker-list]') as HTMLElement
     // jsdom 没有布局：手工声明「内容 800 高、可视区 200 高」

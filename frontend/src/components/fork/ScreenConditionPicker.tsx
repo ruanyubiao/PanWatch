@@ -76,6 +76,27 @@ export function ScreenConditionPicker({
   const [pending, setPending] = useState<ConditionName | null>(null)
   // 列表挂载的那一刻装上滚轮监听（portal 里节点出现得比 effect 晚，见 useWheelScroll）
   const attachWheel = useWheelScroll()
+  // 浮层宽度与水平位置：跟条件窗口一样宽、左边缘对齐（用户 2026-10-23 第 2 条）
+  const triggerRef = useRef<HTMLSpanElement | null>(null)
+  const [align, setAlign] = useState<{ width: number; offset: number } | null>(null)
+
+  /**
+   * 量一次几何：条件窗口（``data-fork-screen-dialog``）的宽度与左边缘，
+   * 减去触发器自身的左边缘 → 用 ``marginLeft`` 把浮层推过去。
+   *
+   * 为什么要手量：Radix 的浮层按**触发器**定位，而用户要的是「和条件窗口重叠」——
+   * 触发器在第五行、窗口居中 968px，两者左边缘差着一大截。Radix 的位置写在自己的
+   * ``transform`` 上，只有 ``margin`` 是它不碰的，所以用 margin-left 平移。
+   */
+  const measure = () => {
+    const dialog = document.querySelector<HTMLElement>('[data-fork-screen-dialog]')
+    const button = triggerRef.current?.firstElementChild as HTMLElement | null
+    if (!dialog || !button) return
+    const d = dialog.getBoundingClientRect()
+    const t = button.getBoundingClientRect()
+    const width = Math.min(d.width, window.innerWidth - 24)
+    setAlign({ width: Math.max(320, width), offset: d.left - t.left })
+  }
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -99,12 +120,35 @@ export function ScreenConditionPicker({
       open={open}
       onOpenChange={next => {
         setOpen(next)
-        if (!next) reset()
+        if (next) {
+          // 先量几何再开：浮层首帧就用最终宽度，不会「先窄后宽」闪一下
+          measure()
+        } else {
+          reset()
+        }
       }}
     >
-      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
-      {/* w-[27rem]（432px）：在 w-80（320px）下说明文字会折成两行（用户反馈） */}
-      <PopoverContent align="start" className="w-[27rem] max-w-[calc(100vw-2rem)] p-2" data-fork-screen-picker>
+      <PopoverTrigger asChild>
+        <span ref={triggerRef} className="inline-flex">
+          {trigger}
+        </span>
+      </PopoverTrigger>
+      {/*
+        宽度 = 条件窗口宽度、左边缘与窗口对齐（用户 2026-10-23 第 2 条：原来 432px 太窄）。
+        高度不变：列表仍是 max-h-72。
+        avoidCollisions=false：开着的话 Radix 会把浮层推回来，左边缘就对不齐了。
+      */}
+      <PopoverContent
+        align="start"
+        avoidCollisions={false}
+        style={
+          align
+            ? { width: align.width, marginLeft: align.offset }
+            : undefined
+        }
+        className="max-w-[calc(100vw-2rem)] p-2"
+        data-fork-screen-picker
+      >
         {pending ? (
           <ScreenParamForm
             name={pending}
