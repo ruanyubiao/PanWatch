@@ -11,7 +11,7 @@ import { excessColor } from './AnalysisCharts'
 
 export const STOCK_TABLE_TEXTS_ZH = {
   title: '个股准确率排行',
-  hint: '点一行看这只股票的全部信号；样本 < 30 次的标灰（概率不可当真）',
+  hint: '点一行看这只股票的全部信号。宽口径条件（每天命中几百只）的单股命中次数往往不多，所以默认只看命中 ≥10 次的；<30 次的当趋势看，别当结论。',
   empty: '暂无命中',
   code: '代码',
   name: '名称',
@@ -22,7 +22,10 @@ export const STOCK_TABLE_TEXTS_ZH = {
   excessValue: (value: string) => `${value}pp`,
   search: '搜索代码 / 名称',
   boardAll: '全部市场',
-  sufficientOnly: '只看样本足够（≥30 次）',
+  minSamplesAll: '全部',
+  minSamplesTen: '≥10 次',
+  minSamplesThirty: '≥30 次',
+  minSamplesHint: '样本下限',
   paging: (from: number, to: number, total: number) => `第 ${from}–${to} 条 / 共 ${total} 条`,
   prev: '上一页',
   next: '下一页',
@@ -69,7 +72,7 @@ export function AnalysisStockTable({
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [board, setBoard] = useState('')
   const [query, setQuery] = useState('')
-  const [sufficientOnly, setSufficientOnly] = useState(true)
+  const [minSamples, setMinSamples] = useState(10)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<string | null>(null)
@@ -86,7 +89,7 @@ export function AnalysisStockTable({
         order,
         board: board || undefined,
         q: query.trim() || undefined,
-        sufficientOnly,
+        minSamples,
       })
       setRows(data.items)
       setTotal(data.total)
@@ -96,7 +99,7 @@ export function AnalysisStockTable({
     } finally {
       setLoading(false)
     }
-  }, [T, board, limit, offset, order, query, runId, sort, sufficientOnly])
+  }, [T, board, limit, minSamples, offset, order, query, runId, sort])
 
   useEffect(() => {
     void load()
@@ -174,18 +177,29 @@ export function AnalysisStockTable({
               {key ? T.boardLabels[key] : T.boardAll}
             </button>
           ))}
-          <label className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
-            <input
-              type="checkbox"
-              className="h-3.5 w-3.5 accent-primary"
-              checked={sufficientOnly}
-              onChange={event => {
-                setSufficientOnly(event.target.checked)
+          <span className="text-[11px] text-muted-foreground">{T.minSamplesHint}</span>
+          {[
+            { value: 0, label: T.minSamplesAll },
+            { value: 10, label: T.minSamplesTen },
+            { value: 30, label: T.minSamplesThirty },
+          ].map(option => (
+            <button
+              key={option.value}
+              type="button"
+              data-fork-analysis-min-samples={option.value}
+              onClick={() => {
+                setMinSamples(option.value)
                 setOffset(0)
               }}
-            />
-            {T.sufficientOnly}
-          </label>
+              className={`h-7 rounded-md border px-2 text-[11px] ${
+                minSamples === option.value
+                  ? 'border-primary/60 bg-primary/10 text-primary'
+                  : 'border-border/60 text-muted-foreground'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
       )}
 
