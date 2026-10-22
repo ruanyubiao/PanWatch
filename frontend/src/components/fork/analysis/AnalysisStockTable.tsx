@@ -18,7 +18,7 @@ export const STOCK_TABLE_TEXTS_ZH = {
   board: '市场',
   signals: '命中次数',
   win: (n: number) => `${n}日胜率`,
-  excess10: '10日超额',
+  excess: (days: number) => `${days}日超额`,
   excessValue: (value: string) => `${value}pp`,
   search: '搜索代码 / 名称',
   boardAll: '全部市场',
@@ -30,8 +30,8 @@ export const STOCK_TABLE_TEXTS_ZH = {
   prev: '上一页',
   next: '下一页',
   detailTitle: (code: string, name: string) => `${code} ${name} 的信号明细`,
-  detailD0: '日期',
-  detailPrice: 'd0 收盘价',
+  detailD0: '信号日',
+  detailPrice: '信号日收盘价',
   detailAvail: '实际可取天数',
   detailEmpty: '这只股票还没有数据',
   boardLabels: { sh: '沪市', sz: '深市', cyb: '创业板', kcb: '科创板', other: '其他' } as Record<string, string>,
@@ -60,15 +60,20 @@ function signed(value: number | null | undefined, digits = 1): string {
 export function AnalysisStockTable({
   runId,
   compact = false,
+  horizons = [5, 10, 15, 20, 25, 30],
 }: {
   runId: string
   compact?: boolean
+  /** 任务的统计周期（验证天数决定，12 → [5, 10]） */
+  horizons?: number[]
 }) {
   const T = STOCK_TABLE_TEXTS_ZH
+  const horizonKeys = horizons.length > 0 ? horizons : [5, 10, 15, 20, 25, 30]
+  const focus = horizonKeys[horizonKeys.length - 1]
   const [rows, setRows] = useState<AnalysisStockRow[]>([])
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
-  const [sort, setSort] = useState('win10')
+  const [sort, setSort] = useState(`win${focus}`)
   const [order, setOrder] = useState<'asc' | 'desc'>('desc')
   const [board, setBoard] = useState('')
   const [query, setQuery] = useState('')
@@ -130,7 +135,6 @@ export function AnalysisStockTable({
     }
   }
 
-  const horizonKeys = [5, 10, 15, 20, 25, 30]
   const header = (key: string, label: string, align: 'left' | 'right' = 'right') => (
     <th
       className={`cursor-pointer px-2 py-1 font-medium ${align === 'right' ? 'text-right' : 'text-left'}`}
@@ -214,7 +218,7 @@ export function AnalysisStockTable({
               <th className="px-2 py-1 text-left font-medium">{T.board}</th>
               {header('n', T.signals)}
               {horizonKeys.map(horizon => header(`win${horizon}`, T.win(horizon)))}
-              {header('excess10', T.excess10)}
+              {header(`excess${focus}`, T.excess(focus))}
             </tr>
           </thead>
           <tbody>
@@ -236,8 +240,11 @@ export function AnalysisStockTable({
                     {pct(row.win[String(horizon)])}
                   </td>
                 ))}
-                <td className="px-2 py-1 text-right tabular-nums" style={{ color: excessColor(row.excess['10']) }}>
-                  {T.excessValue(signed(row.excess['10']))}
+                <td
+                  className="px-2 py-1 text-right tabular-nums"
+                  style={{ color: excessColor(row.excess[String(focus)]) }}
+                >
+                  {T.excessValue(signed(row.excess[String(focus)]))}
                 </td>
               </tr>
             ))}

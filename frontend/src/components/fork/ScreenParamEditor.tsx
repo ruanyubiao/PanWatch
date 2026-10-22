@@ -67,7 +67,7 @@ const PARAM_TEXTS_ZH = {
   /** 单日：一个 N */
   dayOnly: '只看倒数第 N 个交易日；N = 1 就是数据截至那天（默认）',
   /** 区间：N ～ M */
-  spanOnly: '倒数第 N ～ M 个交易日（N 更近、M 更早，跨度不超过 30 个交易日）',
+  spanOnly: (limit: number) => `起点 n ～ 终点 f 个交易日（n 更近、f 更早，跨度不超过 ${limit} 个交易日）`,
   nLabel: '倒数第 N 日',
   spanStart: '起点 N（更近）',
   spanEnd: '终点 M（更早）',
@@ -172,7 +172,9 @@ function DayFields({
         )}
       </div>
       <div className="text-[11px] leading-4 text-muted-foreground">
-        {mode === 'range-window' ? PARAM_TEXTS_ZH.endEmpty : PARAM_TEXTS_ZH.spanOnly}
+        {mode === 'range-window'
+          ? PARAM_TEXTS_ZH.endEmpty
+          : PARAM_TEXTS_ZH.spanOnly(Number.isFinite(tradingDays) && tradingDays >= 1 ? Math.trunc(tradingDays) : 250)}
       </div>
     </div>
   )
