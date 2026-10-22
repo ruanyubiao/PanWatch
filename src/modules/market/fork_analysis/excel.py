@@ -10,6 +10,14 @@
 
 涨幅单位是**百分点**（3.25 = 上涨 3.25%），两位小数。价格是不复权真实收盘价，
 涨幅是后复权口径（见 ``forward.py`` 的三条口径）。
+
+为什么用 write_only 模式
+----------------------
+云端实测：38,759 行 × 35 列（约 136 万个单元格）用普通模式要建 136 万个 Cell
+对象，进程内存冲到 1 GB 以上、跑了 20 分钟还写不出文件（被 systemd 的
+``MemoryMax=1800M`` 拖到反复换页）。``Workbook(write_only=True)`` 是边写边落临时
+文件，内存是常数级，同一份数据几秒级完成。代价：不能事后改单元格（所以列宽在
+写完之后设、冻结窗格不支持、表头样式用 ``WriteOnlyCell`` 提前挂好）。
 """
 
 from __future__ import annotations
@@ -36,21 +44,31 @@ def _pct(value: Any) -> Any:
     return round(float(value) * 100, 2)
 
 
-def _style_header(sheet: Any, columns: int) -> None:
+def _header_cells(sheet: Any, values: list[str]) -> list[Any]:
+    from openpyxl.cell import WriteOnlyCell
     from openpyxl.styles import Alignment, Font, PatternFill
 
     fill = PatternFill("solid", fgColor=_HEADER_FILL)
-    for index in range(1, columns + 1):
-        cell = sheet.cell(row=1, column=index)
+    cells = []
+    for value in values:
+        cell = WriteOnlyCell(sheet, value=value)
         cell.font = Font(bold=True)
         cell.fill = fill
         cell.alignment = Alignment(horizontal="center", vertical="center")
+        cells.append(cell)
+    return cells
+
+
+def _set_widths(sheet: Any, widths: list[tuple[int, float]]) -> None:
+    from openpyxl.utils import get_column_letter
+
+    for column, width in widths:
+        sheet.column_dimensions[get_column_letter(column)].width = width
 
 
 def _write_detail(sheet: Any, conn: sqlite3.Connection) -> int:
     headers = ["日期", "股票代码", "股票名称", "d0收盘价", *[f"第{i}天涨幅" for i in range(1, 31)], "实际可取天数"]
-    sheet.append(headers)
-    _style_header(sheet, len(headers))
+    sheet.append(_header_cells(sheet, headers))
     returns = ", ".join(store.RETURN_COLUMNS)
     row_count = 0
     cursor = conn.execute(
@@ -58,22 +76,17 @@ def _write_detail(sheet: Any, conn: sqlite3.Connection) -> int:
         "WHERE is_control = 0 ORDER BY d0, code"
     )
     for row in cursor:
-        code = str(row[1])
+        # 代码写成字符串单元格：Excel 不会把 000001 显示成 1（不需要 number_format）
         sheet.append([
             row[0],
-            # 代码写成文本：Excel 会把 000001 显示成 1
-            code,
+            str(row[1]),
             row[2],
             float(row[3]) if row[3] is not None else None,
             *[_pct(row[4 + offset]) for offset in range(30)],
             int(row[34]) if row[34] is not None else 0,
         ])
-        sheet.cell(row=sheet.max_row, column=2).number_format = "@"
         row_count += 1
-    widths = [(1, 12), (2, 10), (3, 12), (4, 10)] + [(index, 9) for index in range(5, 36)]
-    for column, width in widths:
-        sheet.column_dimensions[sheet.cell(row=1, column=column).column_letter].width = width
-    sheet.freeze_panes = "D2"
+    _set_widths(sheet, [(1, 12), (2, 10), (3, 12), (4, 10), *[(index, 9) for index in range(5, 36)]])
     return row_count
 
 
@@ -83,8 +96,7 @@ def _write_by_stock(sheet: Any, conn: sqlite3.Connection) -> int:
     items = stats.by_stock(conn, control)
     headers = ["股票代码", "股票名称", "市场", "信号数", *[f"{h}日上涨概率" for h in HORIZONS],
                "10日平均涨幅", "10日超额", "样本是否足够"]
-    sheet.append(headers)
-    _style_header(sheet, len(headers))
+    sheet.append(_header_cells(sheet, headers))
     for item in items:
         sheet.append([
             item["code"],
@@ -96,10 +108,7 @@ def _write_by_stock(sheet: Any, conn: sqlite3.Connection) -> int:
             item["excess"].get("10"),
             "是" if item["sufficient"] else "否",
         ])
-        sheet.cell(row=sheet.max_row, column=1).number_format = "@"
-    for index in range(1, len(headers) + 1):
-        sheet.column_dimensions[sheet.cell(row=1, column=index).column_letter].width = 13
-    sheet.freeze_panes = "C2"
+    _set_widths(sheet, [(index, 13) for index in range(1, len(headers) + 1)])
     return len(items)
 
 
@@ -107,8 +116,7 @@ def _write_summary(sheet: Any, conn: sqlite3.Connection) -> None:
     rows = stats.summary(conn)
     headers = ["持有周期(交易日)", "条件组胜率%", "对照组胜率%", "超额(百分点)", "条件组触及率%",
                "条件组平均涨幅%", "条件组盈亏比", "条件组样本", "对照组样本"]
-    sheet.append(headers)
-    _style_header(sheet, len(headers))
+    sheet.append(_header_cells(sheet, headers))
     for row in rows:
         sig, ctl = row["signal"], row["control"]
         sheet.append([
@@ -122,9 +130,7 @@ def _write_summary(sheet: Any, conn: sqlite3.Connection) -> None:
             sig["n"],
             ctl["n"],
         ])
-    for index in range(1, len(headers) + 1):
-        sheet.column_dimensions[sheet.cell(row=1, column=index).column_letter].width = 17
-    sheet.freeze_panes = "A2"
+    _set_widths(sheet, [(index, 17) for index in range(1, len(headers) + 1)])
 
 
 def write_workbook(conn: sqlite3.Connection, preset_name: str, run_id: str) -> str:
@@ -134,11 +140,8 @@ def write_workbook(conn: sqlite3.Connection, preset_name: str, run_id: str) -> s
     except ImportError as exc:  # pragma: no cover - 依赖漏装
         raise RuntimeError("缺少 openpyxl，请执行 deploy/01-install-deps.sh 安装") from exc
 
-    workbook = Workbook()
-    detail = workbook.active
-    assert detail is not None  # openpyxl 新建工作簿必有一个活动表
-    detail.title = "明细"
-    _write_detail(detail, conn)
+    workbook = Workbook(write_only=True)
+    _write_detail(workbook.create_sheet("明细"), conn)
     _write_by_stock(workbook.create_sheet("按股票"), conn)
     _write_summary(workbook.create_sheet("汇总"), conn)
 
