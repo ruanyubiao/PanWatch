@@ -13,6 +13,8 @@ export const ANALYSIS_SUMMARY_TEXTS_ZH = {
     `这个条件有用：最佳持有 ${horizon} 个交易日，胜率 ${rate}%（随机买入 ${base}%，超额 ${excess}pp），样本 ${sample} 条。`,
   noEdge: (horizon: number, excess: string, base: string) =>
     `没有优势：最好的周期（${horizon} 日）只比随机买入高 ${excess}pp（随机 ${base}%），建议重新设计条件。`,
+  worse: (horizon: number, excess: string, rate: string, base: string) =>
+    `比随机买入还差：${horizon} 日胜率 ${rate}%，随机买入 ${base}%（低 ${excess}pp，统计显著）。这个条件要重新设计。`,
   notSignificant: (z: string) => `差异不显著（z=${z}）：看着高一点，但统计上不能确认，不能据此下结论。`,
   insufficient: '样本不足 100 条，无法判断条件好坏。把日期区间放长再跑一次。',
   detailLine: (avg: string, payoff: string, touch: string) =>
@@ -71,6 +73,13 @@ export function AnalysisVerdictCard({ report }: { report: AnalysisReport }) {
       signed(verdict.best_excess_pp),
       verdict.sample ?? 0,
     )
+  } else if (verdict.reason === 'worse') {
+    text = T.worse(
+      verdict.worst_horizon ?? verdict.best_horizon ?? 0,
+      fmt(verdict.worst_excess_pp),
+      fmt(verdict.worst_win_rate),
+      fmt(verdict.worst_baseline),
+    )
   } else if (verdict.reason === 'no_edge' && verdict.best_horizon !== null) {
     text = T.noEdge(verdict.best_horizon, signed(verdict.best_excess_pp), fmt(verdict.baseline_win_rate))
   } else if (verdict.reason === 'not_significant') {
@@ -79,9 +88,11 @@ export function AnalysisVerdictCard({ report }: { report: AnalysisReport }) {
   const tone =
     verdict.reason === 'usable'
       ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700'
-      : verdict.reason === 'insufficient'
-        ? 'border-border/60 bg-accent/20 text-foreground'
-        : 'border-amber-500/40 bg-amber-500/10 text-amber-700'
+      : verdict.reason === 'worse'
+        ? 'border-red-500/40 bg-red-500/10 text-red-700'
+        : verdict.reason === 'insufficient'
+          ? 'border-border/60 bg-accent/20 text-foreground'
+          : 'border-amber-500/40 bg-amber-500/10 text-amber-700'
 
   return (
     <div data-fork-analysis-verdict className={`rounded-lg border p-3 text-[12px] leading-relaxed ${tone}`}>
