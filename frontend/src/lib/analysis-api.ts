@@ -88,6 +88,9 @@ export interface AnalysisVerdict {
   sample?: number
   z?: number
   significant?: boolean
+  /** 按日聚合的诚实结论（比合并 z 保守） */
+  honest?: AnalysisHonestVerdict
+  honest_verdict?: string
   /** reason='worse' 时给出「显著跑输」的那个周期 */
   worst_horizon?: number
   worst_excess_pp?: number | null
@@ -128,6 +131,8 @@ export interface AnalysisGroupItem {
   sample_total: number
   win_rate: number | null
   edge_pp: number | null
+  /** 相对同期随机买入的超额（负值 = 这一类也跑输随机） */
+  excess_vs_random_pp?: number | null
   avg_return: number | null
   q: number
   z: number
@@ -152,11 +157,81 @@ export interface AnalysisArrival {
   within: Record<string, number | null>
 }
 
+export interface AnalysisSignificanceRow {
+  horizon: number
+  caliber: 'exec' | 'close'
+  period?: string
+  mean_excess_pp: number | null
+  ci_low_pp: number | null
+  ci_high_pp: number | null
+  t: number | null
+  nw_t: number | null
+  days: number
+  n_eff: number
+  pooled_excess_pp: number | null
+  significant_up: boolean
+  significant_down: boolean
+  mean_return_excess_pp: number | null
+  return_ci_low_pp: number | null
+  return_ci_high_pp: number | null
+}
+
+export interface AnalysisHonestVerdict {
+  verdict: 'usable' | 'worse' | 'mixed' | 'no_edge' | 'insufficient'
+  primary_horizon: number
+  primary_excess_pp: number | null
+  primary_ci_low_pp?: number | null
+  primary_ci_high_pp?: number | null
+  up_count: number
+  down_count: number
+  days?: number | null
+  n_eff?: number | null
+}
+
+export interface AnalysisQuality {
+  days: number
+  coverage_median: number | null
+  coverage_threshold: number | null
+  suspect_days: { d0: string; coverage: number; hits: number }[]
+  suspect_days_count: number
+  rows: number
+  unverifiable: number
+  unfillable: number
+  stale_over_5d: number
+  adj_missing_rows: number
+  max_stale_days: number
+  usable_rate: number | null
+  caliber: string
+}
+
+export interface AnalysisStability {
+  split: string
+  design: AnalysisSignificanceRow[]
+  validate: AnalysisSignificanceRow[]
+  design_excess_pp: Record<string, number | null>
+  validate_excess_pp: Record<string, number | null>
+  decay_pp: Record<string, number | null>
+}
+
+export interface AnalysisDataVersion {
+  max_trade_date?: string | null
+  symbols?: number
+  recent_rows?: { d: string; n: number }[]
+}
+
 export interface AnalysisReport {
   run: AnalysisRunMeta
   counts: { signals: number; hits: number; control: number; days: number }
   summary: AnalysisSummaryRow[]
   verdict: AnalysisVerdict
+  /** 诚实显著性（按日聚合 + 重叠修正），2026-10-23 起 */
+  significance?: AnalysisSignificanceRow[]
+  /** 'exec' = 次日开盘买入（默认）；'close' = 老任务/无开盘价 */
+  caliber?: 'exec' | 'close'
+  cost?: number
+  stability?: AnalysisStability
+  quality?: AnalysisQuality
+  data_version?: AnalysisDataVersion
   groups: AnalysisGroupBlock[]
   arrival: AnalysisArrival
   by_board: AnalysisBreakdownRow[]
