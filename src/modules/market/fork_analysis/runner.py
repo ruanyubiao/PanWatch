@@ -25,7 +25,7 @@ from ..fork_screen import presets
 from ..fork_screen.models import ScreenRequest
 from ..fork_screen.service import run_screen
 from . import excel as excel_module
-from . import forward, store
+from . import forward, stats, store
 from .models import (
     DEFAULT_SAMPLE_SIZE,
     FORWARD_DAYS,
@@ -298,10 +298,10 @@ def _loop(preset_name: str, run_id: str) -> None:
                 bars, missing = forward.fetch_bars(conn, d0, symbols, last_day) if symbols else ({}, {})
                 rows, unverifiable = _rows_for(items, bars, missing, fwd_dates, d0, 0)
                 # 信号当天的横截面（分组统计用）：一次查完当天命中的全部股票
+                breadth = forward.market_breadth(conn, d0)
+                crowd = len(rows)
                 if rows:
                     snapshots = forward.fetch_snapshots(conn, d0, [row["code"] for row in rows])
-                    breadth = forward.market_breadth(conn, d0)
-                    crowd = len(rows)
                     for row in rows:
                         sample = snapshots.get(row["code"]) or {}
                         for name in store.SNAPSHOT_COLUMNS:
@@ -325,6 +325,19 @@ def _loop(preset_name: str, run_id: str) -> None:
                     control_rows, control_unverifiable = _rows_for(
                         controls, control_bars, control_missing, fwd_dates, d0, 1
                     )
+                    # 对照组也要有横截面：因子归因要靠它控制市值/行业/换手，
+                    # 组合模拟要靠 amount 做「同一条流动性规则」。缺了这些，
+                    # 归因里的 is_signal 会和「特征缺失」共线，结果没有意义。
+                    if control_rows:
+                        extra = forward.fetch_snapshots(
+                            conn, d0, [row["code"] for row in control_rows]
+                        )
+                        for row in control_rows:
+                            sample = extra.get(row["code"]) or {}
+                            for name in store.SNAPSHOT_COLUMNS:
+                                row[name] = sample.get(name)
+                            row["breadth"] = breadth
+                            row["crowd"] = crowd
 
                 coverage = forward.day_coverage(conn, d0)
                 store.insert_signals(db, rows + control_rows)
@@ -407,6 +420,13 @@ def _loop(preset_name: str, run_id: str) -> None:
             except Exception:  # noqa: BLE001
                 pass
         try:
+            # 预热报告缓存：报告第一次现算要把成本/入场/组合/归因全跑一遍（大任务
+            # 约 60 秒），放在这里跑完就顺手算掉，用户点开就是 0.2 秒。
+            # 失败无所谓 —— 读报告时会再算一次。
+            try:
+                stats.build_report(db, store.load_meta(preset_name, run_id))
+            except Exception:  # noqa: BLE001
+                logger.exception("预热报告缓存失败：%s", run_id)
             excel_module.write_workbook(db, preset_name, run_id)
         except Exception as exc:  # noqa: BLE001 - Excel 失败不影响数据
             logger.exception("生成 Excel 失败：%s", exc)
