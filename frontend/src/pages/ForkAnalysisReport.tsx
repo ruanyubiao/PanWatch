@@ -3,15 +3,31 @@
  *
  * 为什么单独一页：全市场的个股排行 + 五张图 + 六周期明细挤在弹窗里要横向滚动，
  * 而用户要的是「数据多、图大的时候开到新页面」。弹窗只留结论卡 + 排行前 10。
+ *
+ * 两种统计方法（2026-10-23 起）
+ * ----------------------------
+ * 页面按任务 ``run.method`` 分支：方法 1 用原有的富报告（图 + 分组 + 个股）；
+ * 方法 2 用统一信封渲染（``AnalysisMethodResult``，表格 + 产物下载）。新增方法不需要
+ * 再改这个页面 —— 只要它走 ``/result``。
  */
 import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Download, RefreshCw } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
-import { downloadAnalysisExcel, formatDuration, getAnalysisReport, type AnalysisReport } from '@/lib/analysis-api'
+import {
+  downloadAnalysisExcel,
+  formatDuration,
+  getAnalysisReport,
+  getAnalysisResult,
+  getAnalysisRun,
+  type AnalysisReport,
+  type AnalysisResultEnvelope,
+  type AnalysisRunMeta,
+} from '@/lib/analysis-api'
 import { AnalysisSummaryBody } from '@/components/fork/analysis/AnalysisSummary'
 import { AnalysisStockTable } from '@/components/fork/analysis/AnalysisStockTable'
 import { AnalysisEvaluation, AnalysisLeaderboardDialog } from '@/components/fork/analysis/AnalysisEvaluation'
+import { AnalysisMethodResult } from '@/components/fork/analysis/AnalysisMethodResult'
 
 export const ANALYSIS_REPORT_PAGE_TEXTS_ZH = {
   title: '数据分析报告',
@@ -21,6 +37,8 @@ export const ANALYSIS_REPORT_PAGE_TEXTS_ZH = {
   excel: '下载 Excel',
   meta: (preset: string, start: string, end: string, days: number) =>
     `条件「${preset}」 · ${start} ~ ${end} · ${days} 个交易日`,
+  metaWithMethod: (preset: string, method: string, start: string, end: string, days: number) =>
+    `条件「${preset}」 · ${method} · ${start} ~ ${end} · ${days} 个交易日`,
   counts: (hits: number, control: number, elapsed: string) =>
     `命中 ${hits} 条，对照 ${control} 条，耗时 ${elapsed}`,
   notFound: '报告不存在或任务还没跑完。',
@@ -32,7 +50,9 @@ export const ANALYSIS_REPORT_PAGE_TEXTS_ZH = {
 export default function ForkAnalysisReportPage() {
   const T = ANALYSIS_REPORT_PAGE_TEXTS_ZH
   const { runId = '' } = useParams()
+  const [run, setRun] = useState<AnalysisRunMeta | null>(null)
   const [report, setReport] = useState<AnalysisReport | null>(null)
+  const [standard, setStandard] = useState<AnalysisResultEnvelope | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [boardOpen, setBoardOpen] = useState(false)
@@ -40,11 +60,19 @@ export default function ForkAnalysisReportPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const data = await getAnalysisReport(runId)
-      setReport(data)
+      const meta = await getAnalysisRun(runId)
+      setRun(meta)
+      if ((meta.method ?? 'stat_v1') === 'stat_v1') {
+        setReport(await getAnalysisReport(runId))
+        setStandard(null)
+      } else {
+        setStandard(await getAnalysisResult(runId))
+        setReport(null)
+      }
       setError(null)
     } catch (exc) {
       setReport(null)
+      setStandard(null)
       setError(exc instanceof Error ? exc.message : String(exc))
     } finally {
       setLoading(false)
@@ -64,13 +92,22 @@ export default function ForkAnalysisReportPage() {
     }
   }
 
+  const meta = report?.run ?? run
+  const isMethod1 = (meta?.method ?? 'stat_v1') === 'stat_v1'
+
   return (
     <div className="space-y-3" data-fork-analysis-report-page>
       <header className="flex flex-wrap items-center gap-2">
         <h1 className="text-[15px] font-semibold">{T.title}</h1>
-        {report && (
+        {meta && (
           <span className="text-[11px] text-muted-foreground">
-            {T.meta(report.run.preset, report.run.start_date, report.run.end_date, report.run.days_done)}
+            {T.metaWithMethod(
+              meta.preset,
+              meta.method_name ?? '',
+              meta.start_date,
+              meta.end_date,
+              meta.days_done,
+            )}
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
@@ -86,16 +123,18 @@ export default function ForkAnalysisReportPage() {
             <RefreshCw className="h-3.5 w-3.5" />
             {T.refresh}
           </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            className="h-7 px-2 text-[12px]"
-            disabled={!report?.run.excel_ready}
-            onClick={() => void handleDownload()}
-          >
-            <Download className="h-3.5 w-3.5" />
-            {T.excel}
-          </Button>
+          {isMethod1 && (
+            <Button
+              size="sm"
+              variant="secondary"
+              className="h-7 px-2 text-[12px]"
+              disabled={!report}
+              onClick={() => void handleDownload()}
+            >
+              <Download className="h-3.5 w-3.5" />
+              {T.excel}
+            </Button>
+          )}
         </div>
       </header>
 
@@ -110,6 +149,15 @@ export default function ForkAnalysisReportPage() {
           <AnalysisSummaryBody report={report} />
           <AnalysisEvaluation report={report} runId={runId} />
           <AnalysisStockTable runId={runId} horizons={report.horizons} />
+        </>
+      )}
+
+      {standard && (
+        <>
+          <p className="text-[11px] text-muted-foreground">
+            {T.counts(standard.counts.hits, standard.counts.control, formatDuration(standard.run.elapsed_s ?? null))}
+          </p>
+          <AnalysisMethodResult runId={runId} report={standard.result} />
         </>
       )}
       <AnalysisLeaderboardDialog open={boardOpen} onOpenChange={setBoardOpen} />
