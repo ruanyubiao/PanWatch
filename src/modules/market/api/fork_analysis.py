@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from ..api import fork_market
-from ..fork_analysis import backfill, excel, runner, stats, store
+from ..fork_analysis import backfill, excel, runner, significance, stats, store
 from ..fork_analysis.models import AnalysisCreate, horizons_for
 from ..fork_screen import presets
 
@@ -36,6 +36,12 @@ router = APIRouter()
 
 def _bad(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
+def _stat_caliber(conn: Any) -> tuple[str, float]:
+    """统计该用哪套口径：有可执行列就用 x + 扣成本，老任务退回收盘口径。"""
+    prefix, caliber = significance.caliber_columns(conn)
+    return prefix, (stats.EXEC_COST if caliber == "exec" else 0.0)
 
 
 def _locate(run_id: str) -> tuple[str, dict[str, Any]]:
@@ -179,8 +185,10 @@ def analysis_detail(run_id: str) -> dict[str, Any]:
         conn = None
     if conn is not None:
         try:
-            rows = stats.summary(conn, tuple(horizons or [30]))
-            verdict = stats.verdict(rows)
+            prefix, cost = _stat_caliber(conn)
+            rows = stats.summary(conn, tuple(horizons or [30]), prefix, cost)
+            honest_rows, _ = significance.tests(conn, tuple(horizons or [30]), cost)
+            verdict = stats.verdict(rows, significance.conclusion(honest_rows))
         except Exception:  # noqa: BLE001
             logger.exception("读取任务 %s 的结论失败", run_id)
         finally:
@@ -226,7 +234,7 @@ def analysis_stocks(
     run_id: str,
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
-    sort: str = Query(default="win10"),
+    sort: str = Query(default="win_10"),
     order: str = Query(default="desc"),
     board: Optional[str] = Query(default=None),
     min_samples: int = Query(default=0, ge=0),
@@ -241,8 +249,9 @@ def analysis_stocks(
     except store.RunNotFound as exc:
         raise _bad(409, "analysis_report_not_ready", "这个任务还没有产生任何信号") from exc
     try:
-        control = stats.control_win_rates(stats.summary(conn, horizons))
-        items = stats.by_stock(conn, control, horizons)
+        prefix, cost = _stat_caliber(conn)
+        control = stats.control_win_rates(stats.summary(conn, horizons, prefix, cost))
+        items = stats.by_stock(conn, control, horizons, prefix, cost)
     finally:
         conn.close()
 
@@ -256,7 +265,10 @@ def analysis_stocks(
         needle = q.strip()
         items = [item for item in items if needle in item["code"] or needle in item["name"]]
 
-    key, _, horizon = sort.partition("_") if "_" in sort else (sort, "", "")
+    # 兼容 win10（无下划线）与 win_10：前者曾被当成「按 30 日排序」的静默默认
+    key, _, horizon = sort.partition("_")
+    if not horizon and key[:3] in ("win", "avg") and key[3:].isdigit():
+        key, horizon = key[:3], key[3:]
     if sort in ("n", "code", "name"):
         def sort_key(item: dict[str, Any]) -> Any:
             if sort == "n":
