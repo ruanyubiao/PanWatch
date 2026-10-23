@@ -246,6 +246,8 @@ def _rows_for(
             row[f"r{index}"] = value
         for index, value in enumerate(result.exec_returns, start=1):
             row[f"x{index}"] = value
+        for index, value in enumerate(result.vwap_returns, start=1):
+            row[f"v{index}"] = value
         for index, horizon in enumerate(HORIZONS):
             row[f"t{horizon}"] = result.touches[index] if index < len(result.touches) else None
         rows.append(row)

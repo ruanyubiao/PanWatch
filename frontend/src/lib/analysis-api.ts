@@ -202,6 +202,8 @@ export interface AnalysisQuality {
   max_stale_days: number
   usable_rate: number | null
   caliber: string
+  /** 数据体检（异常涨跌幅 / 停牌跳空 / 有价无量 / 日历缺口 + 健康分） */
+  health?: AnalysisHealth
 }
 
 export interface AnalysisStability {
@@ -219,6 +221,186 @@ export interface AnalysisDataVersion {
   recent_rows?: { d: string; n: number }[]
 }
 
+export interface AnalysisHealth {
+  score: number
+  level: 'good' | 'warn' | 'bad'
+  polluted: boolean
+  total_rows: number
+  extreme_rows: number
+  extreme_rate: number
+  resume_jump_rows: number
+  zero_amount_rows: number
+  adj_missing_rows: number
+  unverifiable: number
+  unfillable: number
+  suspect_days: number
+  gaps: { from: string; to: string; days: number }[]
+  gap_count: number
+  samples: { d0: string; code: string; r1: number; stale_days: number; adj_missing: number }[]
+  thresholds: { extreme_return: number; resume_stale_days: number; max_calendar_gap: number }
+}
+
+/** 「随机挑一笔交易」口径：按当天命中数加权 + 日聚类标准误 */
+export interface AnalysisSignalWeightedRow {
+  horizon: number
+  caliber: 'exec' | 'close'
+  mean_excess_pp: number | null
+  mean_return_excess_pp: number | null
+  se_pp: number | null
+  ci_low_pp: number | null
+  ci_high_pp: number | null
+  t: number | null
+  days: number
+  n_signals: number
+  significant_up: boolean
+  significant_down: boolean
+}
+
+export interface AnalysisCostLevel {
+  key: string
+  label: string
+  cost: number | null
+  horizons: Record<string, number | null>
+}
+
+export interface AnalysisCostSensitivity {
+  available: boolean
+  levels: AnalysisCostLevel[]
+  note?: string | null
+}
+
+export interface AnalysisEntryRow {
+  base: string
+  label: string
+  executable: boolean
+  available: boolean
+  n?: number
+  win_rate?: number | null
+  excess_pp: number | null
+  ci_low_pp?: number | null
+  ci_high_pp?: number | null
+  days?: number
+}
+
+export interface AnalysisPortfolioSide {
+  equity: { d0: string; value: number }[]
+  metrics: {
+    days?: number
+    total_return_pct?: number
+    annualised_pct?: number | null
+    max_drawdown_pct?: number
+    sharpe?: number | null
+    daily_win_rate?: number | null
+    avg_positions?: number
+    idle_days?: number
+    capital_use_pct?: number
+    final_value?: number
+  }
+}
+
+export interface AnalysisPortfolio {
+  config?: { top_k: number; hold_days: number; caliber: string; cost: number | string }
+  signal?: AnalysisPortfolioSide
+  control?: AnalysisPortfolioSide
+  annualised_excess_pp?: number | null
+  traded?: number
+  skipped?: number
+}
+
+export interface AnalysisAttribution {
+  horizon?: number
+  n?: number
+  signals?: number
+  controls?: number
+  base_win_rate?: number
+  hit_win_rate?: number
+  raw_excess_pp?: number | null
+  adjusted_excess_pp?: number | null
+  explained_pct?: number | null
+  signal_coef?: number | null
+  signal_or?: number | null
+  signal_z?: number | null
+  signal_p?: number | null
+  features?: { name: string; coef: number; or: number; pp: number; z: number | null; p: number | null }[]
+  years?: { year: string; pp: number; z: number | null }[]
+  note?: string | null
+}
+
+export interface AnalysisHeterogeneity {
+  horizon: number
+  rows: {
+    year: string
+    effect_pp: number
+    se_pp: number
+    days: number
+    significant_up: boolean
+    significant_down: boolean
+  }[]
+  q?: number | null
+  df?: number
+  p?: number | null
+  i2?: number | null
+  pooled_pp?: number | null
+  consistent?: boolean | null
+  years?: number
+}
+
+export interface AnalysisAblationVariant {
+  key: string
+  label: string
+  kind: 'base' | 'drop' | 'param'
+  n: number
+  days: number
+  win_rate: number | null
+  excess_pp: number | null
+  ci_low_pp: number | null
+  ci_high_pp: number | null
+  delta_pp: number | null
+  delta_ci_low_pp: number | null
+  delta_ci_high_pp: number | null
+  advice?: 'baseline' | 'drop' | 'keep' | 'neutral' | 'unknown'
+}
+
+export interface AnalysisAblation {
+  status: 'absent' | 'running' | 'done' | 'failed' | 'interrupted'
+  progress?: { done: number; total: number; current: string | null }
+  variants: AnalysisAblationVariant[]
+  config?: { sample_days: number; horizon: number; caliber?: string }
+  error?: string | null
+  running?: boolean
+  baseline_win_rate?: number | null
+}
+
+export interface AnalysisLeaderboardItem {
+  rank: number
+  run_id: string
+  preset: string
+  start_date?: string
+  end_date?: string
+  days: number
+  hits: number
+  horizon: number
+  caliber: 'exec' | 'close'
+  excess_pp: number | null
+  ci_low_pp: number | null
+  ci_high_pp: number | null
+  weighted_excess_pp: number | null
+  nw_t: number | null
+  n_eff: number | null
+  significant_up: boolean
+  significant_down: boolean
+  unverifiable_rate: number | null
+  status: string
+}
+
+export interface AnalysisLeaderboard {
+  items: AnalysisLeaderboardItem[]
+  count: number
+  expected_max_pp: number | null
+  note: string | null
+  calibers: string[]
+}
+
 export interface AnalysisReport {
   run: AnalysisRunMeta
   counts: { signals: number; hits: number; control: number; days: number }
@@ -226,6 +408,32 @@ export interface AnalysisReport {
   verdict: AnalysisVerdict
   /** 诚实显著性（按日聚合 + 重叠修正），2026-10-23 起 */
   significance?: AnalysisSignificanceRow[]
+  /** 按笔交易加权口径（同一天命中越多权重越大） */
+  signal_weighted?: AnalysisSignalWeightedRow[]
+  /** 成本敏感性（0.2% / 逐行真实 / 0.4% / 0.8%） */
+  cost_sensitivity?: AnalysisCostSensitivity
+  /** 入场假设敏感性（信号日收盘 / 次日开盘 / 次日收盘 / 次日典型价） */
+  entry?: AnalysisEntryRow[]
+  /** 组合容量模拟（每日前 K 只、等权、持有 H 天） */
+  portfolio?: AnalysisPortfolio
+  /** 因子归因（控制市值/行业/年份后还剩多少） */
+  attribution?: AnalysisAttribution
+  /** 逐年超额 + Cochran's Q */
+  heterogeneity?: AnalysisHeterogeneity
+  /** 功效：这个样本能检出多大的超额 */
+  power?: { mde_pp: number | null; n_eff?: number; days_for_2pp: number | null; effect_pp?: number }
+  /** 主周期（成本/入场/组合/归因都用它） */
+  primary_horizon?: number
+  /** 主要结论（诚实口径） */
+  conclusion?: {
+    verdict: string
+    best_horizon: number | null
+    best_excess_pp: number | null
+    worst_horizon?: number | null
+    worst_excess_pp?: number | null
+    up_horizons?: number[]
+    down_horizons?: number[]
+  }
   /** 'exec' = 次日开盘买入（默认）；'close' = 老任务/无开盘价 */
   caliber?: 'exec' | 'close'
   cost?: number
@@ -414,4 +622,28 @@ export function formatDuration(seconds: number | null | undefined): string {
   if (hours > 0) return `${hours} 小时 ${minutes} 分`
   if (minutes > 0) return `${minutes} 分 ${rest} 秒`
   return `${rest} 秒`
+}
+
+/** 消融 / 参数扰动（后台跑，前端轮询） */
+export function getAnalysisAblation(runId: string): Promise<AnalysisAblation> {
+  return fetchAPI<AnalysisAblation>(`/stocks/analysis/runs/${runId}/ablation`, { timeoutMs: 15000 })
+}
+
+export function startAnalysisAblation(
+  runId: string,
+  options?: { sampleDays?: number; horizon?: number },
+): Promise<AnalysisAblation> {
+  const params = new URLSearchParams()
+  if (options?.sampleDays) params.set('sample_days', String(options.sampleDays))
+  if (options?.horizon) params.set('horizon', String(options.horizon))
+  const query = params.size > 0 ? `?${params.toString()}` : ''
+  return fetchAPI<AnalysisAblation>(`/stocks/analysis/runs/${runId}/ablation${query}`, {
+    method: 'POST',
+    timeoutMs: 20000,
+  })
+}
+
+/** 跨条件排行榜（同一口径，含选择偏差提示） */
+export function getAnalysisLeaderboard(limit = 40): Promise<AnalysisLeaderboard> {
+  return fetchAPI<AnalysisLeaderboard>(`/stocks/analysis/leaderboard?limit=${limit}`, { timeoutMs: 30000 })
 }

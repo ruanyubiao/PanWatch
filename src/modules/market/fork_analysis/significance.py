@@ -248,6 +248,164 @@ def tests(conn: sqlite3.Connection, horizons: Iterable[int], cost: float = 0.0,
             for horizon in horizons], caliber
 
 
+# ---------------------------------------------------------------- 双口径
+def weighted_test(conn: sqlite3.Connection, horizon: int, prefix: str = "r",
+                  cost: Any = 0.0, start: Optional[str] = None,
+                  end: Optional[str] = None) -> dict[str, Any]:
+    """「随机挑一笔交易」口径：按当天命中数加权，标准误按日聚类。
+
+    按日等权回答的是「随便哪天买好不好」，命中 1 只的那天和命中 500 只的那天
+    权重相同。按命中加权回答的是「随便一笔交易好不好」，这才是用户真正关心的
+    那个问题；两者在拥挤日会被拉向相反方向（xg1 就是合并 −0.4pp、按日 −3.1pp）。
+
+    权重给到天，但**独立性仍在天的层面**（同一天几十只股票共享一段行情），
+    所以标准误用日聚类稳健公式，而不是把权重当独立样本。
+    """
+    signal = _day_table(conn, horizon, prefix, 0, cost, start, end)
+    control = _day_table(conn, horizon, prefix, 1, cost, start, end)
+    days = sorted(set(signal) & set(control))
+    if not days:
+        return {"horizon": horizon, "mean_excess_pp": None, "n_signals": 0,
+                "days": 0, "se_pp": None, "ci_low_pp": None, "ci_high_pp": None,
+                "t": None, "caliber": "exec" if prefix == "x" else "close"}
+    diffs: list[float] = []
+    weights: list[float] = []
+    returns: list[float] = []
+    for day in days:
+        s_n, s_w, s_a = signal[day]
+        c_n, c_w, c_a = control[day]
+        if s_n <= 0 or c_n <= 0:
+            continue
+        diffs.append(s_w / s_n - c_w / c_n)
+        weights.append(float(s_n))
+        returns.append(s_a - c_a)
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return {"horizon": horizon, "mean_excess_pp": None, "n_signals": 0,
+                "days": 0, "se_pp": None, "ci_low_pp": None, "ci_high_pp": None,
+                "t": None, "caliber": "exec" if prefix == "x" else "close"}
+    centre = sum(w * d for w, d in zip(weights, diffs)) / total_weight
+    ret_centre = sum(w * r for w, r in zip(weights, returns)) / total_weight
+    clusters = len(diffs)
+    if clusters >= 2:
+        variance = sum(w * w * (d - centre) ** 2 for w, d in zip(weights, diffs))
+        variance = variance * clusters / (clusters - 1)
+        se = math.sqrt(variance) / total_weight
+    else:
+        se = 0.0
+    low, high = centre - 1.96 * se, centre + 1.96 * se
+    return {
+        "horizon": horizon,
+        "caliber": "exec" if prefix == "x" else "close",
+        "mean_excess_pp": round(centre * 100, 3),
+        "mean_return_excess_pp": round(ret_centre * 100, 3),
+        "se_pp": round(se * 100, 3),
+        "ci_low_pp": round(low * 100, 3),
+        "ci_high_pp": round(high * 100, 3),
+        "t": round(centre / se, 2) if se > 0 else None,
+        "days": clusters,
+        "n_signals": int(total_weight),
+        "significant_up": bool(low > 0),
+        "significant_down": bool(high < 0),
+    }
+
+
+def weighted_tests(conn: sqlite3.Connection, horizons: Iterable[int], cost: Any = 0.0,
+                   start: Optional[str] = None, end: Optional[str] = None) -> list[dict[str, Any]]:
+    prefix, _caliber = caliber_columns(conn)
+    return [weighted_test(conn, int(h), prefix, cost, start, end) for h in horizons]
+
+
+# ---------------------------------------------------------------- 功效与异质性
+def chi2_sf(x: float, df: int) -> float:
+    """卡方分布上尾概率（正则化不完全伽马，Numerical Recipes 的 gammq）。"""
+    if x <= 0:
+        return 1.0
+    if df <= 0:
+        return 1.0
+    a = df / 2.0
+    xx = x / 2.0
+    if xx < a + 1.0:
+        # 级数展开
+        term = 1.0 / a
+        total = term
+        ap = a
+        for _ in range(200):
+            ap += 1.0
+            term *= xx / ap
+            total += term
+            if abs(term) < abs(total) * 1e-12:
+                break
+        log_p = -xx + a * math.log(xx) - math.lgamma(a) + math.log(total)
+        return max(0.0, min(1.0, 1.0 - math.exp(log_p)))
+    # 连分式
+    tiny = 1e-300
+    b = xx + 1.0 - a
+    c = 1.0 / tiny
+    d = 1.0 / max(b, tiny)
+    h = d
+    for index in range(1, 200):
+        an = -index * (index - a)
+        b += 2.0
+        d = an * d + b
+        if abs(d) < tiny:
+            d = tiny
+        c = b + an / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < 1e-12:
+            break
+    log_q = -xx + a * math.log(xx) - math.lgamma(a) + math.log(h)
+    return max(0.0, min(1.0, math.exp(log_q)))
+
+
+def power_table(sd_pp: Optional[float], n_eff: int, effect_pp: float = 2.0) -> dict[str, Any]:
+    """这个样本量能可靠（80% 功效）检出多大的超额。
+
+    「不显著」有两个完全不同的原因：没有优势、或数据不够。给出可检出下限，
+    用户就不用猜。MDE = (1.96 + 0.84) × sd / sqrt(n_eff)。
+    """
+    if not sd_pp or sd_pp <= 0 or n_eff <= 0:
+        return {"mde_pp": None, "n_eff": n_eff, "days_for_2pp": None}
+    mde = 2.80 * sd_pp / math.sqrt(n_eff)
+    days_for = int(math.ceil((2.80 * sd_pp / max(abs(effect_pp), 1e-9)) ** 2))
+    return {
+        "mde_pp": round(mde, 3),
+        "n_eff": int(n_eff),
+        "days_for_2pp": days_for,
+        "effect_pp": effect_pp,
+    }
+
+
+def cochran_q(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """逐年超额是否一致的随机效应检验（Cochran's Q + I²）。
+
+    分年折线只能靠肉眼比；Q 检验直接回答「这个优势是不是只存在于某一年」。
+    """
+    usable = [row for row in rows if row.get("effect_pp") is not None and row.get("se_pp")]
+    if len(usable) < 2:
+        return {"q": None, "df": 0, "p": None, "i2": None, "consistent": None, "years": len(usable)}
+    weights = [1.0 / (float(row["se_pp"]) ** 2) for row in usable]
+    total_w = sum(weights)
+    pooled = sum(w * float(row["effect_pp"]) for w, row in zip(weights, usable)) / total_w
+    q = sum(w * (float(row["effect_pp"]) - pooled) ** 2 for w, row in zip(weights, usable))
+    df = len(usable) - 1
+    p = chi2_sf(q, df)
+    i2 = max(0.0, (q - df) / q) if q > 0 else 0.0
+    return {
+        "q": round(q, 3),
+        "df": df,
+        "p": round(p, 4),
+        "i2": round(i2 * 100, 1),
+        "pooled_pp": round(pooled, 3),
+        "consistent": bool(p >= 0.05),
+        "years": len(usable),
+    }
+
+
 def conclusion(tests_: Sequence[dict[str, Any]], primary: int = 10,
                threshold_pp: float = 2.0) -> dict[str, Any]:
     """用诚实区间下结论。
@@ -261,12 +419,17 @@ def conclusion(tests_: Sequence[dict[str, Any]], primary: int = 10,
     if not usable_rows:
         return {"verdict": "insufficient", "primary_horizon": primary,
                 "up_count": 0, "down_count": 0, "primary_excess_pp": None,
+                "best_horizon": None, "best_excess_pp": None,
                 "reason": "insufficient"}
     up = [row for row in usable_rows if row["significant_up"]]
     down = [row for row in usable_rows if row["significant_down"]]
     focus = next((row for row in usable_rows if int(row["horizon"]) == int(primary)), None)
     if focus is None:
         focus = min(usable_rows, key=lambda row: abs(int(row["horizon"]) - int(primary)))
+    # 「最优周期」只从诚实口径里挑：旧实现用合并口径挑，会出现「卡片说显著跑输、
+    # 旁边写着 +2.1pp」的自相矛盾。
+    best = max(usable_rows, key=lambda row: row["mean_excess_pp"] if row["mean_excess_pp"] is not None else -999)
+    worst = min(usable_rows, key=lambda row: row["mean_excess_pp"] if row["mean_excess_pp"] is not None else 999)
     primary_excess = focus["mean_excess_pp"]
     if len(up) >= 2 and primary_excess is not None and primary_excess >= threshold_pp:
         verdict = "usable"
@@ -282,6 +445,12 @@ def conclusion(tests_: Sequence[dict[str, Any]], primary: int = 10,
         "primary_excess_pp": primary_excess,
         "primary_ci_low_pp": focus["ci_low_pp"],
         "primary_ci_high_pp": focus["ci_high_pp"],
+        "best_horizon": int(best["horizon"]),
+        "best_excess_pp": best["mean_excess_pp"],
+        "best_ci_low_pp": best["ci_low_pp"],
+        "best_ci_high_pp": best["ci_high_pp"],
+        "worst_horizon": int(worst["horizon"]),
+        "worst_excess_pp": worst["mean_excess_pp"],
         "up_count": len(up),
         "down_count": len(down),
         "up_horizons": [row["horizon"] for row in up],

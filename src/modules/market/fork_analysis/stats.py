@@ -33,7 +33,8 @@ import math
 import sqlite3
 from typing import Any, Iterable, Optional, Sequence
 
-from . import significance
+from . import attribution as attribution_module
+from . import costs, entry, health, portfolio, significance
 from .forward import EXEC_COST
 from .models import HORIZONS, horizons_for
 
@@ -59,7 +60,8 @@ HIST_EDGES = tuple(range(-50, 101, 5))
 #: v5 = 按日聚合的诚实区间（2026-10-23）
 #: v6 = 分组缓存存平均涨幅（v5 之前误存成总和）+ 市值匹配对照
 #: v7 = 分组增加「相对随机」超额
-CACHE_VERSION = 7
+#: v8 = 双口径（按日/按笔）+ 成本敏感性 + 入场假设 + 组合模拟 + 因子归因 + 体检
+CACHE_VERSION = 8
 
 
 def forward_cost() -> float:
@@ -219,12 +221,13 @@ def verdict(rows: list[dict[str, Any]], honest: Optional[dict[str, Any]] = None)
     """结论：能不能用。四种结论（前端各有一句人话）。
 
     - ``usable``            超额 ≥ 2pp 且统计显著 → 这个条件有用
-    - ``worse``             **显著跑输**随机买入（z ≤ −1.96）→ 得重新设计
+    - ``worse``             **显著跑输**随机买入 → 得重新设计
     - ``not_significant``   看着有超额但样本不够
     - ``no_edge``           超额小且不显著 → 与随机买入没区别
 
-    ``honest`` 给了就**以它为准**（按日聚合的诚实区间），上面的合并 z 只留在
-    ``z`` 字段里做对照 —— 把 29 天重叠的窗口当独立样本，z 会被放大十倍以上。
+    ``honest`` 给了就**以它为准**，而且「最优周期」也只从它里面挑 —— 旧实现
+    用合并口径挑周期、用诚实口径下结论，会出现「卡片说显著跑输、旁边写着
+    +2.1pp」的自相矛盾。合并口径的数字降级为 ``pooled_*`` 留档，不上卡片。
     """
     candidates = [
         row for row in rows
@@ -238,7 +241,53 @@ def verdict(rows: list[dict[str, Any]], honest: Optional[dict[str, Any]] = None)
             "best_excess_pp": None,
             "sample": 0,
         }
-    best = max(candidates, key=lambda row: row["excess_pp"])
+    by_horizon = {int(row["horizon"]): row for row in rows}
+    pooled_best = max(candidates, key=lambda row: row["excess_pp"])
+
+    if honest and str(honest.get("verdict")) != "insufficient" and honest.get("best_horizon"):
+        best_horizon = int(honest["best_horizon"])
+        focus = by_horizon.get(best_horizon, pooled_best)
+        mapping = {"usable": "usable", "worse": "worse", "mixed": "not_significant",
+                   "no_edge": "no_edge", "insufficient": "insufficient"}
+        reason = mapping.get(str(honest.get("verdict")), "no_edge")
+        result: dict[str, Any] = {
+            "usable": reason == "usable",
+            "reason": reason,
+            "best_horizon": best_horizon,
+            "best_excess_pp": honest.get("best_excess_pp"),
+            "best_ci_low_pp": honest.get("best_ci_low_pp"),
+            "best_ci_high_pp": honest.get("best_ci_high_pp"),
+            "best_win_rate": focus["signal"]["win_rate"],
+            "baseline_win_rate": focus["control"]["win_rate"],
+            "best_avg_return": focus["signal"]["avg_return"],
+            "best_payoff": focus["signal"]["payoff"],
+            "sample": focus["signal"]["n"],
+            "z": focus["z"],
+            "significant": bool(honest.get("up_count") or honest.get("down_count")),
+            # 主周期（默认 10 日）的诚实区间：结论卡上「执行」那句话用它
+            "primary_horizon": honest.get("primary_horizon"),
+            "primary_excess_pp": honest.get("primary_excess_pp"),
+            "primary_ci_low_pp": honest.get("primary_ci_low_pp"),
+            "primary_ci_high_pp": honest.get("primary_ci_high_pp"),
+            "up_horizons": honest.get("up_horizons"),
+            "down_horizons": honest.get("down_horizons"),
+            # 合并口径（旧算法）：保留数字供追溯，不再参与结论
+            "pooled_best_horizon": pooled_best["horizon"],
+            "pooled_best_excess_pp": pooled_best["excess_pp"],
+            "honest": honest,
+            "honest_verdict": honest.get("verdict"),
+        }
+        worst_horizon = honest.get("worst_horizon")
+        if worst_horizon is not None:
+            worst_row = by_horizon.get(int(worst_horizon))
+            result["worst_horizon"] = int(worst_horizon)
+            result["worst_excess_pp"] = honest.get("worst_excess_pp")
+            if worst_row is not None:
+                result["worst_win_rate"] = worst_row["signal"]["win_rate"]
+                result["worst_baseline"] = worst_row["control"]["win_rate"]
+        return result
+
+    best = pooled_best
     significant = abs(float(best["z"] or 0)) >= 1.96
     usable = bool(
         best["excess_pp"] >= EXCESS_THRESHOLD_PP
@@ -896,6 +945,108 @@ def stability(conn: sqlite3.Connection, horizons: Sequence[int], cal: str = "r",
     }
 
 
+def pick_primary(horizons: Sequence[int]) -> int:
+    """主周期：优先 10 日，其次 5 日，再退到最后一个（结论卡与成本/入场/组合都用它）。"""
+    if 10 in horizons:
+        return 10
+    if 5 in horizons:
+        return 5
+    return int(horizons[-1]) if horizons else 30
+
+
+def cost_sensitivity(conn: sqlite3.Connection, horizons: Sequence[int],
+                     cal: str = "r") -> dict[str, Any]:
+    """同一个条件在四档成本假设下的超额（按日聚合，口径与主报告一致）。
+
+    只有可执行口径（``x``）有意义：收盘口径本来就没有成本这回事。
+    """
+    prefix = caliber_prefix(cal)
+    if prefix != "x":
+        return {"available": False, "levels": [], "note": "close_caliber"}
+    levels: list[dict[str, Any]] = []
+    for key, value in costs.LEVELS:
+        expression: Any = costs.cost_sql() if value is None else float(value)
+        day_rates: dict[int, dict[str, dict[int, tuple[int, int]]]] = {0: {}, 1: {}}
+        for control in (0, 1):
+            parts: list[str] = []
+            for horizon in horizons:
+                parts.append(f"COUNT({prefix}{horizon}) AS n{horizon}")
+                parts.append(
+                    f"SUM(CASE WHEN ({prefix}{horizon} - {expression}) > 0 THEN 1 ELSE 0 END) AS w{horizon}"
+                )
+            sql = (
+                f"SELECT d0, {', '.join(parts)} FROM signals WHERE is_control = {control} "
+                f"AND {valid_where(cal)} GROUP BY d0"
+            )
+            for row in conn.execute(sql):
+                day_rates[control][str(row["d0"])] = {
+                    int(horizon): (int(row[f"n{horizon}"] or 0), int(row[f"w{horizon}"] or 0))
+                    for horizon in horizons
+                }
+        per_horizon: dict[str, Any] = {}
+        for horizon in horizons:
+            diffs: list[float] = []
+            for day in set(day_rates[0]) & set(day_rates[1]):
+                signal_n, signal_w = day_rates[0][day][int(horizon)]
+                control_n, control_w = day_rates[1][day][int(horizon)]
+                if signal_n <= 0 or control_n <= 0:
+                    continue
+                diffs.append(signal_w / signal_n - control_w / control_n)
+            per_horizon[str(horizon)] = (
+                round(sum(diffs) / len(diffs) * 100, 3) if diffs else None
+            )
+        levels.append({
+            "key": key,
+            "label": next(item["label"] for item in costs.describe() if item["key"] == key),
+            "cost": value,
+            "horizons": per_horizon,
+        })
+    return {"available": True, "levels": levels, "note": None}
+
+
+def heterogeneity(conn: sqlite3.Connection, horizon: int, cal: str = "r",
+                  cost: float = 0.0) -> dict[str, Any]:
+    """逐年超额 + Cochran's Q：优势是不是只在某一年存在。"""
+    prefix = caliber_prefix(cal)
+    years = [str(row[0]) for row in conn.execute(
+        "SELECT DISTINCT SUBSTR(d0, 1, 4) AS year FROM signals ORDER BY year"
+    )]
+    rows: list[dict[str, Any]] = []
+    for year in years:
+        if not year.isdigit():
+            continue
+        test = significance.horizon_test(
+            conn, horizon, prefix, cost, f"{year}-01-01", f"{int(year) + 1}-01-01"
+        )
+        if test.get("mean_excess_pp") is None or test.get("ci_high_pp") is None:
+            continue
+        half_width = (float(test["ci_high_pp"]) - float(test["ci_low_pp"])) / 2.0
+        se = half_width / 1.96
+        rows.append({
+            "year": year,
+            "effect_pp": test["mean_excess_pp"],
+            "se_pp": round(se, 4),
+            "days": test["days"],
+            "significant_down": bool(test.get("significant_down")),
+            "significant_up": bool(test.get("significant_up")),
+        })
+    return {"horizon": horizon, "rows": rows, **significance.cochran_q(rows)}
+
+
+def power_of(honest_row: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """这个样本量能检出多大的超额（80% 功效）。"""
+    if not honest_row:
+        return {"mde_pp": None, "n_eff": 0, "days_for_2pp": None}
+    days = int(honest_row.get("days") or 0)
+    low, high = honest_row.get("ci_low_pp"), honest_row.get("ci_high_pp")
+    n_eff = int(honest_row.get("n_eff") or 0)
+    if low is None or high is None or days <= 0:
+        return {"mde_pp": None, "n_eff": n_eff, "days_for_2pp": None}
+    se = (float(high) - float(low)) / (2.0 * 1.96)
+    sd = se * math.sqrt(days)
+    return significance.power_table(sd, n_eff)
+
+
 def build_report(conn: sqlite3.Connection, meta: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """报告主体（弹窗与独立报告页共用这一个响应）。"""
     validate_days = int((meta or {}).get("validate_days") or HORIZONS[-1])
@@ -909,17 +1060,43 @@ def build_report(conn: sqlite3.Connection, meta: Optional[dict[str, Any]] = None
         return cached
     rows = summary(conn, horizons, prefix, cost)
     honest_rows, _ = significance.tests(conn, horizons, cost)
-    decision = verdict(rows, significance.conclusion(honest_rows))
+    conclusion = significance.conclusion(honest_rows)
+    decision = verdict(rows, conclusion)
     baseline = overall_win(rows)
     control = control_win_rates(rows)
+    primary = pick_primary(horizons)
+    primary_row = next((row for row in honest_rows if int(row["horizon"]) == primary), None)
+    quality_block = quality(conn, prefix)
+
+    def _safe(builder: Any, fallback: Any) -> Any:
+        """任何一块新统计失败都不能让整份报告 500（任务本身是好的）。"""
+        try:
+            return builder()
+        except Exception:  # noqa: BLE001
+            logger.exception("报告分段计算失败，用空值兜底")
+            return fallback
+
     report = {
         "summary": rows,
         "verdict": decision,
+        "conclusion": conclusion,
         "significance": honest_rows,
+        "signal_weighted": _safe(lambda: significance.weighted_tests(conn, horizons, cost), []),
+        "power": _safe(lambda: power_of(primary_row), {}),
+        "cost_sensitivity": _safe(lambda: cost_sensitivity(conn, horizons, prefix),
+                                  {"available": False, "levels": [], "note": "failed"}),
+        "entry": _safe(lambda: entry.sensitivity(conn, primary, cost), []),
+        "portfolio": _safe(lambda: portfolio.simulate(
+            conn, primary, 10, None if caliber == "exec" else 0.0), {}),
+        "attribution": _safe(lambda: attribution_module.fit(conn, primary, prefix, cost), {}),
+        "heterogeneity": _safe(lambda: heterogeneity(conn, primary, prefix, cost),
+                               {"horizon": primary, "rows": []}),
         "caliber": caliber,
         "cost": cost,
+        "primary_horizon": primary,
         "stability": stability(conn, horizons, prefix, cost),
-        "quality": quality(conn, prefix),
+        "quality": {**quality_block,
+                    "health": _safe(lambda: health.snapshot(conn, caliber, quality_block), {})},
         "data_version": (meta or {}).get("data_version") or {},
         "groups": groups(conn, horizons, baseline, prefix, cost, control),
         "arrival": arrival(conn, horizons, prefix, cost),
@@ -931,6 +1108,7 @@ def build_report(conn: sqlite3.Connection, meta: Optional[dict[str, Any]] = None
         "validate_days": validate_days,
         # 界面不展示对照组（用户第 6 条）；这个标记让前端不必猜
         "control_hidden": True,
+        "evaluation_version": "v4",
     }
     _write_report_cache(conn, cache_key, report)
     return report

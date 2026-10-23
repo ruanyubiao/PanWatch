@@ -25,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from ..api import fork_market
-from ..fork_analysis import backfill, excel, runner, significance, stats, store
+from ..fork_analysis import ablation, backfill, excel, leaderboard, runner, significance, stats, store
 from ..fork_analysis.models import AnalysisCreate, horizons_for
 from ..fork_screen import presets
 
@@ -290,6 +290,39 @@ def analysis_stocks(
     items.sort(key=sort_key, reverse=(order != "asc"))
     total = len(items)
     return {"total": total, "offset": offset, "limit": limit, "items": items[offset: offset + limit]}
+
+
+@router.get("/analysis/leaderboard")
+def analysis_leaderboard(limit: int = Query(default=40, ge=2, le=200)) -> dict[str, Any]:
+    """跨条件排行榜：同一口径比较所有已完成的任务（含选择偏差提示）。"""
+    return leaderboard.board(limit)
+
+
+@router.post("/analysis/runs/{run_id}/ablation")
+def start_ablation(
+    run_id: str,
+    sample_days: int = Query(default=ablation.DEFAULT_SAMPLE_DAYS, ge=10, le=200),
+    horizon: Optional[int] = Query(default=None, ge=1, le=30),
+) -> dict[str, Any]:
+    """消融 / 参数扰动（后台跑，几十分钟；结果写 ablation.json）。"""
+    preset_name, meta = _locate(run_id)
+    if not store.is_terminal(meta) and not runner.is_running(run_id):
+        raise _bad(409, "analysis_report_not_ready", "任务还没跑完，先让它结束再做消融")
+    try:
+        return ablation.start(preset_name, run_id, sample_days, horizon)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("启动消融失败：%s", exc)
+        raise _bad(500, "analysis_ablation_failed", str(exc)) from exc
+
+
+@router.get("/analysis/runs/{run_id}/ablation")
+def get_ablation(run_id: str) -> dict[str, Any]:
+    preset_name, _meta = _locate(run_id)
+    payload = ablation.status(preset_name, run_id)
+    if payload is None:
+        return {"status": "absent", "variants": [], "progress": {"done": 0, "total": 0}}
+    payload["running"] = ablation.is_running(run_id)
+    return payload
 
 
 @router.get("/analysis/runs/{run_id}/signals")

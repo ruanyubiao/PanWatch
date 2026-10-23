@@ -88,6 +88,8 @@ class ForwardResult:
     returns: list[Optional[float]] = field(default_factory=list)
     #: 可执行口径（次日开盘买入）；买不进/无开盘时全 None
     exec_returns: list[Optional[float]] = field(default_factory=list)
+    #: 入场假设敏感性：次日典型价 (开+高+收)/3 买入；没有开盘价时全 None
+    vwap_returns: list[Optional[float]] = field(default_factory=list)
     #: 与 ``HORIZONS`` 对齐的触及涨幅（盘中最高价口径）
     touches: list[Optional[float]] = field(default_factory=list)
     #: 30 个前瞻日里**真有行情**的天数（顺延出来的不算）
@@ -179,6 +181,7 @@ def build_forward(
         return ForwardResult(d0_close=d0_close, d0_adj=d0_adj,
                              returns=[None] * len(returns),
                              exec_returns=[None] * len(returns),
+                             vwap_returns=[None] * len(returns),
                              touches=[None] * len(HORIZONS), avail=0, verif=0)
 
     # ---- 可执行口径：次日（或停牌结束后的第一个）开盘买入
@@ -191,6 +194,7 @@ def build_forward(
             entry_days = offset
             break
     exec_returns: list[Optional[float]] = [None] * len(returns)
+    vwap_returns: list[Optional[float]] = [None] * len(returns)
     unfillable = False
     if entry_adj is not None:
         unfillable = (entry_adj / d0_adj - 1.0) >= (limit - _LIMIT_TOLERANCE)
@@ -202,10 +206,27 @@ def build_forward(
             if running is None:
                 continue
             exec_returns[index] = round(running / entry_adj - 1.0, 6)
+        # 入场假设敏感性：把「次日开盘价」换成「次日典型价 (开+高+收)/3」。
+        # 开盘价是乐观假设（VWAP 更接近真实成交），两者差很多说明结论依赖成交价。
+        entry_day = forward_dates[entry_days - 1]
+        typical = None
+        if opens.get(entry_day) is not None and closes.get(entry_day) is not None:
+            high = highs.get(entry_day) or closes[entry_day]
+            typical = (opens[entry_day] + high + closes[entry_day]) / 3.0
+        if typical and typical > 0:
+            running = typical
+            for index, day in enumerate(forward_dates[:FORWARD_DAYS]):
+                close = closes.get(day)
+                if close is not None:
+                    running = close
+                if running is None:
+                    continue
+                vwap_returns[index] = round(running / typical - 1.0, 6)
 
     if len(returns) < FORWARD_DAYS:
         returns.extend([None] * (FORWARD_DAYS - len(returns)))
         exec_returns.extend([None] * (FORWARD_DAYS - len(exec_returns)))
+        vwap_returns.extend([None] * (FORWARD_DAYS - len(vwap_returns)))
 
     touches: list[Optional[float]] = []
     for horizon in HORIZONS:
@@ -221,6 +242,7 @@ def build_forward(
         d0_adj=d0_adj,
         returns=returns,
         exec_returns=exec_returns,
+        vwap_returns=vwap_returns,
         touches=touches,
         avail=avail,
         entry_open=entry_open,
