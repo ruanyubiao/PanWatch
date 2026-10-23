@@ -113,7 +113,11 @@ def board(limit: int = MAX_RUNS) -> dict[str, Any]:
     for index, item in enumerate(items, start=1):
         item["rank"] = index
     count = len(items)
-    sd = next((abs(float(item["sd_pp"])) for item in items if item.get("sd_pp")), None)
+    calibers = sorted({item["caliber"] for item in items})
+    # 口径混着比会骗人：收盘价买入（老任务）没有成本、也没有「买不进」，
+    # 它的超额天然比可执行口径好看。混着的时候不给「选择偏差」基准线。
+    sd = (next((abs(float(item["sd_pp"])) for item in items if item.get("sd_pp")), None)
+          if len(calibers) <= 1 else None)
     # sd_pp 存的是「均值到上界」的半宽 ≈ 1.96·SE，恢复成日度超额的标准差
     sd_abs = (sd / 1.96) if sd else None
     expected_max = round(sd_abs * math.sqrt(2 * math.log(count)), 3) if sd_abs and count > 2 else None
@@ -121,6 +125,8 @@ def board(limit: int = MAX_RUNS) -> dict[str, Any]:
         "items": items,
         "count": count,
         "expected_max_pp": expected_max,
-        "note": None if count <= 1 else "expected_max",
-        "calibers": sorted({item["caliber"] for item in items}),
+        "note": ("mixed_calibers" if len(calibers) > 1
+                 else ("expected_max" if count > 1 else None)),
+        "calibers": calibers,
+        "mixed": len(calibers) > 1,
     }

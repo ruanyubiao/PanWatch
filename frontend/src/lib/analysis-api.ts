@@ -399,6 +399,8 @@ export interface AnalysisLeaderboard {
   expected_max_pp: number | null
   note: string | null
   calibers: string[]
+  /** 列表里混了收盘口径（老任务）：不能直接比大小 */
+  mixed?: boolean
 }
 
 export interface AnalysisReport {
@@ -528,7 +530,9 @@ export async function resumeAnalysisRun(runId: string): Promise<AnalysisRunMeta>
 }
 
 export function getAnalysisReport(runId: string): Promise<AnalysisReport> {
-  return fetchAPI<AnalysisReport>(`/stocks/analysis/runs/${runId}/report`, { timeoutMs: 30000 })
+  // 首次读报告要把成本敏感性/入场/组合/归因/体检全算一遍（大任务约 60 秒），
+  // 之后走 signals.db 里的 report_cache，0.2 秒返回。超时给足，否则第一次必红。
+  return fetchAPI<AnalysisReport>(`/stocks/analysis/runs/${runId}/report`, { timeoutMs: 180000 })
 }
 
 export function getAnalysisDetail(runId: string): Promise<AnalysisDetail> {

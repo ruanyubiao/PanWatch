@@ -188,6 +188,13 @@ def fit(conn: sqlite3.Connection, horizon: int = 10, prefix: str = "r",
         if industry in industry_columns:
             matrix[index, 10 + len(year_columns) + industry_columns.index(industry)] = 1.0
     matrix[:, 0] = 1.0
+    # 老任务的对照组没有横截面（只有信号组回填过）：这时「特征缺失」这一列
+    # 就等于「是不是对照组」，is_signal 会被它吃掉，归因结果毫无意义。
+    signal_missing = float(np.mean(matrix[matrix[:, 1] > 0.5, 9])) if signals_n else 0.0
+    control_missing = float(np.mean(matrix[matrix[:, 1] <= 0.5, 9])) if controls_n else 0.0
+    if abs(signal_missing - control_missing) > 0.9:
+        return {**empty, "n": n, "signals": signals_n, "controls": controls_n,
+                "note": "cross_section_missing"}
     _standardise(matrix, [2, 3, 4, 5, 6])
 
     beta, se = _fit(matrix, target)

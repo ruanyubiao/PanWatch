@@ -31,6 +31,7 @@ from ..fork_screen import presets
 from ..fork_screen.models import ScreenRequest
 from ..fork_screen.service import run_screen
 from . import forward, significance, store
+from .forward import EXEC_COST
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +235,7 @@ def _run(preset_name: str, run_id: str, sample_days: int, horizon: Optional[int]
             days = _sampled_days(base_db, sample_days)
             horizons = [int(h) for h in (meta.get("horizons") or [])]
             target_horizon = int(horizon or (10 if 10 in horizons else (horizons[-1] if horizons else 30)))
-            control = _control_rates(base_db, target_horizon, prefix, 0.0)
+            control = _control_rates(base_db, target_horizon, prefix, EXEC_COST)
             base_daily = {}
             col = f"{prefix}{target_horizon}"
             for row in base_db.execute(
@@ -289,8 +290,8 @@ def _run(preset_name: str, run_id: str, sample_days: int, horizon: Optional[int]
                         continue
                     items = list(response.get("items") or [])
                     if not items:
-                        rates[day_text] = 0.0
-                        counts[day_text] = 0
+                        # 这一天没有命中 = 没有观测，不要写成「0% 胜率」——
+                        # 那会把「条件更严」的变体直接判死。
                         continue
                     symbols = [str(item.get("s") or item.get("symbol") or "") for item in items]
                     bars, _missing = forward.fetch_bars(market, d0, symbols, forward_days[-1] if forward_days else d0)
@@ -308,7 +309,7 @@ def _run(preset_name: str, run_id: str, sample_days: int, horizon: Optional[int]
                         if value is None:
                             continue
                         counted += 1
-                        wins += 1 if value > 0 else 0
+                        wins += 1 if (value - EXEC_COST) > 0 else 0
                     rates[day_text] = wins / counted if counted else 0.0
                     counts[day_text] = counted
 

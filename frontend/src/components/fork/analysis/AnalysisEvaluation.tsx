@@ -104,8 +104,11 @@ export const ANALYSIS_EVALUATION_TEXTS_ZH = {
   leaderboardWarn: (value: string) =>
     `注意：${value}pp 是「全都没有优势」时 N 个候选里最大值的期望。第一名没超过它，就不能算真的有效。`,
   leaderboardHead: {
-    rank: '#', preset: '条件', period: '区间', hits: '命中', excess: '超额', ci: '95% 区间', verdict: '判断',
+    rank: '#', preset: '条件', period: '区间', hits: '命中', excess: '超额', ci: '95% 区间',
+    caliber: '口径', verdict: '判断',
   },
+  leaderboardCaliber: { exec: '次日开盘', close: '收盘(老任务)' },
+  leaderboardMixedExcluded: '列表里混了两种口径（老任务按收盘价买入、没扣成本），不能直接比大小：先看「口径」列。',
   leaderboardVerdict: { up: '显著更高', down: '显著更低', flat: '不显著' },
   leaderboardEmpty: '还没有已完成的任务',
   pp: (value: number) => `${value > 0 ? '+' : ''}${value.toFixed(2)}pp`,
@@ -569,6 +572,7 @@ export function AnalysisLeaderboardDialog({ open, onOpenChange }: { open: boolea
         </DialogHeader>
         <div className="max-h-[70vh] space-y-2 overflow-y-auto scrollbar pr-1">
           {error && <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px]">{error}</p>}
+          {data?.mixed && <p className="text-[11px] text-amber-500">{T.leaderboardMixedExcluded}</p>}
           {data?.expected_max_pp != null && (
             <p className="text-[11px] text-amber-500">{T.leaderboardWarn(fmt(data.expected_max_pp))}</p>
           )}
@@ -584,6 +588,7 @@ export function AnalysisLeaderboardDialog({ open, onOpenChange }: { open: boolea
                   <th className="py-1 text-right font-normal">{T.leaderboardHead.hits}</th>
                   <th className="py-1 text-right font-normal">{T.leaderboardHead.excess}</th>
                   <th className="py-1 text-right font-normal">{T.leaderboardHead.ci}</th>
+                  <th className="py-1 text-center font-normal">{T.leaderboardHead.caliber}</th>
                   <th className="py-1 text-right font-normal">{T.leaderboardHead.verdict}</th>
                 </tr>
               </thead>
@@ -601,6 +606,9 @@ export function AnalysisLeaderboardDialog({ open, onOpenChange }: { open: boolea
                     </td>
                     <td className="py-1 text-right tabular-nums text-muted-foreground">
                       [{fmt(item.ci_low_pp)}, {fmt(item.ci_high_pp)}]
+                    </td>
+                    <td className="py-1 text-center text-muted-foreground">
+                      {T.leaderboardCaliber[item.caliber]}
                     </td>
                     <td className="py-1 text-right">
                       {item.significant_up
