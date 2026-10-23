@@ -52,7 +52,7 @@ METHOD = MethodSpec(
             label="验证天数",
             kind="int",
             default=30,
-            hint="向前看几个交易日，1 – 30；统计周期取标准周期里 ≤ 它的那些",
+            hint="向未来看几个交易日；统计周期取标准周期里 ≤ 它的那些",
             minimum=1,
             maximum=30,
         ),
