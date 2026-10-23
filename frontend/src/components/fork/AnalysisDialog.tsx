@@ -67,7 +67,8 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   end: '结束日期',
   endHint: (last: string) => `不能晚于 ${last}（再往后验证行情不够）`,
   validateDays: '验证天数',
-  validateDaysHint: (max: number) => `向前看几个交易日，1 – ${max}`,
+  // 用户 2026-10-23：提示改成「向未来看几个交易日」，不再带 1–30（范围由控件自己限住）
+  validateDaysHint: '向未来看几个交易日',
   validateDaysUnit: '个交易日',
   market: '股票范围',
   marketAll: '全部',
@@ -488,9 +489,15 @@ export function AnalysisDialog({
     () => methods.find(item => item.id === form.method) ?? null,
     [form.method, methods],
   )
-  // 方法自己声明了参数（方法 1 的验证天数）才显示那一行；方法 2 的窗口是固定的
-  const showValidateDays = !selectedMethod || selectedMethod.params.length > 0
-  const fixedWindow = selectedMethod?.windows?.[selectedMethod.windows.length - 1] ?? 35
+  // 方法是否自己声明了「验证天数」参数（方法 1 有；方法 2 的窗口是固定的）
+  const daysEditable = !selectedMethod || selectedMethod.params.some(item => item.key === 'validate_days')
+  // 固定窗口取方法最长窗口（方法 2 = 35），没有 windows 就退回 forward_days
+  const fixedWindow = selectedMethod
+    ? (selectedMethod.windows[selectedMethod.windows.length - 1] ?? selectedMethod.forward_days)
+    : 35
+  // 固定模式只是「同一行里的输入框不可编辑」——两种模式共用一套控件与尺寸，
+  // 切换方法时行高/列位置不变（用户 2026-10-23：原来换成一行纯文本，UI 会跳动）
+  const inputClass = 'h-7 w-[80px] rounded-md border border-input bg-background px-2 text-[12px]'
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -604,46 +611,56 @@ export function AnalysisDialog({
                     </span>
                   </div>
 
-                  {showValidateDays ? (
-                  <div className="flex flex-wrap items-center gap-2">
+                  {/* 验证天数：两种统计方法共用这一行同一套控件（方法 2 = 同一个输入框但不可编辑） */}
+                  <div
+                    className="flex flex-wrap items-center gap-2"
+                    data-fork-analysis-validate-row={daysEditable ? 'edit' : 'fixed'}
+                  >
                     <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.validateDays}</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={MAX_VALIDATE_DAYS}
-                      step={1}
-                      value={daysText}
-                      aria-label={T.validateDays}
-                      data-fork-analysis-validate-days
-                      onChange={event => {
-                        const raw = event.target.value
-                        setDaysText(raw)
-                        const parsed = Math.trunc(Number(raw))
-                        if (!Number.isFinite(parsed) || raw === '') return
-                        const next = Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
-                        endTouchedRef.current = false  // 改天数 → 结束日跟着上限走
-                        setForm(current => ({ ...current, validateDays: next }))
-                      }}
-                      onBlur={() => {
-                        const parsed = Math.trunc(Number(daysText))
-                        const next = Number.isFinite(parsed) && daysText !== ''
-                          ? Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
-                          : 30
-                        setDaysText(String(next))
-                        setForm(current => ({ ...current, validateDays: next }))
-                      }}
-                      className="h-7 w-[80px] rounded-md border border-input bg-background px-2 text-[12px]"
-                    />
-                    <span className="text-[10px] text-muted-foreground">
-                      {T.validateDaysHint(MAX_VALIDATE_DAYS)}
+                    {daysEditable ? (
+                      <input
+                        type="number"
+                        min={1}
+                        max={MAX_VALIDATE_DAYS}
+                        step={1}
+                        value={daysText}
+                        aria-label={T.validateDays}
+                        data-fork-analysis-validate-days
+                        onChange={event => {
+                          const raw = event.target.value
+                          setDaysText(raw)
+                          const parsed = Math.trunc(Number(raw))
+                          if (!Number.isFinite(parsed) || raw === '') return
+                          const next = Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
+                          endTouchedRef.current = false  // 改天数 → 结束日跟着上限走
+                          setForm(current => ({ ...current, validateDays: next }))
+                        }}
+                        onBlur={() => {
+                          const parsed = Math.trunc(Number(daysText))
+                          const next = Number.isFinite(parsed) && daysText !== ''
+                            ? Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
+                            : 30
+                          setDaysText(String(next))
+                          setForm(current => ({ ...current, validateDays: next }))
+                        }}
+                        className={inputClass}
+                      />
+                    ) : (
+                      <input
+                        type="number"
+                        value={fixedWindow}
+                        readOnly
+                        disabled
+                        aria-label={T.validateDays}
+                        data-fork-analysis-validate-days
+                        data-fork-analysis-fixed-window
+                        className={`${inputClass} cursor-not-allowed opacity-70`}
+                      />
+                    )}
+                    <span className="text-[10px] text-muted-foreground" data-fork-analysis-validate-hint>
+                      {daysEditable ? T.validateDaysHint : T.methodFixedDays(fixedWindow)}
                     </span>
                   </div>
-                  ) : (
-                    <div className="flex flex-wrap items-center gap-2" data-fork-analysis-fixed-window>
-                      <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.validateDays}</span>
-                      <span className="text-[11px] text-muted-foreground">{T.methodFixedDays(fixedWindow)}</span>
-                    </div>
-                  )}
 
                   {/* 市场：与条件选股界面完全同一套样式（带 ✓ 的 pill 组 + ST 开关） */}
                   <div className="flex flex-wrap items-center gap-2">
