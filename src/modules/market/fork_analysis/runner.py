@@ -693,8 +693,10 @@ def write_method2_artifacts(preset_name: str, run_id: str) -> list[str]:
     try:
         signal_events, duplicates = method2.load_events(conn, is_control=False)
         control_aggregates = method2.load_control_aggregates(conn)
+        adjusted = method2.amplitude_adjusted(conn)
         report, payload = method2.build_from_events(
-            {**meta, "days_done": meta.get("days_done")}, signal_events, control_aggregates, duplicates
+            {**meta, "days_done": meta.get("days_done")}, signal_events, control_aggregates,
+            duplicates, adjusted,
         )
         directory = store.artifacts_dir(preset_name, run_id)
         names = method2.write_artifacts(directory, payload)
