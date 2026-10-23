@@ -57,6 +57,9 @@ class AnalysisCreate(BaseModel):
 
     #: 已保存条件的名字（= ``data/screen_presets/<名字>.json`` 的文件名）
     preset: str = Field(min_length=1, max_length=64)
+    #: 统计分析方法 id（``stat_v1`` / ``stat_v2``，见 ``fork_analysis.methods``）。
+    #: 默认方法 1 = 既有的口径 v4；老客户端不传这个字段，行为不变。
+    method: str = Field(default="stat_v1", max_length=32)
     start_date: _dt.date
     #: 结束日（含）。省略 = 库里最新交易日往前推 ``validate_days`` 个交易日。
     end_date: Optional[_dt.date] = None

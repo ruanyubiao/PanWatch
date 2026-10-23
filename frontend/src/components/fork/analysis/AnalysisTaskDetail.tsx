@@ -26,11 +26,14 @@ import {
   formatDuration,
   getAnalysisDetail,
   getAnalysisReport,
+  getAnalysisResult,
   type AnalysisDetail,
   type AnalysisReport,
+  type AnalysisResultEnvelope,
 } from '@/lib/analysis-api'
 import { AnalysisHorizonTable, AnalysisVerdictCard } from './AnalysisSummary'
 import { AnalysisStockTable } from './AnalysisStockTable'
+import { AnalysisMethodResult } from './AnalysisMethodResult'
 
 export const ANALYSIS_TASK_TEXTS_ZH = {
   title: '任务详情',
@@ -89,6 +92,7 @@ export function AnalysisTaskDetailDialog({
   const T = ANALYSIS_TASK_TEXTS_ZH
   const [detail, setDetail] = useState<AnalysisDetail | null>(null)
   const [report, setReport] = useState<AnalysisReport | null>(null)
+  const [standard, setStandard] = useState<AnalysisResultEnvelope | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -101,18 +105,27 @@ export function AnalysisTaskDetailDialog({
       setDetail(data)
       if (['done', 'stopped'].includes(data.run.status)) {
         try {
-          setReport(await getAnalysisReport(id))
+          if ((data.run.method ?? 'stat_v1') === 'stat_v1') {
+            setReport(await getAnalysisReport(id))
+            setStandard(null)
+          } else {
+            setStandard(await getAnalysisResult(id))
+            setReport(null)
+          }
         } catch {
           // 0 条命中的任务没有报告：不是错误，界面给一句说明
           setReport(null)
+          setStandard(null)
         }
       } else {
         setReport(null)
+        setStandard(null)
       }
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc))
       setDetail(null)
       setReport(null)
+      setStandard(null)
     } finally {
       setLoading(false)
     }
@@ -185,7 +198,9 @@ export function AnalysisTaskDetailDialog({
 
               <section>
                 <h4 className="mb-1 text-[12px] font-medium">{T.evaluationTitle}</h4>
-                {report ? (
+                {standard ? (
+                  <AnalysisMethodResult runId={detail.run.run_id} report={standard.result} compact />
+                ) : report ? (
                   <div className="space-y-2">
                     <AnalysisVerdictCard report={report} />
                     <AnalysisHorizonTable report={report} />
@@ -212,7 +227,7 @@ export function AnalysisTaskDetailDialog({
                   size="sm"
                   variant="secondary"
                   className="h-7 px-3 text-[12px]"
-                  disabled={!report}
+                  disabled={!report && !standard}
                   onClick={() =>
                     window.open(`/analysis/report/${detail.run.run_id}`, '_blank', 'noopener')
                   }
@@ -221,17 +236,19 @@ export function AnalysisTaskDetailDialog({
                   <ExternalLink className="h-3.5 w-3.5" />
                   {T.report}
                 </Button>
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  className="h-7 px-3 text-[12px]"
-                  disabled={!detail.run.excel_ready || downloading}
-                  onClick={() => void handleDownload()}
-                  data-fork-analysis-detail-excel
-                >
-                  <Download className="h-3.5 w-3.5" />
-                  {detail.run.excel_ready ? T.excel : T.excelPending}
-                </Button>
+                {!standard && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="h-7 px-3 text-[12px]"
+                    disabled={downloading}
+                    onClick={() => void handleDownload()}
+                    data-fork-analysis-detail-excel
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                    {T.excel}
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   variant="ghost"
