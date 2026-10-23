@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   stopRun: vi.fn(),
   resumeRun: vi.fn(),
   report: vi.fn(),
+  result: vi.fn(),
+  methods: vi.fn(),
   stocks: vi.fn(),
   signals: vi.fn(),
   download: vi.fn(),
@@ -39,9 +41,12 @@ vi.mock('@/lib/analysis-api', () => ({
   stopAnalysisRun: mocks.stopRun,
   resumeAnalysisRun: mocks.resumeRun,
   getAnalysisReport: mocks.report,
+  getAnalysisResult: mocks.result,
+  getAnalysisMethods: mocks.methods,
   getAnalysisStocks: mocks.stocks,
   getAnalysisSignals: mocks.signals,
   downloadAnalysisExcel: mocks.download,
+  downloadAnalysisArtifact: vi.fn(),
   getAnalysisDetail: mocks.detail,
   deleteAnalysisRun: mocks.remove,
   recomputeAnalysisRun: vi.fn(),
@@ -66,6 +71,8 @@ const runMeta = (over: Partial<AnalysisRunMeta> = {}): AnalysisRunMeta => ({
   preset: 'xg1',
   created_at: '2026-10-22T12:00:00+08:00',
   status: 'running',
+  method: 'stat_v1',
+  method_name: '统计分析方法 1：持有期胜率与超额',
   start_date: '2020-01-01',
   end_date: '2026-10-21',
   markets: ['sh', 'sz', 'cyb', 'kcb'],
@@ -177,6 +184,77 @@ const report = (): AnalysisReport => ({
   control_hidden: true,
 })
 
+const METHODS = [
+  {
+    id: 'stat_v1',
+    name: '统计分析方法 1：持有期胜率与超额',
+    version: 'v4',
+    summary: '',
+    forward_days: 30,
+    windows: [5, 10, 15, 20, 25, 30],
+    targets: [],
+    params: [{ key: 'validate_days', label: '验证天数', kind: 'int', default: 30, hint: '',
+      min: 1, max: 30, choices: [] }],
+    outputs: ['明细.xlsx'],
+    caliber: '',
+    entry: '',
+    default: true,
+  },
+  {
+    id: 'stat_v2',
+    name: '统计分析方法 2：最高价达成率与覆盖率',
+    version: 'v1',
+    summary: '',
+    forward_days: 35,
+    windows: [5, 10, 15, 20, 25, 35],
+    targets: [0.01, 0.02, 0.03, 0.05, 0.1],
+    params: [],
+    outputs: ['window_summary.csv', 'report.md'],
+    caliber: '',
+    entry: '',
+  },
+]
+
+/** 方法 2 的统一信封（一个结论卡 + 一张表 + 一个产物） */
+const standardEnvelope = () => ({
+  run: runMeta({
+    status: 'done',
+    running: false,
+    method: 'stat_v2',
+    method_name: '统计分析方法 2：最高价达成率与覆盖率',
+  }),
+  counts: { signals: 900, hits: 900, control: 1200, days: 100 },
+  result: {
+    schema_version: '1',
+    method: METHODS[1],
+    parameters: {},
+    headline: {
+      verdict: 'usable',
+      title: '这个条件明显好于同期随机买入',
+      detail: '10 日上涨概率 52.5%，基准 47.0%。',
+      metrics: [{ key: 'best_window', label: '最优窗口', value: 10, unit: '日', hint: '' }],
+    },
+    tables: [
+      {
+        key: 'window_summary',
+        title: '各窗口最高价达成率',
+        hint: '窗口越长数值越大',
+        columns: [
+          { key: 'window', label: '窗口', kind: 'int' },
+          { key: 'positive_rate', label: '上涨概率', kind: 'percent' },
+        ],
+        rows: [{ window: 10, positive_rate: 52.5 }],
+        total_rows: 1,
+        sort: null,
+      },
+    ],
+    artifacts: [{ name: 'report.md', kind: 'md', size: 2048, label: 'report.md', url: '/x' }],
+    data_quality: {},
+    notes: [],
+    generated_at: '',
+  },
+})
+
 const renderDialog = () => {
   const onOpenChange = vi.fn()
   render(<AnalysisDialog open onOpenChange={onOpenChange} presets={presets} asof="2026-10-21" />)
@@ -202,6 +280,8 @@ describe('AnalysisDialog', () => {
     })
     mocks.stocks.mockResolvedValue({ total: 0, items: [] })
     mocks.signals.mockResolvedValue([])
+    mocks.methods.mockResolvedValue(METHODS)
+    mocks.result.mockResolvedValue(standardEnvelope())
   })
 
   afterEach(() => {
@@ -363,6 +443,63 @@ describe('AnalysisDialog', () => {
     renderDialog()
     await waitFor(() => expect(document.querySelector('[data-fork-analysis-run="running"]')).toBeTruthy())
     expect(screen.getByRole('button', { name: '停止' })).toBeTruthy()
+  })
+
+  it('「选股条件」标签与「统计方法」下拉：下拉排在条件下面', async () => {
+    renderDialog()
+    await screen.findByText('创建数据分析任务')
+    const body = document.body.textContent ?? ''
+    expect(body).toContain('选股条件')
+    expect(body).not.toContain('已保存条件')
+    const preset = document.querySelector('[data-fork-analysis-preset]') as HTMLElement
+    const method = document.querySelector('[data-fork-analysis-method]') as HTMLElement
+    expect(preset && method).toBeTruthy()
+    // DOM 顺序 = 显示顺序：统计方法紧跟选股条件
+    expect(preset.compareDocumentPosition(method) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // 方法列表来自后端；默认方法 1（有验证天数）
+    expect(await screen.findByText('统计分析方法 1：持有期胜率与超额')).toBeTruthy()
+    expect(document.querySelector('[data-fork-analysis-validate-days]')).toBeTruthy()
+  })
+
+  it('选方法 2：隐藏验证天数、显示固定窗口、创建请求带 method', async () => {
+    mocks.create.mockResolvedValue(runMeta())
+    renderDialog()
+    const user = userEvent.setup()
+    await screen.findByText('创建数据分析任务')
+    await user.click(document.querySelector('[data-fork-analysis-method]') as HTMLElement)
+    const option = await screen.findByRole('option', { name: /统计分析方法 2/ })
+    await user.click(option)
+    // 方法 2 的窗口是固定的，不再显示验证天数输入框
+    await waitFor(() => expect(document.querySelector('[data-fork-analysis-fixed-window]')).toBeTruthy())
+    expect(document.querySelector('[data-fork-analysis-validate-days]')).toBeNull()
+    expect(document.querySelector('[data-fork-analysis-fixed-window]')?.textContent).toContain('35')
+    // 预估也带上了方法（后端按方法的 forward_days 夹结束日）
+    await waitFor(() =>
+      expect(mocks.preview.mock.calls.at(-1)?.[0].method).toBe('stat_v2'),
+    )
+    await user.click(screen.getByRole('button', { name: '创建任务' }))
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledTimes(1))
+    expect(mocks.create.mock.calls[0][0].method).toBe('stat_v2')
+  })
+
+  it('方法 2 跑完：用统一信封渲染（结论卡 + 表 + 产物），没有 Excel 按钮', async () => {
+    mocks.create.mockResolvedValue(
+      runMeta({ status: 'done', running: false, method: 'stat_v2',
+        method_name: '统计分析方法 2：最高价达成率与覆盖率', days_done: 100, hits: 900 }),
+    )
+    renderDialog()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '创建任务' }))
+    await waitFor(() => expect(document.querySelector('[data-fork-analysis-standard="stat_v2"]')).toBeTruthy())
+    expect(document.querySelector('[data-fork-analysis-verdict-text]')?.textContent)
+      .toContain('明显好于同期随机买入')
+    expect(document.body.textContent).toContain('各窗口最高价达成率')
+    // 百分比按 kind 格式化，不是裸数字
+    expect(document.body.textContent).toContain('52.50%')
+    // 产物按名字列出，点它下载
+    expect(document.querySelector('[data-fork-analysis-artifact="report.md"]')).toBeTruthy()
+    // 方法 2 不生成 Excel：界面上不该有「下载 Excel」
+    expect(screen.queryByRole('button', { name: '下载 Excel' })).toBeNull()
   })
 })
 

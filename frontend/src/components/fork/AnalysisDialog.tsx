@@ -28,17 +28,22 @@ import {
   createAnalysis,
   downloadAnalysisExcel,
   formatDuration,
+  getAnalysisMethods,
   getAnalysisReport,
+  getAnalysisResult,
   getAnalysisRun,
   listAnalysisRuns,
   previewAnalysis,
   resumeAnalysisRun,
   stopAnalysisRun,
+  type AnalysisMethodSpec,
   type AnalysisPreview,
   type AnalysisReport,
   type AnalysisRunMeta,
+  type AnalysisResultEnvelope,
 } from '@/lib/analysis-api'
 import { AnalysisRunListDialog } from './analysis/AnalysisRunList'
+import { AnalysisMethodResult } from './analysis/AnalysisMethodResult'
 import { AnalysisStockTable } from './analysis/AnalysisStockTable'
 import { AnalysisSummaryBody } from './analysis/AnalysisSummary'
 import { AnalysisTaskDetailDialog } from './analysis/AnalysisTaskDetail'
@@ -46,12 +51,18 @@ import { AnalysisTaskDetailDialog } from './analysis/AnalysisTaskDetail'
 export const ANALYSIS_DIALOG_TEXTS_ZH = {
   button: '数据分析',
   title: '数据分析',
-  description: '用一个已保存条件回测历史每一天：命中后 30 个交易日的涨幅与上涨概率。',
+  description: '用一个选股条件回测历史每一天，按选定的统计方法给出这个条件准不准。',
   createTitle: '创建数据分析任务',
   createHint: '选择条件、区间与股票范围，任务在后台跑，可以关掉页面。',
-  preset: '已保存条件',
-  presetPlaceholder: '选择一个已保存条件',
-  presetEmpty: '还没有已保存的条件，先去「条件选股」保存一个',
+  preset: '选股条件',
+  presetPlaceholder: '选择一个选股条件',
+  presetEmpty: '还没有选股条件，先去「条件选股」保存一个',
+  method: '统计方法',
+  methodHint: (forwardDays: number) =>
+    `该方法需要 ${forwardDays} 个交易日的前瞻行情，结束日会自动往前留出这段`,
+  methodFixedDays: (days: number) => `该方法固定使用 ${days} 个交易日窗口`,
+  methodShort: (id: string) => (id === 'stat_v2' ? '方法 2' : '方法 1'),
+  methodFallback: '统计分析方法 1：持有期胜率与超额',
   start: '开始日期',
   end: '结束日期',
   endHint: (last: string) => `不能晚于 ${last}（再往后验证行情不够）`,
@@ -72,7 +83,7 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   creating: '创建中…',
   running: '进行中',
   progressTitle: (done: number, total: number) => `已完成 ${done} / ${total} 个交易日`,
-  progressHits: (hits: number, control: number) => `命中 ${hits} 条，对照 ${control} 条`,
+  progressHits: (hits: number) => `命中 ${hits} 条`,
   progressEta: (eta: string) => `预计剩余 ${eta}`,
   progressCurrent: (day: string) => `正在跑 ${day}`,
   stop: '停止',
@@ -86,6 +97,7 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   recentDay: (day: string, hits: number) => `${day} · 命中 ${hits}`,
   resultTitle: '结果',
   fullReport: '查看完整报告（新标签页）',
+  resultPending: '正在计算统计结果…',
   excel: '下载 Excel',
   excelPending: 'Excel 生成中',
   newTask: '新建任务',
@@ -115,6 +127,8 @@ type Mode = 'create' | 'run'
 
 interface FormState {
   preset: string
+  /** 统计分析方法 id */
+  method: string
   startDate: string
   endDate: string
   /** 验证天数（向前看几个交易日），默认 30，最小 1 */
@@ -172,8 +186,12 @@ export function AnalysisDialog({
 }) {
   const T = ANALYSIS_DIALOG_TEXTS_ZH
   const [mode, setMode] = useState<Mode>('create')
+  const [methods, setMethods] = useState<AnalysisMethodSpec[]>([])
+  // ref 供 reset 读默认方法（避免 methods 进 reset 依赖导致表单被重置）
+  const methodsRef = useRef<AnalysisMethodSpec[]>([])
   const [form, setForm] = useState<FormState>({
     preset: '',
+    method: 'stat_v1',
     startDate: DEFAULT_START,
     endDate: '',
     validateDays: 30,
@@ -190,6 +208,8 @@ export function AnalysisDialog({
   const [runs, setRuns] = useState<AnalysisRunMeta[]>([])
   const [run, setRun] = useState<AnalysisRunMeta | null>(null)
   const [report, setReport] = useState<AnalysisReport | null>(null)
+  // 方法 2（以及以后的新方法）走统一信封
+  const [standard, setStandard] = useState<AnalysisResultEnvelope | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [stopping, setStopping] = useState(false)
@@ -202,6 +222,7 @@ export function AnalysisDialog({
     setMode('create')
     setRun(null)
     setReport(null)
+    setStandard(null)
     setError(null)
     setPreview(null)
     setPreviewError(null)
@@ -210,6 +231,9 @@ export function AnalysisDialog({
     endTouchedRef.current = false
     setForm({
       preset: presets[0]?.name ?? '',
+      // 方法列表是异步来的；用 ref 读默认方法，避免把它写进 reset 的依赖
+      // （否则列表一回来 reset 就重跑，把用户刚填的表单清掉）
+      method: methodsRef.current[0]?.id ?? 'stat_v1',
       startDate: DEFAULT_START,
       // 预估回来之前先给条件选股的日期，回来后由 max_end_date 覆盖（用户没手选时）
       endDate: asof ?? '',
@@ -220,7 +244,7 @@ export function AnalysisDialog({
     })
   }, [asof, presets])
 
-  // 打开时：有任务在跑就直接进「进行中」，否则停在「未开始」
+  // 打开时：拉方法列表 + 有任务在跑就直接进「进行中」，否则停在「未开始」
   useEffect(() => {
     if (!open) return
     reset()
@@ -239,6 +263,18 @@ export function AnalysisDialog({
         if (!cancelled) setError(T.loadFailed(exc instanceof Error ? exc.message : String(exc)))
       }
     })()
+    void getAnalysisMethods()
+      .then(items => {
+        if (cancelled) return
+        methodsRef.current = items
+        setMethods(items)
+        // 列表回来时表单还是初始方法（用户没改过）→ 用后端标记的默认方法
+        setForm(current => ({
+          ...current,
+          method: current.method || items[0]?.id || 'stat_v1',
+        }))
+      })
+      .catch(() => undefined)
     return () => {
       cancelled = true
     }
@@ -256,6 +292,7 @@ export function AnalysisDialog({
         try {
           const data = await previewAnalysis({
             preset: form.preset,
+            method: form.method,
             start_date: form.startDate,
             end_date: form.endDate || null,
             validate_days: form.validateDays,
@@ -282,8 +319,8 @@ export function AnalysisDialog({
       cancelled = true
       window.clearTimeout(handle)
     }
-  }, [form.endDate, form.includeSt, form.marketAll, form.markets, form.preset, form.startDate,
-      form.validateDays, mode, open])
+  }, [form.endDate, form.includeSt, form.marketAll, form.markets, form.method, form.preset,
+      form.startDate, form.validateDays, mode, open])
 
   // 进行中：轮询；到终态后拉统计
   useEffect(() => {
@@ -329,14 +366,33 @@ export function AnalysisDialog({
     [],
   )
 
+  const loadStandard = useCallback(
+    async (runId: string) => {
+      try {
+        setStandard(await getAnalysisResult(runId))
+        setError(null)
+      } catch (exc) {
+        setStandard(null)
+        setError(exc instanceof Error ? exc.message : String(exc))
+      }
+    },
+    [],
+  )
+
   const terminal = run ? ['done', 'stopped'].includes(run.status) : false
+  const runMethod = run?.method ?? 'stat_v1'
 
   useEffect(() => {
     if (mode !== 'run' || !run) return
     if (!['done', 'stopped'].includes(run.status)) return
+    if (runMethod !== 'stat_v1') {
+      if (standard && standard.run.run_id === run.run_id) return
+      void loadStandard(run.run_id)
+      return
+    }
     if (report && report.run.run_id === run.run_id) return
     void loadReport(run.run_id)
-  }, [loadReport, mode, report, run])
+  }, [loadReport, loadStandard, mode, report, run, runMethod, standard])
 
   const handleCreate = async () => {
     if (!form.preset || submitting) return
@@ -345,6 +401,7 @@ export function AnalysisDialog({
     try {
       const created = await createAnalysis({
         preset: form.preset,
+        method: form.method,
         start_date: form.startDate,
         end_date: form.endDate || null,
         validate_days: form.validateDays,
@@ -353,6 +410,7 @@ export function AnalysisDialog({
       })
       setRun(created)
       setReport(null)
+      setStandard(null)
       setMode('run')
       setRuns(current => [created, ...current])
     } catch (exc) {
@@ -381,6 +439,7 @@ export function AnalysisDialog({
       const next = await resumeAnalysisRun(run.run_id)
       setRun(next)
       setReport(null)
+      setStandard(null)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc))
     }
@@ -425,6 +484,14 @@ export function AnalysisDialog({
     [form.preset, runs],
   )
 
+  const selectedMethod = useMemo(
+    () => methods.find(item => item.id === form.method) ?? null,
+    [form.method, methods],
+  )
+  // 方法自己声明了参数（方法 1 的验证天数）才显示那一行；方法 2 的窗口是固定的
+  const showValidateDays = !selectedMethod || selectedMethod.params.length > 0
+  const fixedWindow = selectedMethod?.windows?.[selectedMethod.windows.length - 1] ?? 35
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-[968px]" data-fork-analysis-dialog>
@@ -447,7 +514,7 @@ export function AnalysisDialog({
 
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="w-20 shrink-0 text-[11px] text-muted-foreground">{T.preset}</span>
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.preset}</span>
                     {presets.length === 0 ? (
                       <span className="text-[11px] text-amber-600">{T.presetEmpty}</span>
                     ) : (
@@ -466,6 +533,36 @@ export function AnalysisDialog({
                           ))}
                         </SelectContent>
                       </Select>
+                    )}
+                  </div>
+
+                  {/* 统计方法（用户第 5 条：放在「选股条件」下面） */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.method}</span>
+                    <Select
+                      value={form.method}
+                      onValueChange={value =>
+                        setForm(current => ({ ...current, method: value }))
+                      }
+                    >
+                      <SelectTrigger className="h-7 w-[280px] text-[12px]" data-fork-analysis-method>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {(methods.length > 0
+                          ? methods
+                          : [{ id: 'stat_v1', name: T.methodFallback }]
+                        ).map(item => (
+                          <SelectItem key={item.id} value={item.id}>
+                            {item.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    {selectedMethod && (
+                      <span className="text-[10px] text-muted-foreground">
+                        {T.methodHint(selectedMethod.forward_days)}
+                      </span>
                     )}
                   </div>
 
@@ -507,6 +604,7 @@ export function AnalysisDialog({
                     </span>
                   </div>
 
+                  {showValidateDays ? (
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.validateDays}</span>
                     <input
@@ -540,6 +638,12 @@ export function AnalysisDialog({
                       {T.validateDaysHint(MAX_VALIDATE_DAYS)}
                     </span>
                   </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-2" data-fork-analysis-fixed-window>
+                      <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.validateDays}</span>
+                      <span className="text-[11px] text-muted-foreground">{T.methodFixedDays(fixedWindow)}</span>
+                    </div>
+                  )}
 
                   {/* 市场：与条件选股界面完全同一套样式（带 ✓ 的 pill 组 + ST 开关） */}
                   <div className="flex flex-wrap items-center gap-2">
@@ -678,6 +782,7 @@ export function AnalysisDialog({
                 <div className="mb-1 flex items-center justify-between text-[11px]">
                   <span className="font-medium">
                     {run.preset} · {statusLabel(run.status)}
+                    {run.method ? ` · ${T.methodShort(run.method)}` : ''}
                   </span>
                   <span className="text-muted-foreground">
                     {T.marketsSummary(
@@ -698,7 +803,7 @@ export function AnalysisDialog({
                       {T.progressTitle(progress?.days_done ?? run.days_done, progress?.days_total ?? run.days_total)}
                     </p>
                     <p className="text-[10px] text-muted-foreground">
-                      {T.progressHits(progress?.hits ?? run.hits, progress?.control ?? run.control)}
+                      {T.progressHits(progress?.hits ?? run.hits)}
                       {' · '}
                       {T.progressEta(formatDuration(progress?.eta_s ?? null))}
                       {progress?.current_d0 ? ` · ${T.progressCurrent(progress.current_d0)}` : ''}
@@ -750,7 +855,7 @@ export function AnalysisDialog({
                 )}
               </div>
 
-              {terminal && report && (
+              {terminal && runMethod === 'stat_v1' && report && (
                 <div className="space-y-3" data-fork-analysis-result>
                   {/* 结论卡由 AnalysisSummaryBody 内部渲染，这里不要再放一份（会重复） */}
                   <AnalysisSummaryBody report={report} compact />
@@ -770,11 +875,11 @@ export function AnalysisDialog({
                       size="sm"
                       variant="secondary"
                       className="h-7 px-3 text-[12px]"
-                      disabled={!run.excel_ready}
                       onClick={() => void handleDownload()}
+                      data-fork-analysis-excel
                     >
                       <Download className="h-3.5 w-3.5" />
-                      {run.excel_ready ? T.excel : T.excelPending}
+                      {T.excel}
                     </Button>
                     <Button size="sm" variant="ghost" className="h-7 px-3 text-[12px]" onClick={reset}>
                       {T.newTask}
@@ -783,8 +888,31 @@ export function AnalysisDialog({
                 </div>
               )}
 
-              {terminal && !report && (
-                <p className="text-[11px] text-muted-foreground">{T.excelPending}</p>
+              {terminal && runMethod !== 'stat_v1' && standard && (
+                <div className="space-y-3" data-fork-analysis-result>
+                  <AnalysisMethodResult runId={run.run_id} report={standard.result} compact />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="h-7 px-3 text-[12px]"
+                      onClick={() => window.open(`/analysis/report/${run.run_id}`, '_blank', 'noopener')}
+                      data-fork-analysis-open-report
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                      {T.fullReport}
+                    </Button>
+                    <Button size="sm" variant="ghost" className="h-7 px-3 text-[12px]" onClick={reset}>
+                      {T.newTask}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {terminal && (
+                (runMethod === 'stat_v1' && !report) || (runMethod !== 'stat_v1' && !standard)
+              ) && (
+                <p className="text-[11px] text-muted-foreground">{T.resultPending}</p>
               )}
             </div>
           )}

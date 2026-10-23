@@ -17,6 +17,9 @@ export interface AnalysisRunMeta {
   preset: string
   created_at: string
   status: AnalysisStatus
+  /** 统计分析方法（老任务是 stat_v1） */
+  method?: string
+  method_name?: string
   start_date: string
   end_date: string
   /** 结束日上限：再往后就没有足够的验证行情（后端算好的最后一个可验证交易日） */
@@ -470,6 +473,11 @@ export interface AnalysisPreview {
   latest_trade_date: string
   max_end_date: string
   validate_days: number
+  /** 方法需要多少个交易日的前瞻行情（方法 1 = 30，方法 2 = 35） */
+  forward_days?: number
+  method?: string
+  method_name?: string
+  windows?: number[]
   horizons: number[]
   trading_days: number
   markets: ScreenMarket[]
@@ -479,12 +487,119 @@ export interface AnalysisPreview {
 
 export interface AnalysisCreateBody {
   preset: string
+  /** 统计分析方法 id（默认 stat_v1；老调用方不传） */
+  method?: string
   start_date: string
   end_date?: string | null
   validate_days?: number
   markets?: ScreenMarket[]
   include_st?: boolean
   sample_size?: number
+}
+
+/** 一个统计分析方法的说明（后端 /analysis/methods） */
+export interface AnalysisMethodSpec {
+  id: string
+  name: string
+  version: string
+  summary: string
+  forward_days: number
+  windows: number[]
+  targets: number[]
+  params: { key: string; label: string; kind: string; default: unknown; hint: string;
+    min: number | null; max: number | null; choices: string[] }[]
+  outputs: string[]
+  caliber: string
+  entry: string
+  default?: boolean
+}
+
+/** 统一输出信封里的一列 */
+export interface AnalysisTableColumn {
+  key: string
+  label: string
+  kind: 'text' | 'int' | 'number' | 'percent' | 'pp' | 'money' | 'bool'
+  hint?: string
+  width?: number | null
+}
+
+export interface AnalysisTable {
+  key: string
+  title: string
+  hint: string
+  columns: AnalysisTableColumn[]
+  rows: Record<string, unknown>[]
+  total_rows: number
+  sort: { key: string | null; order: string } | null
+}
+
+export interface AnalysisHeadline {
+  verdict: 'usable' | 'worse' | 'mixed' | 'no_edge' | 'insufficient' | 'unrated'
+  title: string
+  detail: string
+  metrics: { key: string; label: string; value: unknown; unit: string; hint: string }[]
+}
+
+export interface AnalysisArtifact {
+  name: string
+  kind: 'csv' | 'md' | 'xlsx' | 'zip'
+  size: number
+  label: string
+  url: string
+}
+
+/** 所有统计方法共用的报告信封（2026-10-23 起） */
+export interface AnalysisStandardReport {
+  schema_version: string
+  method: AnalysisMethodSpec
+  parameters: Record<string, unknown>
+  headline: AnalysisHeadline
+  tables: AnalysisTable[]
+  artifacts: AnalysisArtifact[]
+  data_quality: Record<string, unknown> & { rows?: unknown; notes?: string[] }
+  notes: string[]
+  generated_at: string
+}
+
+export interface AnalysisResultEnvelope {
+  run: AnalysisRunMeta
+  counts: { signals: number; hits: number; control: number; days: number }
+  result: AnalysisStandardReport
+}
+
+export function getAnalysisMethods(): Promise<AnalysisMethodSpec[]> {
+  return fetchAPI<{ items: AnalysisMethodSpec[]; default: string }>(
+    '/stocks/analysis/methods',
+    { timeoutMs: 15000 },
+  ).then(data => data?.items ?? [])
+}
+
+/** 统一结果（方法 1 与 2 同构），方法 2 的唯一读法 */
+export function getAnalysisResult(runId: string): Promise<AnalysisResultEnvelope> {
+  return fetchAPI<AnalysisResultEnvelope>(`/stocks/analysis/runs/${runId}/result`, {
+    timeoutMs: 180000,
+  })
+}
+
+/** 下载任意产物（CSV / report.md / xlsx）：不能用 fetchAPI（它按 JSON 解析） */
+export async function downloadAnalysisArtifact(runId: string, name: string): Promise<void> {
+  const token = getToken()
+  const response = await fetch(
+    `/api/stocks/analysis/runs/${runId}/artifacts/${encodeURIComponent(name)}`,
+    { headers: token ? { Authorization: `Bearer ${token}` } : undefined },
+  )
+  if (!response.ok) {
+    throw new Error(`下载失败（HTTP ${response.status}）`)
+  }
+  const blob = await response.blob()
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 export function previewAnalysis(body: AnalysisCreateBody): Promise<AnalysisPreview> {
