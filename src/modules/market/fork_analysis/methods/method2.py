@@ -74,6 +74,7 @@ METHOD = MethodSpec(
     outputs=(
         "stock_event_metrics.csv",
         "window_summary.csv",
+        "target_edge.csv",
         "return_distribution.csv",
         "date_summary.csv",
         "coverage_summary.csv",
@@ -408,10 +409,14 @@ def aggregate_events(events: Iterable[Event], windows: Sequence[int] = WINDOWS,
     :func:`load_control_aggregates`，两者必须一致（有单测对数）。
     """
     buckets: dict[int, dict[str, Any]] = {
-        window: {"n": 0, "positives": 0, "hits": {target: 0 for target in targets}, "rates": {}}
+        window: {"n": 0, "positives": 0, "hits": {target: 0 for target in targets}, "rates": {},
+                 "target_rates": {target: {} for target in targets}}
         for window in windows
     }
     per_day: dict[int, dict[str, list[int]]] = {window: {} for window in windows}
+    per_day_target: dict[int, dict[float, dict[str, list[int]]]] = {
+        window: {target: {} for target in targets} for window in windows
+    }
     for event in events:
         if not event.valid:
             continue
@@ -426,6 +431,9 @@ def aggregate_events(events: Iterable[Event], windows: Sequence[int] = WINDOWS,
             for target in targets:
                 if value >= target:
                     bucket["hits"][target] += 1
+                day_hit = per_day_target[window][target].setdefault(event.d0, [0, 0])
+                day_hit[0] += 1
+                day_hit[1] += 1 if value >= target else 0
             day = per_day[window].setdefault(event.d0, [0, 0])
             day[0] += 1
             day[1] += positive
@@ -434,6 +442,11 @@ def aggregate_events(events: Iterable[Event], windows: Sequence[int] = WINDOWS,
             d0: 100.0 * counts[1] / counts[0]
             for d0, counts in per_day[window].items() if counts[0]
         }
+        for target in targets:
+            buckets[window]["target_rates"][target] = {
+                d0: 100.0 * counts[1] / counts[0]
+                for d0, counts in per_day_target[window][target].items() if counts[0]
+            }
     return buckets
 
 
@@ -461,7 +474,8 @@ def load_control_aggregates(conn: sqlite3.Connection,
         "GROUP BY d0"
     )
     buckets: dict[int, dict[str, Any]] = {
-        window: {"n": 0, "positives": 0, "hits": {target: 0 for target in targets}, "rates": {}}
+        window: {"n": 0, "positives": 0, "hits": {target: 0 for target in targets}, "rates": {},
+                 "target_rates": {target: {} for target in targets}}
         for window in windows
     }
     for row in conn.execute(sql):
@@ -473,11 +487,54 @@ def load_control_aggregates(conn: sqlite3.Connection,
             bucket = buckets[window]
             bucket["n"] += count
             bucket["positives"] += positives
-            for target in targets:
-                bucket["hits"][target] += int(row[f"hit{window}_{target_key(target)}"] or 0)
             if count:
                 bucket["rates"][d0] = 100.0 * positives / count
+            for target in targets:
+                hits = int(row[f"hit{window}_{target_key(target)}"] or 0)
+                bucket["hits"][target] += hits
+                if count:
+                    bucket["target_rates"][target][d0] = 100.0 * hits / count
     return buckets
+
+
+def target_comparison(signal_events: Sequence[Event],
+                      control: "Sequence[Event] | dict[int, dict[str, Any]]",
+                      windows: Sequence[int] = WINDOWS,
+                      targets: Sequence[float] = RETURN_TARGETS) -> list[dict[str, Any]]:
+    """按「窗口 × 涨幅目标」比较达成率（这才是判断条件好坏的依据）。
+
+    为什么不用 0% 目标（``positive_rate``）做结论：A 股任意一只股票在 5 个交易日内
+    盘中摸到买入价上方的概率就有 97% 上下，0% 目标接近饱和，条件和随机买入都贴着
+    100%，差不出东西。3%/5%/10% 这种真门槛才有区分度 —— 实测同一个条件 5 日
+    ≥3% 达成率比基准高 7pp，而 >0 只高 0.08pp。
+    """
+    signal_agg = aggregate_events(signal_events, windows, targets)
+    base = control if isinstance(control, dict) else aggregate_events(control, windows, targets)
+    rows: list[dict[str, Any]] = []
+    for window in windows:
+        sig = signal_agg[window]
+        agg = base.get(window) or {"n": 0, "hits": {}, "target_rates": {}}
+        if not sig["n"] or not agg.get("n"):
+            continue
+        for target in targets:
+            sig_rate = 100.0 * sig["hits"][target] / sig["n"]
+            base_rate = 100.0 * float((agg.get("hits") or {}).get(target) or 0) / int(agg["n"])
+            test = paired_day_test(
+                sig["target_rates"].get(target) or {},
+                (agg.get("target_rates") or {}).get(target) or {},
+            )
+            rows.append({
+                "window": window,
+                "target": _label(target),
+                "signal_n": sig["n"],
+                "baseline_n": int(agg["n"]),
+                "signal_rate": _round(sig_rate),
+                "baseline_rate": _round(base_rate),
+                "difference_pp": _round(sig_rate - base_rate),
+                "paired_days": test["days"],
+                "paired_t": test["t"],
+            })
+    return rows
 
 
 def paired_day_test(signal_rates: dict[str, float], base_rates: dict[str, float]) -> dict[str, Any]:
@@ -654,8 +711,13 @@ def _excess_by_window(summary: Sequence[dict[str, Any]],
 
 
 def headline_for(summary: Sequence[dict[str, Any]], baseline: Sequence[dict[str, Any]],
-                 quality: Sequence[dict[str, Any]], days: int) -> Headline:
-    """五档结论（与方法 1 同一套语义，便于跨方法比较）。"""
+                 quality: Sequence[dict[str, Any]], days: int,
+                 target_rows: Sequence[dict[str, Any]] | None = None) -> Headline:
+    """五档结论（与方法 1 同一套语义，便于跨方法比较）。
+
+    判定用「窗口 × 目标」的达成率差（``target_rows``），不用 0% 上涨概率：
+    后者在 A 股接近饱和（97%+），条件和随机买入几乎一样，拿它做结论等于没结论。
+    """
     valid = sum(int(row.get("valid") or 0) for row in summary if row["window"] == WINDOWS[0])
     if valid < 100 or days < 20:
         return Headline(
@@ -665,8 +727,8 @@ def headline_for(summary: Sequence[dict[str, Any]], baseline: Sequence[dict[str,
             metrics=[metric("sample", "有效事件", valid, "条"),
                      metric("days", "交易日", days, "天")],
         )
-    items = _excess_by_window(summary, baseline)
-    if not items:
+    rows = [row for row in (target_rows or []) if row.get("difference_pp") is not None]
+    if not rows:
         best = max(summary, key=lambda row: row.get("positive_rate") or 0)
         return Headline(
             verdict="unrated",
@@ -677,41 +739,56 @@ def headline_for(summary: Sequence[dict[str, Any]], baseline: Sequence[dict[str,
                      metric("sample", "有效事件", valid, "条")],
         )
 
-    usable = [item for item in items if (item["excess_pp"] or 0) >= 2.0 and (item["t"] or 0) >= 2.0]
-    worse = [item for item in items if (item["excess_pp"] or 0) <= -2.0 and (item["t"] or 0) <= -2.0]
-    best = max(items, key=lambda item: item["excess_pp"] or -999)
-    worst = min(items, key=lambda item: item["excess_pp"] or 999)
+    def _significant(row: dict[str, Any], direction: int) -> bool:
+        value = row.get("difference_pp") or 0.0
+        stat = row.get("paired_t")
+        if stat is None:
+            return False
+        return value * direction >= 2.0 and stat * direction >= 2.0
+
+    usable = [row for row in rows if _significant(row, 1)]
+    worse = [row for row in rows if _significant(row, -1)]
+    best = max(rows, key=lambda row: row["difference_pp"])
+    worst = min(rows, key=lambda row: row["difference_pp"])
 
     if usable and worse:
         head = Headline(
             verdict="mixed",
-            title="结论不一致：部分窗口高于基准、部分低于",
-            detail=f"最好的 {best['window']} 日 {best['excess_pp']}pp，最差的 {worst['window']} 日 {worst['excess_pp']}pp。",
+            title="结论不一致：部分窗口/目标高于基准、部分低于",
+            detail=(f"最好的 {best['window']} 日 {best['target']} 达成率 {best['signal_rate']}%"
+                    f"（基准 {best['baseline_rate']}%，{best['difference_pp']}pp），"
+                    f"最差的 {worst['window']} 日 {worst['target']} 为 {worst['difference_pp']}pp。"),
         )
     elif len(usable) >= 2:
         head = Headline(
             verdict="usable",
             title="这个条件明显好于同期随机买入",
-            detail=(f"{best['window']} 日上涨概率 {best['signal_rate']}%，基准 {best['baseline_rate']}%，"
-                    f"超额 {best['excess_pp']}pp（按日配对 t={best['t']}）。"),
+            detail=(f"{best['window']} 日内达到 {best['target']} 的比例 {best['signal_rate']}%，"
+                    f"基准 {best['baseline_rate']}%，高 {best['difference_pp']}pp"
+                    f"（按日配对 t={best['paired_t']}）。"),
         )
     elif len(worse) >= 2:
         head = Headline(
             verdict="worse",
             title="这个条件比同期随机买入更差",
-            detail=(f"{worst['window']} 日上涨概率 {worst['signal_rate']}%，基准 {worst['baseline_rate']}%，"
-                    f"差 {worst['excess_pp']}pp（按日配对 t={worst['t']}）。"),
+            detail=(f"{worst['window']} 日内达到 {worst['target']} 的比例 {worst['signal_rate']}%，"
+                    f"基准 {worst['baseline_rate']}%，低 {abs(worst['difference_pp'])}pp"
+                    f"（按日配对 t={worst['paired_t']}）。"),
         )
     else:
         head = Headline(
             verdict="no_edge",
             title="没有可确认的优势",
-            detail=f"最好的 {best['window']} 日超额 {best['excess_pp']}pp（t={best['t']}），不足以说明条件有用。",
+            detail=(f"最好的组合是 {best['window']} 日 / {best['target']}："
+                    f"{best['signal_rate']}% 对基准 {best['baseline_rate']}%"
+                    f"（{best['difference_pp']}pp，t={best['paired_t']}），达不到显著。"),
         )
     head.metrics = [
         metric("best_window", "最优窗口", best["window"], "日"),
-        metric("excess", "超额", best["excess_pp"], "pp"),
-        metric("rate", "上涨概率", best["signal_rate"], "%"),
+        metric("best_target", "最优目标", best["target"], ""),
+        metric("excess", "超额", best["difference_pp"], "pp"),
+        metric("rate", "达成率", best["signal_rate"], "%"),
+        metric("baseline", "基准", best["baseline_rate"], "%"),
         metric("sample", "有效事件", valid, "条"),
         metric("days", "交易日", days, "天"),
         metric("n_eff", "有效样本", max(1, days // int(best["window"] or 1)), "段"),
@@ -739,6 +816,27 @@ def _summary_table(summary: Sequence[dict[str, Any]]) -> Table:
     return Table(key="window_summary", title="各窗口最高价达成率",
                  hint="涨幅 = 窗口内最高价 / 次日开盘买入价；累计窗口，所以越长的窗口数值不会更小",
                  columns=columns, rows=list(summary), sort_key="window", sort_order="asc")
+
+
+def _target_table(rows: Sequence[dict[str, Any]]) -> Table:
+    return Table(
+        key="target_edge",
+        title="各目标达成率与基准对比（判断依据）",
+        hint="0% 目标（单纯「摸到买入价上方」）在 A 股接近饱和，条件与随机买入都贴着 97%，"
+             "所以结论只看 3%/5%/10% 这种真门槛；t 为按日配对检验",
+        columns=[
+            Column("window", "窗口", "int"),
+            Column("target", "目标", "text"),
+            Column("signal_n", "条件样本", "int"),
+            Column("baseline_n", "基准样本", "int"),
+            Column("signal_rate", "条件达成率", "percent"),
+            Column("baseline_rate", "基准达成率", "percent"),
+            Column("difference_pp", "差", "pp"),
+            Column("paired_days", "配对交易日", "int"),
+            Column("paired_t", "t", "number"),
+        ],
+        rows=list(rows), sort_key="difference_pp",
+    )
 
 
 def _distribution_table(rows: Sequence[dict[str, Any]]) -> Table:
@@ -830,8 +928,9 @@ def _md_table(columns: Sequence[tuple[str, str]], rows: Sequence[dict[str, Any]]
 
 
 def render_markdown(meta: dict[str, Any], headline: Headline, summary: Sequence[dict[str, Any]],
-                    baseline: Sequence[dict[str, Any]], coverage: Sequence[dict[str, Any]],
-                    quality: Sequence[dict[str, Any]], notes: Sequence[str]) -> str:
+                    target_rows: Sequence[dict[str, Any]], baseline: Sequence[dict[str, Any]],
+                    coverage: Sequence[dict[str, Any]], quality: Sequence[dict[str, Any]],
+                    notes: Sequence[str]) -> str:
     lines = [
         f"# 条件「{meta.get('preset')}」统计分析方法 2 报告",
         "",
@@ -852,7 +951,15 @@ def render_markdown(meta: dict[str, Any], headline: Headline, summary: Sequence[
             ("hit_5pct_rate", "≥5%"), ("hit_10pct_rate", "≥10%"),
         ], summary),
         "",
-        "## 与随机买入对比",
+        "## 目标达成率与基准对比（判断依据）",
+        "",
+        _md_table([
+            ("window", "窗口"), ("target", "目标"), ("signal_rate", "条件达成率%"),
+            ("baseline_rate", "基准达成率%"), ("difference_pp", "差（pp）"),
+            ("paired_days", "配对交易日"), ("paired_t", "t"),
+        ], target_rows),
+        "",
+        "## 与随机买入对比（0% 目标，仅供参考）",
         "",
         _md_table([
             ("window", "窗口"), ("signal_rate", "条件上涨概率%"), ("baseline_rate", "基准上涨概率%"),
@@ -933,6 +1040,7 @@ def build_from_events(meta: dict[str, Any], signal_events: Sequence[Event],
     """
     summary = window_summary(signal_events)
     baseline = baseline_comparison(signal_events, control_events)
+    target_rows = target_comparison(signal_events, control_events)
     coverage = coverage_summary(date_summary(signal_events))
     control_list = [] if isinstance(control_events, dict) else control_events
     control_rows = (sum(int(bucket.get("n") or 0) for bucket in control_events.values())
@@ -943,15 +1051,17 @@ def build_from_events(meta: dict[str, Any], signal_events: Sequence[Event],
     problems = check_invariants(signal_events, summary)
 
     dates = sorted({event.d0 for event in signal_events})
-    headline = headline_for(summary, baseline, quality, len(dates))
+    headline = headline_for(summary, baseline, quality, len(dates), target_rows)
     if problems:
         headline.detail += f"（自检发现 {len(problems)} 处口径异常，见数据质量）"
 
     events_rows = [event_metrics(event) for event in signal_events]
 
     notes = [
-        "方法 2 的「上涨概率」指窗口内最高价超过买入价，窗口越长数值越大，不能用来挑「最好拿几天」。",
-        "判断条件好坏看「与随机买入对比」：同一天、同市场、按市值档配比抽样。",
+        "「上涨概率」（0% 目标）在 A 股接近饱和：任意股票 5 个交易日内盘中摸到买入价上方的概率就有 97% 上下，"
+        "所以判断条件好坏看 3%/5%/10% 的达成率差，不看这一列。",
+        "方法 2 的达成率指窗口内最高价超过买入价加目标，窗口越长数值越大，不能用来挑「该拿几天」。",
+        "判断条件好坏看「与随机买入对比」：同一天、同市场、按市值档配比抽样，t 为按日配对检验。",
         "退市股不在行情库里；历史 ST 状态与行业分类是当前快照。",
     ]
     if problems:
@@ -959,6 +1069,7 @@ def build_from_events(meta: dict[str, Any], signal_events: Sequence[Event],
 
     tables = [
         _summary_table(summary),
+        _target_table(target_rows),
         _baseline_table(baseline),
         _coverage_table(coverage),
         _distribution_table(distribution),
@@ -999,44 +1110,56 @@ def build_from_events(meta: dict[str, Any], signal_events: Sequence[Event],
     payload = {
         "events": events_rows,
         "window_summary": summary,
+        "target_edge": target_rows,
         "distribution": distribution,
         "date_summary": date_summary(signal_events),
         "coverage": coverage,
         "quality": quality,
         "baseline": baseline,
         "stocks": stocks,
-        "markdown": render_markdown(meta, headline, summary, baseline, coverage, quality, notes),
+        "markdown": render_markdown(meta, headline, summary, target_rows, baseline, coverage,
+                                    quality, notes),
     }
     return report, payload
 
 
+def _fallback_columns(key: str) -> list[str]:
+    """空产物也要有表头：下游拿 CSV 直接读列，空文件没有列会让人以为坏了。"""
+    if key == "events":
+        return list(event_metrics(Event(d0="", code="", name="", buy_price=1.0)).keys())
+    if key == "target_edge":
+        return ["window", "target", "signal_n", "baseline_n", "signal_rate", "baseline_rate",
+                "difference_pp", "paired_days", "paired_t"]
+    if key == "date_summary":
+        return ["signal_date", "window", "target", "stock_count", "valid_stock_count",
+                "hit_count", "hit_ratio"]
+    if key == "stocks":
+        columns = ["code", "name", "industry", "n"]
+        columns += [f"positive_{window}d" for window in WINDOWS]
+        columns += [f"hit3_{window}d" for window in WINDOWS]
+        return columns
+    return []
+
+
 def write_artifacts(directory: Path, payload: dict[str, Any]) -> list[str]:
-    """把 8 个规格文件写到 ``directory``（CSV + report.md）。"""
+    """把规格里的文件写到 ``directory``（CSV + report.md）。空结果也写表头。"""
     directory.mkdir(parents=True, exist_ok=True)
-    events = payload["events"]
-    if events:
-        _write_csv(directory / "stock_event_metrics.csv", list(events[0].keys()), events)
-    summary = payload["window_summary"]
-    if summary:
-        _write_csv(directory / "window_summary.csv", list(summary[0].keys()), summary)
-    distribution = payload["distribution"]
-    if distribution:
-        _write_csv(directory / "return_distribution.csv", list(distribution[0].keys()), distribution)
-    dates = payload["date_summary"]
-    if dates:
-        _write_csv(directory / "date_summary.csv", list(dates[0].keys()), dates)
-    coverage = payload["coverage"]
-    if coverage:
-        _write_csv(directory / "coverage_summary.csv", list(coverage[0].keys()), coverage)
-    quality = payload["quality"]
+
+    def dump(name: str, rows: Sequence[dict[str, Any]], key: str) -> None:
+        columns = list(rows[0].keys()) if rows else _fallback_columns(key)
+        if columns:
+            _write_csv(directory / name, columns, rows)
+
+    dump("stock_event_metrics.csv", payload["events"], "events")
+    dump("window_summary.csv", payload["window_summary"], "window_summary")
+    dump("target_edge.csv", payload.get("target_edge") or [], "target_edge")
+    dump("return_distribution.csv", payload["distribution"], "distribution")
+    dump("date_summary.csv", payload["date_summary"], "date_summary")
+    dump("coverage_summary.csv", payload["coverage"], "coverage")
     _write_csv(directory / "data_quality_report.csv",
-               ["group", "rows", "valid", "invalid", "reason"], quality)
-    baseline = payload["baseline"]
-    if baseline:
-        _write_csv(directory / "baseline_comparison.csv", list(baseline[0].keys()), baseline)
-    stocks = payload["stocks"]
-    if stocks:
-        _write_csv(directory / "stock_summary.csv", list(stocks[0].keys()), stocks)
+               ["group", "rows", "valid", "invalid", "reason"], payload["quality"])
+    dump("baseline_comparison.csv", payload["baseline"], "baseline")
+    dump("stock_summary.csv", payload["stocks"], "stocks")
     (directory / "report.md").write_text(payload["markdown"], encoding="utf-8")
     return [name for name in METHOD.outputs if (directory / name).is_file()]
 
