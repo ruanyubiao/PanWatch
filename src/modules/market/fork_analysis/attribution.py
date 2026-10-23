@@ -69,7 +69,7 @@ def _load(conn: sqlite3.Connection, horizon: int, prefix: str, cost: Any) -> lis
         valid += " AND (unfillable IS NULL OR unfillable = 0)"
     sql = (
         f"SELECT is_control, CASE WHEN {col} > 0 THEN 1 ELSE 0 END AS y, "
-        + ", ".join(numeric) + f", {industry} AS industry, SUBSTR(d0, 1, 4) AS year, {pe} AS pe "
+        + ", ".join(numeric) + f", {industry} AS industry, SUBSTR(d0, 1, 4) AS year, {pe} AS pe, d0 "
         f"FROM signals WHERE {base} IS NOT NULL AND {valid}"
     )
     return [tuple(row) for row in conn.execute(sql)]
@@ -127,6 +127,34 @@ def _fit(matrix: np.ndarray, target: np.ndarray, ridge: float = RIDGE,
     return beta, np.sqrt(np.maximum(np.diag(covariance), 0.0))
 
 
+def _cluster_se(matrix: np.ndarray, target: np.ndarray, beta: np.ndarray,
+                cluster_ids: Sequence[str]) -> np.ndarray:
+    """按信号日聚类的稳健标准误（sandwich）。
+
+    同一只股票连续命中、同一天几百只股票共享一段行情 —— 把 40 万行当独立样本，
+    p 值会小到没有意义（和两比例 z 检验是同一个错误）。这里按 ``d0`` 聚类。
+    """
+    n, k = matrix.shape
+    eta = np.clip(matrix @ beta, -35.0, 35.0)
+    p = 1.0 / (1.0 + np.exp(-eta))
+    weight = np.maximum(p * (1.0 - p), 1e-6)
+    bread = np.linalg.pinv((matrix.T * weight) @ matrix)
+    codes = {value: index for index, value in enumerate(sorted(set(cluster_ids)))}
+    groups = np.array([codes[value] for value in cluster_ids])
+    count = len(codes)
+    scores = np.zeros((count, k), dtype=np.float64)
+    residuals = target - p
+    for group in range(count):
+        mask = groups == group
+        # 得分函数是 X'(y−p)；再乘一次 W 会把「肉」压小一个数量级（踩过）。
+        scores[group] = matrix[mask].T @ residuals[mask]
+    meat = scores.T @ scores
+    if count > 1:
+        meat *= count / (count - 1)
+    covariance = bread @ meat @ bread
+    return np.sqrt(np.maximum(np.diag(covariance), 0.0))
+
+
 def _two_sided_p(z: float) -> float:
     return math.erfc(abs(z) / math.sqrt(2.0))
 
@@ -168,10 +196,12 @@ def fit(conn: sqlite3.Connection, horizon: int = 10, prefix: str = "r",
     n = len(rows)
     matrix = np.zeros((n, len(names)), dtype=np.float64)
     target = np.zeros(n, dtype=np.float64)
+    cluster_ids: list[str] = []
     for index, row in enumerate(rows):
         is_control, y = int(row[0]), int(row[1])
         mcap, amount, turnover, amplitude, listed, breadth = row[2:8]
         industry, year, pe = str(row[8]), str(row[9]), row[10]
+        cluster_ids.append(str(row[11]))
         target[index] = y
         matrix[index, 1] = 1.0 if is_control == 0 else 0.0
         matrix[index, 2] = _log(mcap) if mcap is not None else 0.0
@@ -197,7 +227,8 @@ def fit(conn: sqlite3.Connection, horizon: int = 10, prefix: str = "r",
                 "note": "cross_section_missing"}
     _standardise(matrix, [2, 3, 4, 5, 6])
 
-    beta, se = _fit(matrix, target)
+    beta, _plain_se = _fit(matrix, target)
+    se = _cluster_se(matrix, target, beta, cluster_ids)
     eta = np.clip(matrix @ beta, -35.0, 35.0)
     p = 1.0 / (1.0 + np.exp(-eta))
     mean_p = float(np.mean(p))
