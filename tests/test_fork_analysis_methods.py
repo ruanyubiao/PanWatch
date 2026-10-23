@@ -71,11 +71,11 @@ def test_存储窗口与方法2窗口一致():
     assert store.M2_WINDOWS == method2.WINDOWS
 
 
-def test_方法2的产物清单就是规格那八个加一个按股票():
+def test_方法2的产物清单就是规格那八个加两个():
     assert set(method2.METHOD.outputs) == {
-        "stock_event_metrics.csv", "window_summary.csv", "return_distribution.csv",
-        "date_summary.csv", "coverage_summary.csv", "data_quality_report.csv",
-        "baseline_comparison.csv", "stock_summary.csv", "report.md",
+        "stock_event_metrics.csv", "window_summary.csv", "target_edge.csv",
+        "return_distribution.csv", "date_summary.csv", "coverage_summary.csv",
+        "data_quality_report.csv", "baseline_comparison.csv", "stock_summary.csv", "report.md",
     }
 
 
@@ -167,10 +167,29 @@ def test_统一信封带表格与产物():
     events = [event("2026-01-05", "A", 1.0, [(1.05, 0.99)] * 35)]
     report, payload = method2.build_from_events({"preset": "xg1"}, events, [])
     keys = [table.key for table in report.tables]
-    for expected in ("window_summary", "baseline", "coverage", "distribution", "stocks", "quality"):
+    for expected in ("window_summary", "target_edge", "baseline", "coverage", "distribution",
+                     "stocks", "quality"):
         assert expected in keys
     assert [artifact.name for artifact in report.artifacts] == list(method2.METHOD.outputs)
     assert payload["window_summary"][0]["valid"] == 1
+
+
+def test_判断依据是目标达成率而不是饱和的上涨概率():
+    """0% 目标接近饱和时，结论必须由 3% 目标决定。"""
+    days = [f"2026-03-{day:02d}" for day in range(1, 29)]
+    # 信号：每次都能摸到 +5%；基准：只在买入价附近晃（0% 目标同样「上涨」，但够不到 3%）
+    signals = [event(day, f"S{index:03d}", 1.0, [(1.0, 0.995)] * 2 + [(1.05, 1.0)] * 33)
+               for index, day in enumerate(days * 5)]
+    controls = [event(day, f"C{index:03d}", 1.0, [(1.002, 0.995)] * 35)
+                for index, day in enumerate(days * 4)]
+    report, payload = method2.build_from_events({"preset": "xg1"}, signals, controls)
+    rows = payload["target_edge"]
+    five = [row for row in rows if row["window"] == 5 and row["target"] == "≥3%"][0]
+    assert five["difference_pp"] > 50
+    assert report.headline.verdict == "usable"
+    # 0% 目标的差要小得多（两边都摸到过买入价上方）
+    positive = [row for row in payload["baseline"] if row["window"] == 5][0]
+    assert abs(positive["difference_pp"] or 0) < 50
 
 
 # --------------------------------------------------------------------------- #
