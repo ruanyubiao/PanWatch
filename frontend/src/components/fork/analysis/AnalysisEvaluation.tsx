@@ -68,6 +68,7 @@ export const ANALYSIS_EVALUATION_TEXTS_ZH = {
   attributionSignal: (z: string, p: string) => `条件自身（控制后）z=${z} · p=${p}`,
   attributionHead: { name: '变量', pp: '边际(pp)', z: 'z', p: 'p' },
   attributionUnavailable: '样本不足或缺少横截面字段，无法归因',
+  attributionMissing: '对照组没有横截面数据（老任务未回填），无法做因子归因',
   heterogeneityTitle: '年度异质性',
   heterogeneityHint: "Cochran's Q 检验逐年超额是否一致；p < 0.05 = 优势只集中在少数年份",
   heterogeneityConsistent: '逐年一致（没有证据说明只在某几年有效）',
@@ -308,7 +309,9 @@ export function AnalysisEvaluation({ report, runId }: { report: AnalysisReport; 
             )}
           </div>
         ) : (
-          <p className="text-[11px] text-muted-foreground">{T.attributionUnavailable}</p>
+          <p className="text-[11px] text-muted-foreground">
+            {attribution?.note === 'cross_section_missing' ? T.attributionMissing : T.attributionUnavailable}
+          </p>
         )}
       </section>
 

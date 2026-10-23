@@ -40,6 +40,7 @@ export const ANALYSIS_HONESTY_TEXTS_ZH = {
   stableValidate: '验证期',
   stableDecay: (value: string) => `衰减 ${value}pp`,
   stableEmpty: '区间只覆盖一个时期，无法对比',
+  powerLine: (mde: string) => `这个样本只能可靠检出 ${mde}pp 以上的超额；比它小的差异分不清是效果还是噪声`,
   qualityTitle: '数据质量',
   qualityUnverifiable: (n: number) => `不可验证 ${n} 条`,
   qualityUnfillable: (n: number) => `次日一字涨停买不进 ${n} 条`,
@@ -70,6 +71,7 @@ export function AnalysisHonesty({ report }: { report: AnalysisReport }) {
   if (rows.length === 0) {
     return <p className="text-[11px] text-muted-foreground">{T.empty}</p>
   }
+  const power = report.power
   const cost = ((report.cost ?? 0) * 100).toFixed(1)
   const caliberText = report.caliber === 'close' ? T.caliberClose : T.caliberExec(cost)
 
@@ -79,7 +81,10 @@ export function AnalysisHonesty({ report }: { report: AnalysisReport }) {
         <h4 className="text-[12px] font-medium">{T.title}</h4>
         <span className="text-[10px] text-muted-foreground">{T.hint}</span>
       </header>
-      <p className="text-[10px] text-muted-foreground">{caliberText}</p>
+      <p className="text-[10px] text-muted-foreground">
+        {caliberText}
+        {power?.mde_pp != null && ` · ${T.powerLine(fmt(power.mde_pp, 1))}`}
+      </p>
 
       <div className="overflow-x-auto scrollbar">
         <table className="w-full text-[11px]">
