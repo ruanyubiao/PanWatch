@@ -42,6 +42,9 @@ RUNS_DIR = PROJECT_ROOT / "data" / "analysis_runs"
 RETURN_COLUMNS: tuple[str, ...] = tuple(f"r{i}" for i in range(1, FORWARD_DAYS + 1))
 #: 可执行口径（次日开盘买入）x1..x30 —— 与 r 并列存，Excel 仍用 r（格式不变）
 EXEC_COLUMNS: tuple[str, ...] = tuple(f"x{i}" for i in range(1, FORWARD_DAYS + 1))
+#: 入场假设敏感性（次日典型价 (O+H+C)/3 买入）v1..v30 —— 只用于「换一种成交假设
+#: 结论还成不成立」，不参与主口径统计
+VWAP_COLUMNS: tuple[str, ...] = tuple(f"v{i}" for i in range(1, FORWARD_DAYS + 1))
 TOUCH_COLUMNS: tuple[str, ...] = tuple(f"t{horizon}" for horizon in HORIZONS)
 
 #: 数据质量列（2026-10-23）：verif=0 的行统计时剔除，不是删掉 —— 要能数出「多少行
@@ -95,6 +98,7 @@ CREATE TABLE IF NOT EXISTS signals (
     avail       INTEGER NOT NULL,
     {", ".join(f"{name} REAL" for name in RETURN_COLUMNS)},
     {", ".join(f"{name} REAL" for name in EXEC_COLUMNS)},
+    {", ".join(f"{name} REAL" for name in VWAP_COLUMNS)},
     {", ".join(f"{name} REAL" for name in TOUCH_COLUMNS)},
     {", ".join(f"{name} {kind}" for name, kind in QUALITY_COLUMNS.items())},
     {", ".join(f"{name} {kind}" for name, kind in SNAPSHOT_COLUMNS.items())}
@@ -230,7 +234,8 @@ def _migrate_signals(conn: sqlite3.Connection) -> None:
     """
     existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(signals)")}
     added = False
-    for name, kind in {**QUALITY_COLUMNS, **SNAPSHOT_COLUMNS, **{n: "REAL" for n in EXEC_COLUMNS}}.items():
+    for name, kind in {**QUALITY_COLUMNS, **SNAPSHOT_COLUMNS,
+                       **{n: "REAL" for n in (*EXEC_COLUMNS, *VWAP_COLUMNS)}}.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE signals ADD COLUMN {name} {kind}")
             added = True
@@ -273,7 +278,7 @@ def open_db_readonly(preset: str, run_id: str) -> sqlite3.Connection:
         existing = {str(row[1]) for row in probe.execute("PRAGMA table_info(signals)")}
     finally:
         probe.close()
-    if existing and any(name not in existing for name in SNAPSHOT_COLUMNS):
+    if existing and any(name not in existing for name in (*SNAPSHOT_COLUMNS, *VWAP_COLUMNS)):
         open_db(preset, run_id).close()
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10.0, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -286,7 +291,8 @@ def insert_signals(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> 
     if not payload:
         return 0
     columns = ["d0", "code", "symbol", "name", "board", "is_control", "d0_close", "avail",
-               *RETURN_COLUMNS, *EXEC_COLUMNS, *TOUCH_COLUMNS, *QUALITY_COLUMNS, *SNAPSHOT_COLUMNS]
+               *RETURN_COLUMNS, *EXEC_COLUMNS, *VWAP_COLUMNS, *TOUCH_COLUMNS, *QUALITY_COLUMNS,
+               *SNAPSHOT_COLUMNS]
     placeholders = ", ".join("?" for _ in columns)
     sql = f"INSERT INTO signals ({', '.join(columns)}) VALUES ({placeholders})"
     conn.executemany(sql, [tuple(row.get(name) for name in columns) for row in payload])
