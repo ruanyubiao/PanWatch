@@ -108,6 +108,39 @@ CREATE INDEX IF NOT EXISTS idx_signals_group ON signals(is_control);
 CREATE INDEX IF NOT EXISTS idx_signals_d0 ON signals(d0);
 """
 
+#: 方法 2 的窗口（与 ``methods.method2.WINDOWS`` 必须一致；这里写死是为了不在 import
+#: 期把 methods → stats → store 串成环，测试里有一条断言两边相等）
+M2_WINDOWS: tuple[int, ...] = (5, 10, 15, 20, 25, 35)
+
+#: 方法 2 的事件表：一条信号一行，窗口极值直接存绝对价（后复权），统计时再除以买入价。
+#: 存绝对价而不是涨幅，是因为「窗口内最高价」要能按任意窗口复算（规格第 10 节的可复算要求）。
+_M2_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS m2_events (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    d0            TEXT NOT NULL,
+    code          TEXT NOT NULL,
+    symbol        TEXT NOT NULL,
+    name          TEXT NOT NULL,
+    board         TEXT NOT NULL,
+    is_control    INTEGER NOT NULL,
+    buy_price     REAL NOT NULL,
+    d0_close      REAL NOT NULL,
+    avail         INTEGER NOT NULL,
+    entry_days    INTEGER,
+    valid         INTEGER NOT NULL,
+    reason        TEXT,
+    {", ".join(f"mh{window} REAL" for window in M2_WINDOWS)},
+    {", ".join(f"ml{window} REAL" for window in M2_WINDOWS)},
+    {", ".join(f"{name} {kind}" for name, kind in SNAPSHOT_COLUMNS.items())}
+);
+CREATE INDEX IF NOT EXISTS idx_m2_code ON m2_events(code);
+CREATE INDEX IF NOT EXISTS idx_m2_d0 ON m2_events(d0);
+CREATE INDEX IF NOT EXISTS idx_m2_group ON m2_events(is_control);
+"""
+
+#: 方法 2 产物目录（CSV + report.md，跑完/按需生成）
+ARTIFACTS_DIRNAME = "artifacts"
+
 _LOCK = threading.Lock()
 
 STATUS_PENDING = "pending"
@@ -143,6 +176,11 @@ def db_path(preset: str, run_id: str) -> Path:
 
 def excel_path(preset: str, run_id: str) -> Path:
     return run_dir(preset, run_id) / "明细.xlsx"
+
+
+def artifacts_dir(preset: str, run_id: str) -> Path:
+    """产物目录（方法 2 的 CSV/report.md；统一接口按名字从这里取文件）。"""
+    return run_dir(preset, run_id) / ARTIFACTS_DIRNAME
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -258,6 +296,7 @@ def open_db(preset: str, run_id: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA)
+    conn.executescript(_M2_SCHEMA)
     _migrate_signals(conn)
     conn.commit()
     return conn
@@ -295,6 +334,22 @@ def insert_signals(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> 
                *SNAPSHOT_COLUMNS]
     placeholders = ", ".join("?" for _ in columns)
     sql = f"INSERT INTO signals ({', '.join(columns)}) VALUES ({placeholders})"
+    conn.executemany(sql, [tuple(row.get(name) for name in columns) for row in payload])
+    conn.commit()
+    return len(payload)
+
+
+def insert_m2_events(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> int:
+    """方法 2 的事件批量写入。"""
+    payload = list(rows)
+    if not payload:
+        return 0
+    columns = ["d0", "code", "symbol", "name", "board", "is_control", "buy_price", "d0_close",
+               "avail", "entry_days", "valid", "reason",
+               *[f"mh{window}" for window in M2_WINDOWS], *[f"ml{window}" for window in M2_WINDOWS],
+               *SNAPSHOT_COLUMNS]
+    placeholders = ", ".join("?" for _ in columns)
+    sql = f"INSERT INTO m2_events ({', '.join(columns)}) VALUES ({placeholders})"
     conn.executemany(sql, [tuple(row.get(name) for name in columns) for row in payload])
     conn.commit()
     return len(payload)
@@ -346,6 +401,17 @@ def counts(conn: sqlite3.Connection) -> dict[str, int]:
     hits = conn.execute("SELECT COUNT(*) AS n FROM signals WHERE is_control = 0").fetchone()["n"]
     days = conn.execute("SELECT COUNT(*) AS n FROM days").fetchone()["n"]
     return {"signals": int(total), "hits": int(hits), "control": int(total) - int(hits), "days": int(days)}
+
+
+def counts_for(conn: sqlite3.Connection, method: str = "stat_v1") -> dict[str, int]:
+    """按方法数行数：方法 2 的数据在 ``m2_events``，用 ``counts`` 会一律读到 0。"""
+    if method == "stat_v2":
+        total = conn.execute("SELECT COUNT(*) AS n FROM m2_events").fetchone()["n"]
+        hits = conn.execute("SELECT COUNT(*) AS n FROM m2_events WHERE is_control = 0").fetchone()["n"]
+        days = conn.execute("SELECT COUNT(*) AS n FROM days").fetchone()["n"]
+        return {"signals": int(total), "hits": int(hits), "control": int(total) - int(hits),
+                "days": int(days)}
+    return counts(conn)
 
 
 def is_terminal(meta: dict[str, Any]) -> bool:
