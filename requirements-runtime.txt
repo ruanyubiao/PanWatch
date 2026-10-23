@@ -4,6 +4,8 @@ openai>=1.0.0
 efinance>=0.4.0
 akshare>=1.10.0
 apscheduler>=3.10.0
+# 因子归因（logistic IRLS）用，纯 numpy，不引 scipy
+numpy>=1.26.0
 httpx>=0.25.0
 pydantic>=2.0.0
 pydantic-settings>=2.0.0

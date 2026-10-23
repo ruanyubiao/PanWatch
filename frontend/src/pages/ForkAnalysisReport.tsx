@@ -11,6 +11,7 @@ import { Button } from '@panwatch/base-ui/components/ui/button'
 import { downloadAnalysisExcel, formatDuration, getAnalysisReport, type AnalysisReport } from '@/lib/analysis-api'
 import { AnalysisSummaryBody } from '@/components/fork/analysis/AnalysisSummary'
 import { AnalysisStockTable } from '@/components/fork/analysis/AnalysisStockTable'
+import { AnalysisEvaluation, AnalysisLeaderboardDialog } from '@/components/fork/analysis/AnalysisEvaluation'
 
 export const ANALYSIS_REPORT_PAGE_TEXTS_ZH = {
   title: '数据分析报告',
@@ -25,6 +26,7 @@ export const ANALYSIS_REPORT_PAGE_TEXTS_ZH = {
   notFound: '报告不存在或任务还没跑完。',
   excelFailed: (message: string) => `下载失败：${message}`,
   stocksTitle: '全部个股',
+  leaderboard: '条件排行榜',
 }
 
 export default function ForkAnalysisReportPage() {
@@ -33,6 +35,7 @@ export default function ForkAnalysisReportPage() {
   const [report, setReport] = useState<AnalysisReport | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [boardOpen, setBoardOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -71,6 +74,14 @@ export default function ForkAnalysisReportPage() {
           </span>
         )}
         <div className="ml-auto flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            className="h-7 px-2 text-[12px]"
+            onClick={() => setBoardOpen(true)}
+          >
+            {T.leaderboard}
+          </Button>
           <Button size="sm" variant="secondary" className="h-7 px-2 text-[12px]" onClick={() => void load()}>
             <RefreshCw className="h-3.5 w-3.5" />
             {T.refresh}
@@ -97,9 +108,11 @@ export default function ForkAnalysisReportPage() {
             {T.counts(report.counts.hits, report.counts.control, formatDuration(report.run.elapsed_s ?? null))}
           </p>
           <AnalysisSummaryBody report={report} />
+          <AnalysisEvaluation report={report} runId={runId} />
           <AnalysisStockTable runId={runId} horizons={report.horizons} />
         </>
       )}
+      <AnalysisLeaderboardDialog open={boardOpen} onOpenChange={setBoardOpen} />
     </div>
   )
 }
