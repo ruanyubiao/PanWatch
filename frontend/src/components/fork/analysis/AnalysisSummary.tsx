@@ -8,6 +8,7 @@
  */
 import { BarPairChart, DensityChart, Heatmap, HistogramChart, LineChart, excessColor } from './AnalysisCharts'
 import type { AnalysisGroupBlock, AnalysisReport } from '@/lib/analysis-api'
+import { AnalysisHonesty } from './AnalysisHonesty'
 
 export const ANALYSIS_SUMMARY_TEXTS_ZH = {
   verdictTitle: '结论',
@@ -18,6 +19,8 @@ export const ANALYSIS_SUMMARY_TEXTS_ZH = {
   worse: (horizon: number, rate: string, excess: string) =>
     `比随机买入还差：${horizon} 日胜率 ${rate}%，低 ${excess}pp 且统计显著。这个条件要重新设计。`,
   notSignificant: (z: string) => `差异不显著（z=${z}）：看着高一点，但统计上不能确认，不能据此下结论。`,
+  notSignificantHonest: (low: string, high: string) =>
+    `区间跨 0：日均超额 ${low} 到 ${high}pp（95%，已修正重叠样本），说不清有没有优势。`,
   insufficient: '样本不足 100 条，无法判断条件好坏。把日期区间放长再跑一次。',
   detailLine: (avg: string, payoff: string, touch: string, arrive: string) =>
     `平均涨幅 ${avg}%，盈亏比 ${payoff}，最高价曾上涨过的比例 ${touch}%，中位到达天数 ${arrive}`,
@@ -48,7 +51,16 @@ export const ANALYSIS_SUMMARY_TEXTS_ZH = {
   groupHint: '胜率 − 这个条件整体胜率；q 值是 BH 校正后的显著性，样本 < 100 的不下结论',
   groupFocus: (days: number) => `按 ${days} 日胜率`,
   groupDimEmpty: '这个维度没有可用数据（行业要等数据同步写入）',
-  groupTableHead: { key: '分类', n: '样本', rate: '胜率', edge: '优势', q: 'q值', verdict: '结论' },
+  groupTableHead: {
+    key: '分类',
+    n: '样本',
+    rate: '胜率',
+    edge: '优势',
+    vsRandom: '对随机',
+    q: 'q值',
+    verdict: '结论',
+  },
+  groupVsRandomHint: '「优势」= 比这个条件整体好多少；「对随机」= 比同期随机买入好多少（负值说明这一类照样跑输）',
   groupVerdict: { edge: '特别有效', no_edge: '一般', insufficient: '样本不足' } as Record<string, string>,
   groupTopTitle: '最有效的分类（跨维度）',
   groupTopEmpty: '没有哪个分类达到「特别有效」（样本足 + q<0.1 + 优势为正）。',
@@ -98,7 +110,11 @@ export function AnalysisVerdictCard({ report }: { report: AnalysisReport }) {
   } else if (verdict.reason === 'no_edge' && verdict.best_horizon !== null) {
     text = T.noEdge(verdict.best_horizon, signed(verdict.best_excess_pp))
   } else if (verdict.reason === 'not_significant') {
-    text = T.notSignificant(fmt(verdict.z, 2))
+    const honest = verdict.honest
+    text =
+      honest && honest.primary_ci_low_pp !== null && honest.primary_ci_low_pp !== undefined
+        ? T.notSignificantHonest(fmt(honest.primary_ci_low_pp), fmt(honest.primary_ci_high_pp))
+        : T.notSignificant(fmt(verdict.z, 2))
   }
   const tone =
     verdict.reason === 'usable'
@@ -223,6 +239,7 @@ function GroupTable({ block }: { block: AnalysisGroupBlock }) {
             <th className="px-1.5 py-1 text-right font-medium">{T.groupTableHead.n}</th>
             <th className="px-1.5 py-1 text-right font-medium">{T.groupTableHead.rate}</th>
             <th className="px-1.5 py-1 text-right font-medium">{T.groupTableHead.edge}</th>
+            <th className="px-1.5 py-1 text-right font-medium">{T.groupTableHead.vsRandom}</th>
             <th className="px-1.5 py-1 text-right font-medium">{T.groupTableHead.q}</th>
             <th className="px-1.5 py-1 text-left font-medium">{T.groupTableHead.verdict}</th>
           </tr>
@@ -235,6 +252,12 @@ function GroupTable({ block }: { block: AnalysisGroupBlock }) {
               <td className="px-1.5 py-0.5 text-right tabular-nums">{pct(item.win_rate)}</td>
               <td className="px-1.5 py-0.5 text-right tabular-nums" style={{ color: excessColor(item.edge_pp) }}>
                 {signed(item.edge_pp)}
+              </td>
+              <td
+                className="px-1.5 py-0.5 text-right tabular-nums"
+                style={{ color: excessColor(item.excess_vs_random_pp) }}
+              >
+                {signed(item.excess_vs_random_pp)}
               </td>
               <td className="px-1.5 py-0.5 text-right tabular-nums text-muted-foreground">{fmt(item.q, 3)}</td>
               <td className="px-1.5 py-0.5">
@@ -274,6 +297,7 @@ export function AnalysisGroups({ report, compact = false }: { report: AnalysisRe
         <span className="text-[10px] text-muted-foreground">{T.groupHint}</span>
         <span className="text-[10px] text-muted-foreground">{T.groupFocus(focus)}</span>
       </header>
+      <p className="text-[10px] text-muted-foreground">{T.groupVsRandomHint}</p>
 
       <div>
         <p className="mb-1 text-[11px] font-medium">{T.groupTopTitle}</p>
@@ -338,6 +362,8 @@ export function AnalysisSummaryBody({ report, compact = false }: { report: Analy
   return (
     <div className="space-y-3" data-fork-analysis-summary>
       <AnalysisVerdictCard report={report} />
+
+      <AnalysisHonesty report={report} />
 
       <section>
         <header className="mb-1 flex items-baseline gap-2">

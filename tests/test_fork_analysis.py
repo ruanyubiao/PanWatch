@@ -13,7 +13,7 @@ import sqlite3
 import pytest
 
 from src.modules.market.api import fork_analysis
-from src.modules.market.fork_analysis import excel, forward, runner, stats, store
+from src.modules.market.fork_analysis import excel, forward, runner, significance, stats, store
 
 D0 = dt.date(2026, 1, 5)
 
@@ -44,8 +44,55 @@ def test_涨幅基准是_d0_收盘价():
     assert result.returns[1] == pytest.approx(-0.10)
     # 第 3 天没有行情 → 顺延第 2 天（停牌前价格），不是 0
     assert result.returns[2] == pytest.approx(-0.10)
-    assert result.returns[29] == pytest.approx(-0.10)
+    # 但顺延有上限：超过 20 个交易日后不再编数（那天起多半是退市/长停）
+    assert result.returns[forward.SUSPEND_CAP] == pytest.approx(-0.10)
+    assert result.returns[forward.SUSPEND_CAP + 1] == pytest.approx(-0.10)
+    assert result.returns[forward.SUSPEND_CAP + 2] is None
+    assert result.verif == 0
+    assert result.stale_days > forward.SUSPEND_CAP
     assert result.avail == 2
+
+
+def test_顺延超过上限标记不可验证():
+    """长期停牌/退市：不能把「一路跌到退市」记成「不涨不跌 0%」。"""
+    bars = [(D0, 10.0, 10.0, 10.0), (FORWARD_DAYS[0], 9.0, 9.0, 9.0)]
+    result = forward.build_forward(bars, FORWARD_DAYS)
+    assert result is not None
+    assert result.verif == 0
+    assert result.returns[5] == pytest.approx(-0.10)      # 上限内照常顺延
+    assert result.returns[forward.SUSPEND_CAP + 2] is None
+
+
+def test_可执行口径用次日开盘买入():
+    """信号在收盘后才成立：入场价必须是次日开盘，不是 d0 收盘。"""
+    bars = [
+        (D0, 10.0, 10.0, 10.0, 10.0, 10.0),            # date, open, close, close_adj, open_adj, high_adj
+        (FORWARD_DAYS[0], 10.5, 11.0, 11.0, 10.5, 11.0),  # 次日开盘 +5%（没涨停），收盘 +10%
+        (FORWARD_DAYS[1], 11.0, 12.1, 12.1, 11.0, 12.1),
+    ]
+    result = forward.build_forward(bars, FORWARD_DAYS)
+    assert result is not None
+    assert result.entry_open == pytest.approx(10.5)
+    assert result.entry_days == 1
+    # 收盘口径：第 1 天 = 11/10-1 = +10%；可执行口径：第 1 天 = 11/10.5-1
+    assert result.returns[0] == pytest.approx(0.10)
+    assert result.exec_returns[0] == pytest.approx(11.0 / 10.5 - 1, abs=1e-6)
+    assert result.exec_returns[1] == pytest.approx(12.1 / 10.5 - 1, abs=1e-6)
+    assert result.unfillable is False
+
+
+def test_次日开盘涨停标记买不进():
+    bars = [
+        (D0, 10.0, 10.0, 10.0, 10.0, 10.0),
+        (FORWARD_DAYS[0], 11.0, 11.0, 11.0, 11.0, 11.0),   # 主板 +10% 开盘 = 一字涨停
+        (FORWARD_DAYS[1], 11.5, 12.0, 12.0, 11.5, 12.1),
+    ]
+    result = forward.build_forward(bars, FORWARD_DAYS, limit=0.10)
+    assert result is not None
+    assert result.unfillable is True
+    # 创业板 20%：同样的 +10% 开盘不算涨停
+    wide = forward.build_forward(bars, FORWARD_DAYS, limit=0.20)
+    assert wide is not None and wide.unfillable is False
 
 
 def test_停牌期间涨幅等于停牌前那一天():
@@ -427,3 +474,202 @@ def test_老库缺快照列时报告不炸且能自动补列(tmp_path, monkeypat
     industries = {item["key"] for block in report["groups"] if block["dim"] == "industry"
                   for item in block["items"]}
     assert industries == {"未知"}
+
+
+# ---------------------------------------------------------------------------
+# 诚实显著性：重叠样本、按日聚合、口径回退
+# ---------------------------------------------------------------------------
+
+
+def _bulk(conn: sqlite3.Connection, day: str, n_sig: int, wins_sig: int,
+          n_ctl: int, wins_ctl: int) -> None:
+    """一天里写 n_sig 条条件信号（其中 wins_sig 条上涨）+ n_ctl 条对照。"""
+    rows = []
+    for index in range(n_sig):
+        rows.append({
+            "d0": day, "code": f"6{index:05d}", "symbol": f"sh6{index:05d}",
+            "name": "S", "board": "sh", "is_control": 0, "d0_close": 10.0, "avail": 30,
+            **{f"r{i}": (0.05 if index < wins_sig else -0.05) for i in range(1, 31)},
+            **{f"t{i}": 0.05 for i in (5, 10, 15, 20, 25, 30)},
+        })
+    for index in range(n_ctl):
+        rows.append({
+            "d0": day, "code": f"0{index:05d}", "symbol": f"sz0{index:05d}",
+            "name": "C", "board": "sz", "is_control": 1, "d0_close": 10.0, "avail": 30,
+            **{f"r{i}": (0.05 if index < wins_ctl else -0.05) for i in range(1, 31)},
+            **{f"t{i}": 0.05 for i in (5, 10, 15, 20, 25, 30)},
+        })
+    store.insert_signals(conn, rows)
+
+
+def test_按日聚合能把重叠样本的假显著压下去(db):
+    """同样的合并胜率，日度稳定性不同 → 结论必须不同。
+
+    旧的合并 z 检验只看「几千行里 60% vs 50%」，两份数据都给 z≈7（极显著）；
+    按日聚合后，每天都是 +10pp 的那份仍然显著，「三天 +30pp 三天 −10pp」的那份
+    区间跨 0 —— 后者不能说自己靠得住。
+    """
+    # 两份数据放在两个库里，避免互相污染
+    db_a = store.open_db("sx", "run-a")
+    db_b = store.open_db("sx", "run-b")
+    # A：6 天，每天都是 60% vs 50%（日度超额稳定在 +10pp）
+    for day in range(6):
+        _bulk(db_a, f"2026-01-{day + 1:02d}", 400, 240, 400, 200)
+    tests_a, _ = significance.tests(db_a, [5])
+    # B：6 天，三天 80% vs 50%、三天 40% vs 50%（合并仍是 60% vs 50%）
+    for day in range(3):
+        _bulk(db_b, f"2026-02-{day + 1:02d}", 400, 320, 400, 200)
+        _bulk(db_b, f"2026-02-{day + 11:02d}", 400, 160, 400, 200)
+    tests_b, _ = significance.tests(db_b, [5])
+    assert tests_a[0]["pooled_excess_pp"] == pytest.approx(10.0, abs=0.01)
+    assert tests_b[0]["pooled_excess_pp"] == pytest.approx(10.0, abs=0.01)
+    assert tests_a[0]["significant_up"] is True
+    assert tests_b[0]["significant_up"] is False
+
+
+def test_有效样本量按周期折算(db):
+    for day in range(60):
+        _bulk(db, f"2026-03-{day % 28 + 1:02d}" if day < 28 else f"2026-04-{day - 27:02d}", 10, 6, 10, 5)
+    tests, _ = significance.tests(db, [5, 30])
+    five, thirty = tests
+    assert five["days"] == 60
+    assert five["n_eff"] == 12      # 60 / 5
+    assert thirty["n_eff"] == 2     # 60 / 30
+
+
+def test_自助区间可复现(db):
+    for day in range(30):
+        _bulk(db, f"2026-05-{day + 1:02d}", 20, 12, 20, 10)
+    first, _ = significance.tests(db, [10])
+    significance._MEM_CACHE.clear() if hasattr(significance, "_MEM_CACHE") else None
+    second, _ = significance.tests(db, [10])
+    assert first[0]["ci_low_pp"] == second[0]["ci_low_pp"]
+    assert first[0]["ci_high_pp"] == second[0]["ci_high_pp"]
+
+
+def test_结论要求至少两个周期同向显著(db):
+    rows = [
+        {"horizon": 5, "days": 100, "mean_excess_pp": 5.0, "ci_low_pp": 1.0,
+         "ci_high_pp": 9.0, "significant_up": True, "significant_down": False},
+        {"horizon": 10, "days": 100, "mean_excess_pp": 1.0, "ci_low_pp": -3.0,
+         "ci_high_pp": 5.0, "significant_up": False, "significant_down": False},
+    ]
+    assert significance.conclusion(rows)["verdict"] != "usable"
+    rows[1].update({"mean_excess_pp": 4.0, "ci_low_pp": 0.5, "ci_high_pp": 7.0,
+                    "significant_up": True})
+    assert significance.conclusion(rows)["verdict"] == "usable"
+
+
+def test_没有可执行口径时退回收盘口径(db):
+    _bulk(db, "2026-06-01", 10, 6, 10, 5)
+    prefix, caliber = significance.caliber_columns(db)
+    assert prefix == "r" and caliber == "close"
+
+
+def test_个股排行按收缩后胜率排序(db):
+    """命中 2 次全胜的股票不该排在命中 40 次 70% 的股票前面。"""
+    for day in range(20):
+        _bulk(db, f"2026-07-{day + 1:02d}", 2, 2, 5, 2)     # 每天两只「全胜」小样本股
+    # 一只大样本股：40 次里 28 次上涨（70%）
+    rows = []
+    for index in range(40):
+        rows.append({
+            "d0": f"2026-08-{index % 28 + 1:02d}", "code": "600519", "symbol": "sh600519",
+            "name": "大手笔", "board": "sh", "is_control": 0, "d0_close": 10.0, "avail": 30,
+            **{f"r{i}": (0.05 if index < 28 else -0.05) for i in range(1, 31)},
+            **{f"t{i}": 0.05 for i in (5, 10, 15, 20, 25, 30)},
+        })
+    store.insert_signals(db, rows)
+
+    items = stats.by_stock(db, {}, horizons=(30,))
+    big = next(item for item in items if item["code"] == "600519")
+    small = next(item for item in items if item["n"] <= 20)
+    assert big["win"]["30"] == pytest.approx(70.0, abs=0.01)
+    assert small["win"]["30"] == pytest.approx(100.0, abs=0.01)
+    # 原始胜率差 30pp，收缩后差距明显变小（噪声不再排在前面）
+    raw_gap = small["win"]["30"] - big["win"]["30"]
+    shrunk_gap = small["win_shrunk"]["30"] - big["win_shrunk"]["30"]
+    assert shrunk_gap < raw_gap * 0.7
+
+
+def test_数据质量标出覆盖不足的日子(db):
+    for day in range(10):
+        _bulk(db, f"2026-09-{day + 1:02d}", 5, 3, 5, 2)
+        store.record_day(db, f"2026-09-{day + 1:02d}", 5, 5, 100, coverage=5000, usable=5)
+    db.execute("UPDATE days SET coverage = 500 WHERE d0 = '2026-09-05'")
+    db.commit()
+    report = stats.quality(db)
+    assert report["coverage_median"] == 5000
+    assert report["suspect_days_count"] == 1
+    assert report["suspect_days"][0]["d0"] == "2026-09-05"
+
+
+def test_股票池逐年变大不会被误判成数据缺失(db):
+    """七年里股票池从 3800 只长到 5570 只：整段都比现在少，但不是「同步不全」。"""
+    start = dt.date(2020, 1, 1)
+    for index in range(60):
+        day = (start + dt.timedelta(days=index)).isoformat()
+        _bulk(db, day, 3, 2, 3, 1)
+        store.record_day(db, day, 3, 3, 100, coverage=3800 + index * 30, usable=3)
+    report = stats.quality(db)
+    assert report["suspect_days_count"] == 0
+
+
+def test_样本内外分别给超额(db):
+    for day in range(10):
+        _bulk(db, f"2023-01-{day + 1:02d}", 20, 14, 20, 10)
+        _bulk(db, f"2025-01-{day + 1:02d}", 20, 10, 20, 10)
+    result = stats.stability(db, [10])
+    assert result["design_excess_pp"]["10"] == pytest.approx(20.0, abs=0.5)
+    assert result["validate_excess_pp"]["10"] == pytest.approx(0.0, abs=0.5)
+    assert result["decay_pp"]["10"] < 0
+
+
+def test_分组统计的涨幅是平均值不是总和(db):
+    """v5 之前 group_stats.avg 存的是 Σ 涨幅，样本多的分类会显示成几千个百分点。"""
+    for day in range(10):
+        for index in range(5):
+            _bulk(db, f"2026-10-{day + 1:02d}", 1, 1, 0, 0)
+    rows = stats.summary(db, (30,))
+    blocks = stats.groups(db, (30,), stats.overall_win(rows), "r", 0.0)
+    board = next(block for block in blocks if block["dim"] == "board")
+    item = next(entry for entry in board["items"] if entry["key"] == "sh")
+    # 每组平均涨幅 5%，不是 5% × 50 条
+    assert item["avg_return"] == pytest.approx(5.0, abs=0.01)
+
+
+def test_d0_价格是收盘价不是开盘价():
+    """d0_close 只用于 Excel 展示，但取错列会让用户看到的「信号日价格」全是开盘价。"""
+    bars = [
+        (D0, 12.0, 13.0, 13.0, 12.0, 13.2),     # open 12 / close 13
+        (FORWARD_DAYS[0], 13.5, 13.5, 13.5, 13.5, 13.6),
+    ]
+    result = forward.build_forward(bars, FORWARD_DAYS)
+    assert result is not None
+    assert result.d0_close == pytest.approx(13.0)
+    assert result.entry_open == pytest.approx(13.5)
+
+
+def test_口径名与列前缀都能传(db):
+    """report["caliber"] 是 exec/close，列前缀是 x/r：两种写法都要认，否则报 no such column。"""
+    from src.modules.market.fork_analysis.stats import caliber_prefix
+
+    assert caliber_prefix("exec") == "x"
+    assert caliber_prefix("x") == "x"
+    assert caliber_prefix("close") == "r"
+    assert caliber_prefix("r") == "r"
+    _bulk(db, "2026-11-02", 10, 6, 10, 5)
+    assert stats.summary(db, (30,), "close", 0.0)[0]["signal"]["n"] == 10
+    assert stats.summary(db, (30,), "r", 0.0)[0]["signal"]["n"] == 10
+
+
+def test_分组同时给相对随机的超额(db):
+    """分组优势是相对条件整体；用户真正要知道的是这一类能不能打过随机买入。"""
+    _bulk(db, "2026-12-01", 20, 14, 20, 10)     # 条件 70%，对照 50%
+    rows = stats.summary(db, (30,), "r", 0.0)
+    blocks = stats.groups(db, (30,), stats.overall_win(rows), "r", 0.0,
+                          control_baseline=stats.control_win_rates(rows))
+    board = next(block for block in blocks if block["dim"] == "board")
+    item = next(entry for entry in board["items"] if entry["key"] == "sh")
+    assert item["edge_pp"] == pytest.approx(0.0, abs=0.01)          # 相对条件整体
+    assert item["excess_vs_random_pp"] == pytest.approx(20.0, abs=0.01)  # 相对随机

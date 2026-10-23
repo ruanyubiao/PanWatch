@@ -40,7 +40,20 @@ RUNS_DIR = PROJECT_ROOT / "data" / "analysis_runs"
 
 #: 涨幅列 r1..r30 + 触及列 t5..t30（组合成宽表：一条信号一行，统计用 SUM(CASE …)）
 RETURN_COLUMNS: tuple[str, ...] = tuple(f"r{i}" for i in range(1, FORWARD_DAYS + 1))
+#: 可执行口径（次日开盘买入）x1..x30 —— 与 r 并列存，Excel 仍用 r（格式不变）
+EXEC_COLUMNS: tuple[str, ...] = tuple(f"x{i}" for i in range(1, FORWARD_DAYS + 1))
 TOUCH_COLUMNS: tuple[str, ...] = tuple(f"t{horizon}" for horizon in HORIZONS)
+
+#: 数据质量列（2026-10-23）：verif=0 的行统计时剔除，不是删掉 —— 要能数出「多少行
+#: 因为长期停牌/退市/缺复权而不可验证」，这本身就是结论的一部分。
+QUALITY_COLUMNS: dict[str, str] = {
+    "entry_open": "REAL",     # 次日开盘价（不复权）
+    "entry_days": "INTEGER",  # 第几个交易日建仓（停牌会推后）
+    "verif": "INTEGER",       # 1 可用 / 0 不可验证
+    "stale_days": "INTEGER",  # 最长连续顺延天数
+    "unfillable": "INTEGER",  # 次日开盘涨停，买不进
+    "adj_missing": "INTEGER",  # 复权因子缺失天数
+}
 
 #: 信号当天的快照列（用户在 2026-10-22 第 11 条要的「按不同变量分类」都要靠它们）。
 #: 全部取自 d0 那一根 K 线 + ``stock_info``，不要在统计时回头查行情库 —— 一个任务
@@ -64,7 +77,11 @@ CREATE TABLE IF NOT EXISTS days (
     d0          TEXT PRIMARY KEY,
     hits        INTEGER NOT NULL,
     control     INTEGER NOT NULL,
-    elapsed_ms  INTEGER NOT NULL
+    elapsed_ms  INTEGER NOT NULL,
+    coverage    INTEGER,
+    usable      INTEGER,
+    screen_ms   INTEGER,
+    forward_ms  INTEGER
 );
 CREATE TABLE IF NOT EXISTS signals (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,7 +94,9 @@ CREATE TABLE IF NOT EXISTS signals (
     d0_close    REAL NOT NULL,
     avail       INTEGER NOT NULL,
     {", ".join(f"{name} REAL" for name in RETURN_COLUMNS)},
+    {", ".join(f"{name} REAL" for name in EXEC_COLUMNS)},
     {", ".join(f"{name} REAL" for name in TOUCH_COLUMNS)},
+    {", ".join(f"{name} {kind}" for name, kind in QUALITY_COLUMNS.items())},
     {", ".join(f"{name} {kind}" for name, kind in SNAPSHOT_COLUMNS.items())}
 );
 CREATE INDEX IF NOT EXISTS idx_signals_code ON signals(code);
@@ -203,16 +222,26 @@ def stop_requested(preset: str, run_id: str) -> bool:
 
 
 def _migrate_signals(conn: sqlite3.Connection) -> None:
-    """给老任务的 ``signals.db`` 补新列（2026-10-22 之前建的表没有快照列）。
+    """给老任务的 ``signals.db`` 补新列（2026-10-22/23 之前建的表没有这些列）。
 
     不重建表：老任务的 r1..r30 是几小时跑出来的，补列只加空列，值由
-    ``backfill.fill_snapshots`` 按天回填（几秒钟一天）。
+    ``backfill.fill_snapshots`` 按天回填（几秒钟一天）。老表没有 x / verif 列时，
+    统计层会自动退回收盘口径（``significance.caliber_columns``），不会报错。
     """
     existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(signals)")}
-    for name, kind in SNAPSHOT_COLUMNS.items():
+    added = False
+    for name, kind in {**QUALITY_COLUMNS, **SNAPSHOT_COLUMNS, **{n: "REAL" for n in EXEC_COLUMNS}}.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE signals ADD COLUMN {name} {kind}")
-    conn.commit()
+            added = True
+    day_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(days)")}
+    for name, kind in (("coverage", "INTEGER"), ("usable", "INTEGER"),
+                       ("screen_ms", "INTEGER"), ("forward_ms", "INTEGER")):
+        if name not in day_columns:
+            conn.execute(f"ALTER TABLE days ADD COLUMN {name} {kind}")
+            added = True
+    if added:
+        conn.commit()
 
 
 def open_db(preset: str, run_id: str) -> sqlite3.Connection:
@@ -257,7 +286,7 @@ def insert_signals(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> 
     if not payload:
         return 0
     columns = ["d0", "code", "symbol", "name", "board", "is_control", "d0_close", "avail",
-               *RETURN_COLUMNS, *TOUCH_COLUMNS, *SNAPSHOT_COLUMNS]
+               *RETURN_COLUMNS, *EXEC_COLUMNS, *TOUCH_COLUMNS, *QUALITY_COLUMNS, *SNAPSHOT_COLUMNS]
     placeholders = ", ".join("?" for _ in columns)
     sql = f"INSERT INTO signals ({', '.join(columns)}) VALUES ({placeholders})"
     conn.executemany(sql, [tuple(row.get(name) for name in columns) for row in payload])
@@ -283,10 +312,13 @@ def update_snapshots(conn: sqlite3.Connection, d0: str, snapshots: dict[str, dic
     return len(payload)
 
 
-def record_day(conn: sqlite3.Connection, d0: str, hits: int, control: int, elapsed_ms: int) -> None:
+def record_day(conn: sqlite3.Connection, d0: str, hits: int, control: int, elapsed_ms: int,
+               coverage: int | None = None, usable: int | None = None,
+               screen_ms: int | None = None, forward_ms: int | None = None) -> None:
     conn.execute(
-        "INSERT OR REPLACE INTO days (d0, hits, control, elapsed_ms) VALUES (?, ?, ?, ?)",
-        (d0, int(hits), int(control), int(elapsed_ms)),
+        "INSERT OR REPLACE INTO days (d0, hits, control, elapsed_ms, coverage, usable, "
+        "screen_ms, forward_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (d0, int(hits), int(control), int(elapsed_ms), coverage, usable, screen_ms, forward_ms),
     )
     conn.commit()
 
