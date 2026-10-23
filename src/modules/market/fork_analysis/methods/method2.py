@@ -863,12 +863,22 @@ def headline_for(summary: Sequence[dict[str, Any]], baseline: Sequence[dict[str,
                     f"（按日配对 t={worst['paired_t']}）。"),
         )
     else:
+        # 「统计显著」和「有优势」是两件事：原始差常常显著（t>10），但控制振幅后
+        # 不到门槛 —— 这时候说「达不到显著」会自相矛盾（t 明明很大），必须分开说。
+        raw_sig = (abs(best.get("difference_pp") or 0.0) >= 2.0
+                   and abs(best.get("paired_t") or 0.0) >= 2.0)
+        adj_value = best.get("adjusted_pp")
+        if raw_sig and adj_value is not None and abs(adj_value) < 2.0:
+            tail = (f"统计上显著（t={best['paired_t']}），但控制振幅（波动率）后只剩 "
+                    f"{adj_value}pp，低于 2pp 门槛 —— 条件选出来的票波动更大，不是更准。")
+        else:
+            tail = "达不到显著。"
         head = Headline(
             verdict="no_edge",
             title="没有可确认的优势",
             detail=(f"最好的组合是 {best['window']} 日 / {best['target']}："
                     f"{best['signal_rate']}% 对基准 {best['baseline_rate']}%"
-                    f"（{best['difference_pp']}pp，t={best['paired_t']}），达不到显著。"
+                    f"（{best['difference_pp']}pp，t={best['paired_t']}）—— {tail}"
                     f"{adjusted_note}"),
         )
     head.metrics = [
