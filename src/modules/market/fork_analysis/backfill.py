@@ -28,7 +28,7 @@ def fill_snapshots(preset_name: str, run_id: str, progress: Optional[dict[str, A
     rows_done = 0
     try:
         codes_by_day: dict[str, list[str]] = {}
-        for row in db.execute("SELECT d0, code FROM signals WHERE is_control = 0"):
+        for row in db.execute("SELECT d0, code FROM signals"):
             codes_by_day.setdefault(str(row["d0"]), []).append(str(row["code"]))
         if not codes_by_day:
             return {"days": 0, "rows": 0}
@@ -77,7 +77,7 @@ def fill_vwap(preset_name: str, run_id: str, progress: Optional[dict[str, Any]] 
     rows_done = 0
     try:
         codes_by_day: dict[str, list[tuple[str, str]]] = {}
-        for row in db.execute("SELECT d0, code, symbol FROM signals WHERE is_control = 0"):
+        for row in db.execute("SELECT d0, code, symbol FROM signals"):
             codes_by_day.setdefault(str(row["d0"]), []).append((str(row["code"]), str(row["symbol"])))
         if not codes_by_day:
             return {"days": 0, "rows": 0}
