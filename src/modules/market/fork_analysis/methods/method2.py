@@ -869,17 +869,21 @@ def headline_for(summary: Sequence[dict[str, Any]], baseline: Sequence[dict[str,
                    and abs(best.get("paired_t") or 0.0) >= 2.0)
         adj_value = best.get("adjusted_pp")
         if raw_sig and adj_value is not None and abs(adj_value) < 2.0:
-            tail = (f"统计上显著（t={best['paired_t']}），但控制振幅（波动率）后只剩 "
-                    f"{adj_value}pp，低于 2pp 门槛 —— 条件选出来的票波动更大，不是更准。")
+            # 原始差显著、调整后不显著：一句话说完，别再重复 t 和 adjusted 数字
+            detail = (f"最好的组合是 {best['window']} 日 / {best['target']}："
+                      f"{best['signal_rate']}% 对基准 {best['baseline_rate']}%"
+                      f"（{best['difference_pp']}pp，按日配对 t={best['paired_t']}）。"
+                      f"统计上显著，但控制振幅（波动率）后只剩 {adj_value}pp，低于 2pp 门槛"
+                      f" —— 条件选出来的票波动更大，不是更准。")
         else:
-            tail = "达不到显著。"
+            detail = (f"最好的组合是 {best['window']} 日 / {best['target']}："
+                      f"{best['signal_rate']}% 对基准 {best['baseline_rate']}%"
+                      f"（{best['difference_pp']}pp，t={best['paired_t']}），"
+                      f"达不到显著。{adjusted_note}")
         head = Headline(
             verdict="no_edge",
             title="没有可确认的优势",
-            detail=(f"最好的组合是 {best['window']} 日 / {best['target']}："
-                    f"{best['signal_rate']}% 对基准 {best['baseline_rate']}%"
-                    f"（{best['difference_pp']}pp，t={best['paired_t']}）—— {tail}"
-                    f"{adjusted_note}"),
+            detail=detail,
         )
     head.metrics = [
         metric("best_window", "最优窗口", best["window"], "日"),
