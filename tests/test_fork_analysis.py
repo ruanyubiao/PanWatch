@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime as dt
 import sqlite3
 
+import numpy as np
+
 import pytest
 
 from src.modules.market.api import fork_analysis
@@ -866,3 +868,33 @@ def test_报告带齐新分段(db):
         assert key in report
     assert report["evaluation_version"] == "v4"
     assert report["quality"]["health"]["total_rows"] == 30
+
+
+def test_归因标准误按日聚类(db):
+    """同一天几十只股票共享一段行情：聚类标准误必须比独立同分布的大。"""
+    from src.modules.market.fork_analysis.attribution import _cluster_se, _fit
+
+    rng = np.random.default_rng(11)
+    days, per = 20, 100
+    n = days * per
+    x = rng.normal(size=n)
+    day = np.repeat(np.arange(days), per)
+    # 每天的「斜率」都不一样 = 真实的聚类来源（不同日期行情对信号的影响强度不同）
+    slope_shock = rng.normal(0, 1.5, days)[day]
+    matrix = np.column_stack([np.ones(n), x])
+    target = (rng.random(n) < 1 / (1 + np.exp(-((0.5 + slope_shock) * x)))).astype(float)
+    beta, plain = _fit(matrix, target)
+    clustered = _cluster_se(matrix, target, beta, [f"d{index}" for index in range(days) for _ in range(per)])
+    assert clustered[1] > plain[1] * 2.0
+
+
+def test_归因在对照组缺横截面时拒绝下结论(db):
+    for index in range(60):
+        _signal(db, f"6020{index}", "2026-05-05", {i: 0.02 for i in range(1, 31)},
+                mcap=None, amount=None, turnover=None, amplitude=None,
+                listed_days=None, breadth=None, x10=0.02)
+        _signal(db, f"6021{index}", "2026-05-05", {i: -0.02 for i in range(1, 31)},
+                is_control=1, mcap=100.0, amount=5.0, turnover=2.0, amplitude=3.0,
+                listed_days=900, breadth=0.5, x10=-0.02)
+    data = attribution.fit(db, 10, "x", 0.0)
+    assert data.get("note") == "cross_section_missing"
