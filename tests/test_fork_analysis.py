@@ -13,7 +13,20 @@ import sqlite3
 import pytest
 
 from src.modules.market.api import fork_analysis
-from src.modules.market.fork_analysis import excel, forward, runner, significance, stats, store
+from src.modules.market.fork_analysis import (
+    ablation,
+    attribution,
+    entry,
+    excel,
+    forward,
+    health,
+    leaderboard,
+    portfolio,
+    runner,
+    significance,
+    stats,
+    store,
+)
 
 D0 = dt.date(2026, 1, 5)
 
@@ -673,3 +686,183 @@ def test_分组同时给相对随机的超额(db):
     item = next(entry for entry in board["items"] if entry["key"] == "sh")
     assert item["edge_pp"] == pytest.approx(0.0, abs=0.01)          # 相对条件整体
     assert item["excess_vs_random_pp"] == pytest.approx(20.0, abs=0.01)  # 相对随机
+
+
+# ---------------------------------------------------------------------------
+# v4 评估体系（2026-10-23 第三轮）：双口径 / 成本 / 入场 / 组合 / 归因 / 体检
+# ---------------------------------------------------------------------------
+
+
+def _exec(conn, code, d0, *, x10, amount=30.0, is_control=0, r1=0.01, r10=0.02, **over):
+    """写一条带可执行口径的信号（x 列决定成本与组合模拟的结果）。"""
+    values = {f"x{i}": x10 for i in range(1, 31)}
+    values["v10"] = x10
+    values.update(over)
+    _signal(conn, code, d0, {i: r10 for i in range(1, 31)}, r1=r1, r10=r10,
+            amount=amount, is_control=is_control, **values)
+
+
+def test_加权口径按命中数加权而不是按天(db):
+    """同一天命中 10 只和命中 1 只，权重必须不同（否则拥挤日被稀释）。"""
+    for index in range(10):
+        _signal(db, f"60000{index}", "2026-01-05", {i: 0.05 for i in range(1, 31)})
+        _signal(db, f"60010{index}", "2026-01-05", {i: -0.05 for i in range(1, 31)}, is_control=1)
+    _signal(db, "600020", "2026-01-06", {i: -0.05 for i in range(1, 31)})
+    _signal(db, "600021", "2026-01-06", {i: 0.05 for i in range(1, 31)}, is_control=1)
+
+    equal = significance.horizon_test(db, 10, "r", 0.0)
+    weighted = significance.weighted_test(db, 10, "r", 0.0)
+    assert equal["mean_excess_pp"] == pytest.approx(0.0, abs=0.01)     # (100 − 100)/2
+    assert weighted["mean_excess_pp"] == pytest.approx(81.8, abs=0.2)  # (10×100 − 100)/11
+    assert weighted["n_signals"] == 11
+
+
+def test_卡方上尾与_Q_检验():
+    assert significance.chi2_sf(3.8415, 1) == pytest.approx(0.05, abs=0.002)
+    assert significance.chi2_sf(9.4877, 4) == pytest.approx(0.05, abs=0.002)
+    same = [{"effect_pp": 3.0, "se_pp": 1.0}, {"effect_pp": 3.1, "se_pp": 1.0},
+            {"effect_pp": 2.9, "se_pp": 1.0}]
+    assert significance.cochran_q(same)["consistent"] is True
+    spread = [{"effect_pp": 12.0, "se_pp": 0.5}, {"effect_pp": -6.0, "se_pp": 0.5}]
+    result = significance.cochran_q(spread)
+    assert result["consistent"] is False and result["i2"] > 50
+
+
+def test_成本敏感性_高成本会吃掉超额(db):
+    for index in range(5):
+        _exec(db, f"60030{index}", "2026-01-05", x10=0.005)
+        _exec(db, f"60040{index}", "2026-01-05", x10=0.0, is_control=1)
+    data = stats.cost_sensitivity(db, (10,), "exec")
+    assert data["available"] is True
+    by_key = {level["key"]: level["horizons"]["10"] for level in data["levels"]}
+    assert by_key["base"] == pytest.approx(100.0, abs=0.01)     # 0.5% − 0.2% > 0
+    assert by_key["heavy"] == pytest.approx(0.0, abs=0.01)      # 0.5% − 0.8% < 0
+    assert by_key["base"] > by_key["heavy"]
+
+
+def test_入场假设敏感性给出四种口径(db):
+    for index in range(4):
+        _exec(db, f"60050{index}", "2026-01-05", x10=0.15, r1=0.05, r10=0.20)
+        _exec(db, f"60060{index}", "2026-01-05", x10=0.0, r1=0.0, r10=0.0, is_control=1)
+    rows = {row["base"]: row for row in entry.sensitivity(db, 10, 0.0)}
+    assert set(rows) == {"signal_close", "next_open", "next_close", "next_vwap"}
+    assert rows["next_open"]["available"] is True
+    assert rows["next_open"]["win_rate"] == pytest.approx(100.0)
+    # 次日收盘买入 = (1+r10)/(1+r1)−1 = 14.29%，不是 15%
+    assert rows["next_close"]["win_rate"] == pytest.approx(100.0)
+
+
+def test_组合模拟遵守仓位上限(db):
+    for day in range(1, 6):
+        for index in range(6):
+            _exec(db, f"6007{day}{index}", f"2026-02-0{day}",
+                  x10=0.05, **{f"x{i}": 0.01 * i for i in range(1, 10)})
+    result = portfolio.simulate(db, 10, 2, 0.0)
+    metrics = result["signal"]["metrics"]
+    assert metrics["days"] >= 4
+    assert metrics["avg_positions"] <= 2 * 10 + 1
+    assert metrics["capital_use_pct"] <= 100
+    assert metrics["final_value"] > 1.0
+    assert len(result["signal"]["equity"]) >= 2
+
+
+def test_因子归因给出原始与调整后超额(db):
+    for index in range(60):
+        _exec(db, f"60080{index}", f"2026-03-{index % 20 + 1:02d}", x10=0.03, mcap=20.0)
+        _exec(db, f"60090{index}", f"2026-03-{index % 20 + 1:02d}", x10=-0.03, is_control=1, mcap=200.0)
+    data = attribution.fit(db, 10, "x", 0.0)
+    assert data["n"] == 120
+    assert data["raw_excess_pp"] == pytest.approx(100.0, abs=0.01)
+    # 命中组市值 20 亿、对照组 200 亿：市值这个变量会解释掉一部分
+    assert data["adjusted_excess_pp"] is not None
+    assert abs(data["adjusted_excess_pp"]) <= abs(data["raw_excess_pp"]) + 15
+    assert any(feature["name"] == "log总市值" for feature in data["features"])
+
+
+def test_体检能标出异常涨跌幅(db):
+    _signal(db, "600000", "2026-01-05", {1: 0.60, 2: 0.60}, listed_days=500)
+    _signal(db, "600001", "2026-01-05", {i: 0.01 for i in range(1, 31)}, listed_days=500)
+    result = health.snapshot(db, "close")
+    assert result["extreme_rows"] == 1
+    assert result["score"] < 100
+    assert result["level"] in ("warn", "bad")
+
+
+def test_消融变体包含去条件与参数扰动():
+    from src.modules.market.fork_screen.models import ScreenRequest
+
+    request = ScreenRequest.model_validate({
+        "trading_days": 30,
+        "markets": ["sh"],
+        "include_st": False,
+        "rule": {
+            "type": "group", "operator": "AND", "children": [
+                {"type": "condition", "name": "consecutive_bullish", "params": {"start": 1, "days": 4}},
+                {"type": "condition", "name": "ma_bullish", "params": {"periods": [5, 10]}},
+            ],
+        },
+    })
+    variants = ablation.build_variants(request)
+    kinds = {variant["kind"] for variant in variants}
+    assert kinds == {"base", "drop", "param"}
+    assert any(variant["label"].startswith("去掉 consecutive_bullish") for variant in variants)
+    assert any(variant["label"] == "days 4→5" for variant in variants)
+    # 去掉一条之后仍然是一个合法的条件树
+    for variant in variants:
+        ScreenRequest.model_validate({**request.model_dump(mode="json"), "rule": variant["rule"]})
+
+
+def test_排行榜按同一口径排序并给选择偏差(db, tmp_path, monkeypatch):
+    import json
+
+    for run_id, wins in (("20260101-000000-aaaa", 8), ("20260101-000001-bbbb", 2)):
+        conn = store.open_db("sx", run_id)
+        for index in range(10):
+            row = {"d0": "2026-01-05", "code": f"60{index:04d}", "symbol": f"sh{index}",
+                   "name": "x", "board": "sh", "is_control": 0, "d0_close": 10.0, "avail": 30}
+            for i in range(1, 31):
+                row[f"r{i}"] = 0.02 if index < wins else -0.02
+            store.insert_signals(conn, [row])
+        conn.close()
+        store.save_meta("sx", {"run_id": run_id, "preset": "sx", "status": store.STATUS_DONE,
+                               "horizons": [5, 10, 15, 20, 25, 30], "days": 1,
+                               "start_date": "2026-01-05", "end_date": "2026-01-05",
+                               "created_at": "2026-01-01T00:00:00+08:00"})
+    board = leaderboard.board(10)
+    assert board["count"] == 2
+    assert board["items"][0]["hits"] == 10
+    assert board["items"][0]["rank"] == 1
+    assert board["note"] == "expected_max"
+
+
+def test_结论卡的最优周期与超额同源(db):
+    """旧实现用合并口径挑周期、诚实口径下结论，会给出自相矛盾的卡片。"""
+    def row(horizon, excess, win_rate, n=500):
+        return {"horizon": horizon, "excess_pp": excess, "z": 3.0,
+                "signal": {"n": n, "win_rate": win_rate, "avg_return": 1.0, "payoff": 1.2},
+                "control": {"win_rate": 48.0}}
+
+    rows = [row(5, 8.0, 60.0), row(10, 3.0, 51.0)]
+    honest = {"verdict": "worse", "best_horizon": 10, "best_excess_pp": -3.5,
+              "best_ci_low_pp": -5.0, "best_ci_high_pp": -2.0, "worst_horizon": 10,
+              "worst_excess_pp": -3.5, "primary_horizon": 10, "primary_excess_pp": -3.5,
+              "primary_ci_low_pp": -5.0, "primary_ci_high_pp": -2.0,
+              "up_count": 0, "down_count": 2, "up_horizons": [], "down_horizons": [5, 10]}
+    decision = stats.verdict(rows, honest)
+    assert decision["reason"] == "worse"
+    assert decision["best_horizon"] == 10
+    assert decision["best_excess_pp"] == pytest.approx(-3.5)
+    assert decision["pooled_best_horizon"] == 5        # 合并口径只留档，不上卡片
+    assert decision["sample"] == 500
+
+
+def test_报告带齐新分段(db):
+    for index in range(30):
+        _exec(db, f"6010{index}", f"2026-04-{index % 20 + 1:02d}", x10=0.02)
+        _exec(db, f"6011{index}", f"2026-04-{index % 20 + 1:02d}", x10=0.0, is_control=1)
+    report = stats.build_report(db, {"horizons": [5, 10, 15, 20, 25, 30], "validate_days": 30})
+    for key in ("signal_weighted", "cost_sensitivity", "entry", "portfolio",
+                "attribution", "heterogeneity", "power", "conclusion"):
+        assert key in report
+    assert report["evaluation_version"] == "v4"
+    assert report["quality"]["health"]["total_rows"] == 30
