@@ -254,8 +254,53 @@ def test_对照组SQL聚合与事件聚合一致(tmp_path, monkeypatch):
             assert from_sql[window]["hits"][target] == from_events[window]["hits"][target]
 
 
-# --------------------------------------------------------------------------- #
-# 取数与口径
+def test_振幅分层把波动率的贡献扣掉(tmp_path, monkeypatch):
+    """条件组振幅更大时，原始超额会被波动率抬高；分层后应该明显变小。"""
+    monkeypatch.setattr(store, "RUNS_DIR", tmp_path)
+    conn = store.open_db("sx", "run-vol")
+    rows = []
+    # 信号组：振幅 8%（高波动），5 日 ≥5% 达成 60%；基准：同振幅档只有 40%
+    for index in range(10):
+        rows.append({
+            "d0": "2026-01-05", "code": f"S{index:02d}", "symbol": f"shS{index}", "name": "S",
+            "board": "sh", "is_control": 0, "buy_price": 10.0, "d0_close": 10.0, "avail": 35,
+            "entry_days": 1, "valid": 1, "reason": "", "amplitude": 8.0,
+            **{f"mh{window}": (10.6 if index < 6 else 10.1) for window in store.M2_WINDOWS},
+            **{f"ml{window}": 9.5 for window in store.M2_WINDOWS},
+        })
+    for index in range(10):
+        rows.append({
+            "d0": "2026-01-05", "code": f"C{index:02d}", "symbol": f"shC{index}", "name": "C",
+            "board": "sh", "is_control": 1, "buy_price": 10.0, "d0_close": 10.0, "avail": 35,
+            "entry_days": 1, "valid": 1, "reason": "", "amplitude": 8.0,
+            **{f"mh{window}": (10.6 if index < 4 else 10.1) for window in store.M2_WINDOWS},
+            **{f"ml{window}": 9.5 for window in store.M2_WINDOWS},
+        })
+    # 低波动基准：振幅 2%、几乎摸不到 +5% —— 它会把「原始差额」抬高（基准整体更难达标），
+    # 但同振幅档内条件并没有那么强，所以分层后的超额必须小于原始差额。
+    for index in range(10):
+        rows.append({
+            "d0": "2026-01-05", "code": f"L{index:02d}", "symbol": f"shL{index}", "name": "L",
+            "board": "sh", "is_control": 1, "buy_price": 10.0, "d0_close": 10.0, "avail": 35,
+            "entry_days": 1, "valid": 1, "reason": "", "amplitude": 2.0,
+            **{f"mh{window}": (10.2 if index < 1 else 10.1) for window in store.M2_WINDOWS},
+            **{f"ml{window}": 9.9 for window in store.M2_WINDOWS},
+        })
+    store.insert_m2_events(conn, rows)
+    adjusted = method2.amplitude_adjusted(conn)
+    report = method2.build(conn, {"preset": "xg1", "days_done": 1})
+    conn.close()
+    assert adjusted[5][0.05]["adjusted_pp"] == pytest.approx(20.0)
+    row = [item for item in report.tables if item.key == "target_edge"][0].rows
+    five = [item for item in row if item["window"] == 5 and item["target"] == "≥5%"][0]
+    # 原始：60% 对 4/20=20% → 40pp；分层后只剩同振幅档的 20pp
+    assert five["difference_pp"] == pytest.approx(40.0)
+    assert five["adjusted_pp"] == pytest.approx(20.0)
+    # 振幅分层表要出现在报告里；样本只有 10 条，结论本身是「样本不足」
+    assert any(table.key == "amplitude" for table in report.tables)
+    assert report.headline.verdict == "insufficient"
+
+
 # --------------------------------------------------------------------------- #
 def test_买入价是次日开盘且窗口极值含当日():
     days = fwd_days()
