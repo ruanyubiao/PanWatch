@@ -11,6 +11,10 @@ analysis_busy                     409   已有分析任务在跑（单进程只�
 analysis_run_not_found            404   任务 id 不存在
 analysis_report_not_ready         409   还没有任何信号（0 天命中或刚创建）
 analysis_excel_missing            404   Excel 还没生成（正在跑 / 生成失败）
+analysis_method_mismatch          409   接口与方法不匹配（如对方法 2 调 /report）
+analysis_artifact_not_found       404   产物名不在该方法的白名单里
+analysis_artifact_missing         404   产物还没生成（任务可能仍在运行）
+analysis_artifacts_failed         500   产物重建失败
 ================================  ====  ==================================
 """
 
@@ -19,13 +23,15 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 import shutil
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from ..api import fork_market
-from ..fork_analysis import ablation, backfill, excel, leaderboard, runner, significance, stats, store
+from ..fork_analysis import ablation, backfill, excel, leaderboard, methods, runner, significance, stats, store
 from ..fork_analysis.models import AnalysisCreate, horizons_for
 from ..fork_screen import presets
 
@@ -60,6 +66,8 @@ def _meta_view(preset_name: str, meta: dict[str, Any]) -> dict[str, Any]:
     view = dict(meta)
     running = runner.is_running(meta.get("run_id", ""))
     view["running"] = running
+    view["method"] = methods.method_of(meta)
+    view["method_name"] = meta.get("method_name") or methods.spec(view["method"]).name
     if str(view.get("status")) == store.STATUS_RUNNING and not running:
         view["status"] = "interrupted"
     try:
@@ -67,7 +75,7 @@ def _meta_view(preset_name: str, meta: dict[str, Any]) -> dict[str, Any]:
     except (store.RunNotFound, Exception):  # noqa: BLE001 - 只是加个计数，失败不影响
         return view
     try:
-        view["counts"] = store.counts(conn)
+        view["counts"] = store.counts_for(conn, view["method"])
         view["recent_days"] = store.day_rows(conn, 20)
     finally:
         conn.close()
@@ -78,6 +86,12 @@ def _meta_view(preset_name: str, meta: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
+@router.get("/analysis/methods")
+def list_analysis_methods() -> dict[str, Any]:
+    """可选的统计分析方法（创建表单的下拉与报告页的渲染都读它）。"""
+    return {"items": methods.specs_payload(), "default": methods.DEFAULT_METHOD}
+
+
 @router.post("/analysis/preview")
 def analysis_preview(payload: AnalysisCreate) -> dict[str, Any]:
     """创建前的预估（交易日数 / 条件窗口 / 最新交易日）。"""
@@ -85,7 +99,7 @@ def analysis_preview(payload: AnalysisCreate) -> dict[str, Any]:
         return runner.preview(payload)
     except presets.PresetNotFound as exc:
         raise _bad(404, "analysis_preset_not_found", str(exc)) from exc
-    except (presets.PresetNameInvalid, runner.AnalysisParamsInvalid) as exc:
+    except (presets.PresetNameInvalid, runner.AnalysisParamsInvalid, methods.UnknownMethod) as exc:
         raise _bad(400, "analysis_invalid_params", str(exc)) from exc
     except fork_market.ForkDbUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -97,7 +111,7 @@ def create_analysis_run(payload: AnalysisCreate) -> dict[str, Any]:
         meta = runner.create(payload)
     except presets.PresetNotFound as exc:
         raise _bad(404, "analysis_preset_not_found", str(exc)) from exc
-    except (presets.PresetNameInvalid, runner.AnalysisParamsInvalid) as exc:
+    except (presets.PresetNameInvalid, runner.AnalysisParamsInvalid, methods.UnknownMethod) as exc:
         raise _bad(400, "analysis_invalid_params", str(exc)) from exc
     except runner.AnalysisBusy as exc:
         raise _bad(409, "analysis_busy", str(exc)) from exc
@@ -145,21 +159,141 @@ def resume_analysis_run(run_id: str) -> dict[str, Any]:
 
 @router.get("/analysis/runs/{run_id}/report")
 def analysis_report(run_id: str) -> dict[str, Any]:
-    """统计主体：各周期胜率/超额/盈亏比 + 13 个维度的分组统计 + 到达天数 + 结论。"""
+    """统计主体：各周期胜率/超额/盈亏比 + 13 个维度的分组统计 + 到达天数 + 结论。
+
+    只服务方法 1。方法 2 用统一信封 ``/result``（两种方法的字段完全不同，塞进同一个
+    响应会让前端到处 if，也会让「统一输出」这件事名存实亡）。
+    """
     preset_name, meta = _locate(run_id)
+    method_id = methods.method_of(meta)
+    if method_id != "stat_v1":
+        raise _bad(409, "analysis_method_mismatch",
+                   f"这个任务用的是「{methods.spec(method_id).name}」，请读 /result 接口")
     try:
         # 读写连接：分组统计第一次要写缓存表（group_stats / arrival_stats）
         conn = store.open_db(preset_name, run_id)
     except store.RunNotFound as exc:
         raise _bad(409, "analysis_report_not_ready", "这个任务还没有产生任何信号") from exc
     try:
-        counts = store.counts(conn)
+        counts = store.counts_for(conn, method_id)
         if counts["hits"] == 0 and counts["control"] == 0:
             raise _bad(409, "analysis_report_not_ready", "这个任务还没有产生任何信号")
         report = stats.build_report(conn, meta)
     finally:
         conn.close()
     return {"run": _meta_view(preset_name, meta), "counts": counts, **report}
+
+
+@router.get("/analysis/runs/{run_id}/result")
+def analysis_result(run_id: str) -> dict[str, Any]:
+    """统一输出（所有方法同构）：结论卡 + 表格 + 产物 + 数据质量 + 局限。
+
+    这是用户 2026-10-23 第 6 条要的「统一接口」：新增方法不改前端渲染器，
+    也不改调用方 —— 拿到的永远是同一个信封（``schema_version`` 标明契约版本）。
+    """
+    preset_name, meta = _locate(run_id)
+    method_id = methods.method_of(meta)
+    try:
+        conn = store.open_db(preset_name, run_id)
+    except store.RunNotFound as exc:
+        raise _bad(409, "analysis_report_not_ready", "这个任务还没有产生任何信号") from exc
+    try:
+        counts = store.counts_for(conn, method_id)
+        if counts["hits"] == 0:
+            raise _bad(409, "analysis_report_not_ready", "这个任务还没有产生任何信号")
+        payload_meta = {
+            **meta,
+            "preset": preset_name,
+            "_artifacts_dir": str(store.artifacts_dir(preset_name, run_id)),
+        }
+        report = methods.build(method_id, conn, payload_meta)
+    finally:
+        conn.close()
+    data = report.as_dict()
+    for artifact in data["artifacts"]:
+        artifact["url"] = f"/api/stocks/analysis/runs/{run_id}/artifacts/{quote(artifact['name'])}"
+        path = _artifact_path(preset_name, run_id, artifact["name"])
+        if path is not None and path.is_file():
+            artifact["size"] = path.stat().st_size
+    return {"run": _meta_view(preset_name, meta), "counts": counts, "result": data}
+
+
+def _artifact_path(preset_name: str, run_id: str, name: str) -> Optional[Path]:
+    """产物路径：方法 2 在 ``artifacts/``，方法 1 的 Excel 在任务根目录。
+
+    只允许单纯文件名（挡住 ``../``），并且必须在该任务的产物白名单里。
+    """
+    if not name or Path(name).name != name:
+        return None
+    allowed = set(method_file_names(preset_name, run_id))
+    if name not in allowed:
+        return None
+    candidates = [store.artifacts_dir(preset_name, run_id) / name, store.run_dir(preset_name, run_id) / name]
+    for path in candidates:
+        if path.is_file():
+            return path
+    return candidates[0]
+
+
+def method_file_names(preset_name: str, run_id: str) -> list[str]:
+    meta = store.load_meta(preset_name, run_id)
+    spec = methods.spec(methods.method_of(meta))
+    return list(spec.outputs)
+
+
+@router.get("/analysis/runs/{run_id}/artifacts")
+def list_analysis_artifacts(run_id: str) -> dict[str, Any]:
+    """产物清单（方法 2 的 CSV/report.md；方法 1 的 Excel）。"""
+    preset_name, meta = _locate(run_id)
+    method_id = methods.method_of(meta)
+    names = method_file_names(preset_name, run_id)
+    directory = store.artifacts_dir(preset_name, run_id)
+    if method_id == "stat_v2" and not all((directory / name).is_file() for name in names):
+        # 跑完了但产物没落全（进程被杀/老任务）：按库里的数据重建一次
+        if store.is_terminal(meta):
+            try:
+                runner.write_method2_artifacts(preset_name, run_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("重建方法 2 产物失败：%s", run_id)
+                raise _bad(500, "analysis_artifacts_failed", str(exc)) from exc
+    items = []
+    for name in names:
+        path = _artifact_path(preset_name, run_id, name)
+        items.append({
+            "name": name,
+            "kind": "md" if name.endswith(".md") else ("xlsx" if name.endswith(".xlsx") else "csv"),
+            "size": path.stat().st_size if path is not None and path.is_file() else 0,
+            "ready": bool(path is not None and path.is_file()) or (method_id == "stat_v1"),
+            "url": f"/api/stocks/analysis/runs/{run_id}/artifacts/{quote(name)}",
+        })
+    return {"run_id": run_id, "method": method_id, "items": items}
+
+
+@router.get("/analysis/runs/{run_id}/artifacts/{name}")
+def download_analysis_artifact(run_id: str, name: str) -> FileResponse:
+    preset_name, meta = _locate(run_id)
+    if name not in method_file_names(preset_name, run_id) or Path(name).name != name:
+        raise _bad(404, "analysis_artifact_not_found", f"这个任务没有产物 {name}")
+    path = _artifact_path(preset_name, run_id, name)
+    if path is None or not path.is_file():
+        # 方法 1 的 Excel 原本就是按需生成；方法 2 在拿到清单时已重建
+        if name.endswith(".xlsx"):
+            try:
+                conn = store.open_db(preset_name, run_id)
+                try:
+                    excel.write_workbook(conn, preset_name, run_id)
+                finally:
+                    conn.close()
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("重建 Excel 失败：%s", exc)
+                raise _bad(404, "analysis_artifact_missing", "Excel 还没生成（任务可能仍在运行）") from exc
+            path = _artifact_path(preset_name, run_id, name)
+        if path is None or not path.is_file():
+            raise _bad(404, "analysis_artifact_missing", f"{name} 还没生成（任务可能仍在运行）")
+    media = "text/markdown; charset=utf-8" if name.endswith(".md") else (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if name.endswith(".xlsx")
+        else "text/csv; charset=utf-8")
+    return FileResponse(str(path), filename=f"{meta.get('preset')}-{run_id}-{name}", media_type=media)
 
 
 @router.get("/analysis/runs/{run_id}/detail")
@@ -178,7 +312,26 @@ def analysis_detail(run_id: str) -> dict[str, Any]:
         condition["missing"] = str(exc)
 
     verdict: dict[str, Any] | None = None
+    headline: dict[str, Any] | None = None
+    method_id = methods.method_of(meta)
     horizons = list(meta.get("horizons") or [])
+    if method_id != "stat_v1":
+        # 方法 2 的评价是统一信封里的结论卡，不走方法 1 的 stats.summary
+        try:
+            conn = store.open_db(preset_name, run_id)
+            try:
+                report = methods.build(method_id, conn, {
+                    **meta, "preset": preset_name,
+                    "_artifacts_dir": str(store.artifacts_dir(preset_name, run_id)),
+                })
+                headline = report.headline.as_dict()
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 - 还没跑完/没有数据
+            logger.exception("读取任务 %s 的方法 2 结论失败", run_id)
+        return {"run": view, "condition": condition, "verdict": None,
+                "headline": headline, "method": method_id, "horizons": horizons}
+
     try:
         conn = store.open_db_readonly(preset_name, run_id)
     except store.RunNotFound:
@@ -193,7 +346,8 @@ def analysis_detail(run_id: str) -> dict[str, Any]:
             logger.exception("读取任务 %s 的结论失败", run_id)
         finally:
             conn.close()
-    return {"run": view, "condition": condition, "verdict": verdict, "horizons": horizons}
+    return {"run": view, "condition": condition, "verdict": verdict,
+            "headline": headline, "method": method_id, "horizons": horizons}
 
 
 @router.delete("/analysis/runs/{run_id}")
@@ -243,6 +397,9 @@ def analysis_stocks(
 ) -> dict[str, Any]:
     """个股准确率排行（服务端排序 + 分页，个股可能上千只）。"""
     preset_name, meta = _locate(run_id)
+    if methods.method_of(meta) != "stat_v1":
+        raise _bad(409, "analysis_method_mismatch",
+                   "方法 2 的按股票统计在统一结果里（/result 的 stocks 表）")
     horizons = tuple(meta.get("horizons") or horizons_for(int(meta.get("validate_days") or 30)))
     try:
         conn = store.open_db_readonly(preset_name, run_id)
@@ -306,6 +463,8 @@ def start_ablation(
 ) -> dict[str, Any]:
     """消融 / 参数扰动（后台跑，几十分钟；结果写 ablation.json）。"""
     preset_name, meta = _locate(run_id)
+    if methods.method_of(meta) != "stat_v1":
+        raise _bad(409, "analysis_method_mismatch", "消融只支持分析方法 1")
     if not store.is_terminal(meta) and not runner.is_running(run_id):
         raise _bad(409, "analysis_report_not_ready", "任务还没跑完，先让它结束再做消融")
     try:
