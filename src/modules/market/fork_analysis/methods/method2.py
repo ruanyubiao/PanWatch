@@ -526,6 +526,7 @@ def target_comparison(signal_events: Sequence[Event],
             rows.append({
                 "window": window,
                 "target": _label(target),
+                "target_pct": round(target * 100),
                 "signal_n": sig["n"],
                 "baseline_n": int(agg["n"]),
                 "signal_rate": _round(sig_rate),
@@ -535,6 +536,83 @@ def target_comparison(signal_events: Sequence[Event],
                 "paired_t": test["t"],
             })
     return rows
+
+
+#: 振幅分层（信号日振幅，%）：方法 2 的「摸到过高价」会随波动率机械变大，
+#: 所以必须看同一振幅档内的超额，否则把波动率当成条件优势。
+_AMP_BUCKETS: tuple[tuple[str, float | None, float | None], ...] = (
+    ("<3%", None, 3.0),
+    ("3-5%", 3.0, 5.0),
+    ("5-7%", 5.0, 7.0),
+    ("7-10%", 7.0, 10.0),
+    (">=10%", 10.0, None),
+)
+
+
+def _amp_case(column: str = "amplitude") -> str:
+    whens = []
+    for label, low, high in _AMP_BUCKETS:
+        parts = []
+        if low is not None:
+            parts.append(f"{column} >= {low}")
+        if high is not None:
+            parts.append(f"{column} < {high}")
+        whens.append(f"WHEN {' AND '.join(parts)} THEN '{label}'")
+    return "CASE " + " ".join(whens) + " ELSE 'NA' END"
+
+
+def amplitude_adjusted(conn: sqlite3.Connection, windows: Sequence[int] = WINDOWS,
+                       targets: Sequence[float] = RETURN_TARGETS) -> dict[int, dict[float, dict[str, Any]]]:
+    """按信号日振幅分层后的超额（控制波动率）。
+
+    条件选出来的股票振幅明显更大（实测平均 5.73% vs 基准 4.50%），而「窗口内最高价
+    摸到 +5%」本身就会随波动率变大 —— 不分层的话，+7pp 里有一半只是「更波动」。
+    这里按振幅档做直接标准化：档内算条件减基准，再按条件组在各档的样本量加权。
+    """
+    result: dict[int, dict[float, dict[str, Any]]] = {window: {} for window in windows}
+    for window in windows:
+        sums = [f"SUM(CASE WHEN mh{window} / buy_price - 1 >= {float(target)} THEN 1 ELSE 0 END) "
+                f"AS hit_{target_key(target)}" for target in targets]
+        sql = (
+            f"SELECT {_amp_case()} AS bucket, is_control, COUNT(*) AS n, {', '.join(sums)} "
+            "FROM m2_events WHERE valid = 1 AND amplitude IS NOT NULL "
+            "GROUP BY bucket, is_control"
+        )
+        table: dict[str, dict[int, sqlite3.Row]] = {}
+        for row in conn.execute(sql):
+            table.setdefault(str(row["bucket"]), {})[int(row["is_control"])] = row
+        for target in targets:
+            buckets: list[dict[str, Any]] = []
+            weighted_sum = 0.0
+            weight_total = 0.0
+            for label, _low, _high in _AMP_BUCKETS:
+                pair = table.get(label) or {}
+                sig = pair.get(0)
+                ctl = pair.get(1)
+                if sig is None or ctl is None or not int(sig["n"]) or not int(ctl["n"]):
+                    continue
+                sig_n = int(sig["n"])
+                ctl_n = int(ctl["n"])
+                sig_hits = int(sig[f"hit_{target_key(target)}"] or 0)
+                ctl_hits = int(ctl[f"hit_{target_key(target)}"] or 0)
+                sig_rate = 100.0 * sig_hits / sig_n
+                ctl_rate = 100.0 * ctl_hits / ctl_n
+                diff = sig_rate - ctl_rate
+                buckets.append({
+                    "bucket": label,
+                    "signal_n": sig_n,
+                    "control_n": ctl_n,
+                    "signal_rate": _round(sig_rate),
+                    "control_rate": _round(ctl_rate),
+                    "diff_pp": _round(diff),
+                })
+                weighted_sum += diff * sig_n
+                weight_total += sig_n
+            result[window][target] = {
+                "adjusted_pp": _round(weighted_sum / weight_total) if weight_total else None,
+                "buckets": buckets,
+            }
+    return result
 
 
 def paired_day_test(signal_rates: dict[str, float], base_rates: dict[str, float]) -> dict[str, Any]:
@@ -740,7 +818,11 @@ def headline_for(summary: Sequence[dict[str, Any]], baseline: Sequence[dict[str,
         )
 
     def _significant(row: dict[str, Any], direction: int) -> bool:
-        value = row.get("difference_pp") or 0.0
+        # 有「控制波动率」的调整值时用它，否则用原始差 —— 条件天然偏爱高波动股，
+        # 只用原始差会把波动率当成条件优势
+        value = row.get("adjusted_pp")
+        if value is None:
+            value = row.get("difference_pp") or 0.0
         stat = row.get("paired_t")
         if stat is None:
             return False
@@ -750,6 +832,11 @@ def headline_for(summary: Sequence[dict[str, Any]], baseline: Sequence[dict[str,
     worse = [row for row in rows if _significant(row, -1)]
     best = max(rows, key=lambda row: row["difference_pp"])
     worst = min(rows, key=lambda row: row["difference_pp"])
+
+    adjusted_note = ""
+    if best.get("adjusted_pp") is not None:
+        adjusted_note = (f"控制振幅（波动率）后为 {best['adjusted_pp']}pp"
+                         f"（原始 {best['difference_pp']}pp）。")
 
     if usable and worse:
         head = Headline(
@@ -765,7 +852,7 @@ def headline_for(summary: Sequence[dict[str, Any]], baseline: Sequence[dict[str,
             title="这个条件明显好于同期随机买入",
             detail=(f"{best['window']} 日内达到 {best['target']} 的比例 {best['signal_rate']}%，"
                     f"基准 {best['baseline_rate']}%，高 {best['difference_pp']}pp"
-                    f"（按日配对 t={best['paired_t']}）。"),
+                    f"（按日配对 t={best['paired_t']}）。{adjusted_note}"),
         )
     elif len(worse) >= 2:
         head = Headline(
@@ -781,12 +868,14 @@ def headline_for(summary: Sequence[dict[str, Any]], baseline: Sequence[dict[str,
             title="没有可确认的优势",
             detail=(f"最好的组合是 {best['window']} 日 / {best['target']}："
                     f"{best['signal_rate']}% 对基准 {best['baseline_rate']}%"
-                    f"（{best['difference_pp']}pp，t={best['paired_t']}），达不到显著。"),
+                    f"（{best['difference_pp']}pp，t={best['paired_t']}），达不到显著。"
+                    f"{adjusted_note}"),
         )
     head.metrics = [
         metric("best_window", "最优窗口", best["window"], "日"),
         metric("best_target", "最优目标", best["target"], ""),
         metric("excess", "超额", best["difference_pp"], "pp"),
+        metric("adjusted", "控制波动率后", best.get("adjusted_pp"), "pp"),
         metric("rate", "达成率", best["signal_rate"], "%"),
         metric("baseline", "基准", best["baseline_rate"], "%"),
         metric("sample", "有效事件", valid, "条"),
@@ -832,10 +921,28 @@ def _target_table(rows: Sequence[dict[str, Any]]) -> Table:
             Column("signal_rate", "条件达成率", "percent"),
             Column("baseline_rate", "基准达成率", "percent"),
             Column("difference_pp", "差", "pp"),
+            Column("adjusted_pp", "控制波动率后", "pp"),
             Column("paired_days", "配对交易日", "int"),
             Column("paired_t", "t", "number"),
         ],
         rows=list(rows), sort_key="difference_pp",
+    )
+
+
+def _amplitude_table(buckets: Sequence[dict[str, Any]], window: int, target: str) -> Table:
+    return Table(
+        key="amplitude",
+        title=f"按信号日振幅分层（{window} 日 / {target}）",
+        hint="同一振幅档内比较条件与基准；条件选出来的股票本来就更波动，不分层会把波动率当成优势",
+        columns=[
+            Column("bucket", "振幅", "text"),
+            Column("signal_n", "条件样本", "int"),
+            Column("control_n", "基准样本", "int"),
+            Column("signal_rate", "条件达成率", "percent"),
+            Column("control_rate", "基准达成率", "percent"),
+            Column("diff_pp", "差", "pp"),
+        ],
+        rows=list(buckets), sort_key="diff_pp",
     )
 
 
@@ -1032,7 +1139,9 @@ def load_events(conn: sqlite3.Connection, is_control: bool = False) -> tuple[lis
 
 def build_from_events(meta: dict[str, Any], signal_events: Sequence[Event],
                       control_events: "Sequence[Event] | dict[int, dict[str, Any]]",
-                      duplicates: int = 0) -> tuple[StandardReport, dict[str, Any]]:
+                      duplicates: int = 0,
+                      adjusted: dict[int, dict[float, dict[str, Any]]] | None = None,
+                      ) -> tuple[StandardReport, dict[str, Any]]:
     """纯函数：事件 → 统一报告 + 产物数据（写文件由调用方做）。
 
     ``control_events`` 可以是事件列表（测试/小样本），也可以是
@@ -1041,6 +1150,10 @@ def build_from_events(meta: dict[str, Any], signal_events: Sequence[Event],
     summary = window_summary(signal_events)
     baseline = baseline_comparison(signal_events, control_events)
     target_rows = target_comparison(signal_events, control_events)
+    if adjusted:
+        for row in target_rows:
+            info = (adjusted.get(int(row["window"])) or {}).get(float(row["target_pct"]) / 100.0) or {}
+            row["adjusted_pp"] = info.get("adjusted_pp")
     coverage = coverage_summary(date_summary(signal_events))
     control_list = [] if isinstance(control_events, dict) else control_events
     control_rows = (sum(int(bucket.get("n") or 0) for bucket in control_events.values())
@@ -1067,6 +1180,14 @@ def build_from_events(meta: dict[str, Any], signal_events: Sequence[Event],
     if problems:
         notes.append("自检异常：" + "；".join(problems[:5]))
 
+    best_row = max(target_rows, key=lambda row: row["difference_pp"]) if target_rows else None
+    amp_table = None
+    if adjusted and best_row:
+        info = ((adjusted.get(int(best_row["window"])) or {})
+                .get(float(best_row["target_pct"]) / 100.0) or {})
+        if info.get("buckets"):
+            amp_table = _amplitude_table(info["buckets"], int(best_row["window"]), str(best_row["target"]))
+
     tables = [
         _summary_table(summary),
         _target_table(target_rows),
@@ -1076,6 +1197,8 @@ def build_from_events(meta: dict[str, Any], signal_events: Sequence[Event],
         _stock_table(stocks),
         _quality_table(quality),
     ]
+    if amp_table is not None:
+        tables.insert(2, amp_table)
     limited: list[Table] = []
     for table in tables:
         rows, total = cap_rows(table.rows, 300 if table.key == "coverage" else 200)
@@ -1169,7 +1292,8 @@ def build(conn: sqlite3.Connection, meta: dict[str, Any]) -> StandardReport:
     signal_events, duplicates = load_events(conn, is_control=False)
     # 对照组只按 SQL 聚合：全历史任务有几十万条，读成对象会白占几百 MB
     control_aggregates = load_control_aggregates(conn)
-    report, payload = build_from_events(meta, signal_events, control_aggregates, duplicates)
+    adjusted = amplitude_adjusted(conn)
+    report, payload = build_from_events(meta, signal_events, control_aggregates, duplicates, adjusted)
     # 产物必须存在才能给「下载」按钮；跑完时 runner 已写好，这里只补文件大小
     directory = Path(str(meta.get("_artifacts_dir") or ""))
     if directory.is_dir():
