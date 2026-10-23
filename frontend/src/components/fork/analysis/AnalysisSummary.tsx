@@ -16,6 +16,8 @@ export const ANALYSIS_SUMMARY_TEXTS_ZH = {
     `这个条件有用：最佳持有 ${horizon} 个交易日，胜率 ${rate}%，显著高于同期随机买入，样本 ${sample} 条。`,
   noEdge: (horizon: number, excess: string) =>
     `没有优势：最好的周期（${horizon} 日）相对随机买入只有 ${excess}pp，建议重新设计条件。`,
+  noEdgeHonest: (horizon: number, low: string, high: string) =>
+    `没有优势：${horizon} 日的日均超额区间 ${low} 到 ${high}pp（95%，已修正重叠样本）跨 0，可以按「没用」处理。`,
   worse: (horizon: number, rate: string, excess: string) =>
     `比随机买入还差：${horizon} 日胜率 ${rate}%，低 ${excess}pp 且统计显著。这个条件要重新设计。`,
   notSignificant: (z: string) => `差异不显著（z=${z}）：看着高一点，但统计上不能确认，不能据此下结论。`,
@@ -108,7 +110,15 @@ export function AnalysisVerdictCard({ report }: { report: AnalysisReport }) {
       fmt(Math.abs(Number(verdict.worst_excess_pp ?? 0))),
     )
   } else if (verdict.reason === 'no_edge' && verdict.best_horizon !== null) {
-    text = T.noEdge(verdict.best_horizon, signed(verdict.best_excess_pp))
+    const honest = verdict.honest
+    text =
+      honest && honest.primary_ci_low_pp !== null && honest.primary_ci_low_pp !== undefined
+        ? T.noEdgeHonest(
+            honest.primary_horizon ?? verdict.best_horizon,
+            fmt(honest.primary_ci_low_pp),
+            fmt(honest.primary_ci_high_pp),
+          )
+        : T.noEdge(verdict.best_horizon, signed(verdict.best_excess_pp))
   } else if (verdict.reason === 'not_significant') {
     const honest = verdict.honest
     text =
