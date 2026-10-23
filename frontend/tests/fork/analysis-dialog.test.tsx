@@ -461,18 +461,38 @@ describe('AnalysisDialog', () => {
     expect(document.querySelector('[data-fork-analysis-validate-days]')).toBeTruthy()
   })
 
-  it('选方法 2：隐藏验证天数、显示固定窗口、创建请求带 method', async () => {
+  it('选方法 2：同一个输入框改成不可编辑（35），不再换控件、不跳版', async () => {
     mocks.create.mockResolvedValue(runMeta())
     renderDialog()
     const user = userEvent.setup()
     await screen.findByText('创建数据分析任务')
+
+    // 方法 1：可编辑，默认 30，提示「向未来看几个交易日」
+    const editInput = document.querySelector('[data-fork-analysis-validate-days]') as HTMLInputElement
+    expect(editInput.disabled).toBe(false)
+    expect(editInput.value).toBe('30')
+    expect(document.querySelector('[data-fork-analysis-validate-row]')?.getAttribute('data-fork-analysis-validate-row')).toBe('edit')
+    expect(document.querySelector('[data-fork-analysis-validate-hint]')?.textContent).toBe('向未来看几个交易日')
+    const editClass = editInput.className
+
     await user.click(document.querySelector('[data-fork-analysis-method]') as HTMLElement)
     const option = await screen.findByRole('option', { name: /统计分析方法 2/ })
     await user.click(option)
-    // 方法 2 的窗口是固定的，不再显示验证天数输入框
-    await waitFor(() => expect(document.querySelector('[data-fork-analysis-fixed-window]')).toBeTruthy())
-    expect(document.querySelector('[data-fork-analysis-validate-days]')).toBeNull()
-    expect(document.querySelector('[data-fork-analysis-fixed-window]')?.textContent).toContain('35')
+
+    // 方法 2：还是那一个输入框，值固定 35、不可编辑，提示说明固定窗口
+    await waitFor(() =>
+      expect(document.querySelector('[data-fork-analysis-validate-row]')?.getAttribute('data-fork-analysis-validate-row')).toBe('fixed'),
+    )
+    const fixedInput = document.querySelector('[data-fork-analysis-validate-days]') as HTMLInputElement
+    expect(fixedInput).toBeTruthy()
+    expect(fixedInput.value).toBe('35')
+    expect(fixedInput.disabled).toBe(true)
+    expect(fixedInput.readOnly).toBe(true)
+    // 尺寸类与可编辑态完全一致（切换方法不会引起 UI 跳动）
+    expect(fixedInput.className).toBe(`${editClass} cursor-not-allowed opacity-70`)
+    expect(document.querySelector('[data-fork-analysis-validate-hint]')?.textContent)
+      .toBe('该方法固定使用 35 个交易日窗口')
+
     // 预估也带上了方法（后端按方法的 forward_days 夹结束日）
     await waitFor(() =>
       expect(mocks.preview.mock.calls.at(-1)?.[0].method).toBe('stat_v2'),
