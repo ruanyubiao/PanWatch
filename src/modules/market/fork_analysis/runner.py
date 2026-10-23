@@ -97,6 +97,7 @@ def preview(payload: AnalysisCreate) -> dict[str, Any]:
                 f"开始日期晚于可验证的结束日期（{max_end.isoformat()}）"
             )
         calendar = forward.trading_calendar(conn, payload.start_date, end)
+        version = forward.data_version(conn)
     finally:
         conn.close()
     if not calendar:
@@ -115,6 +116,7 @@ def preview(payload: AnalysisCreate) -> dict[str, Any]:
         "markets": list(request.markets),
         "include_st": bool(request.include_st),
         "sample_size": int(payload.sample_size),
+        "data_version": version,
     }
 
 
@@ -136,8 +138,15 @@ def create(payload: AnalysisCreate) -> dict[str, Any]:
         "end_date_requested": (payload.end_date or None) and payload.end_date.isoformat(),
         "validate_days": info["validate_days"],
         "horizons": info["horizons"],
-        # 口径版本：v2 = 验证天数可调 + 信号日快照分组（2026-10-22 第二次改版）
-        "caliber": "v2",
+        # 口径版本：v3 = 可执行口径（次日开盘+成本）+ 市值配比对照 + 数据质量分层（2026-10-23）
+        "caliber": "v3",
+        "caliber_detail": {
+            "exec_cost": forward.EXEC_COST,
+            "suspend_cap": forward.SUSPEND_CAP,
+            "control_matched": True,
+        },
+        # 数据版本戳：两次结果不同时，能分清是条件变了还是数据变了
+        "data_version": info.get("data_version") or {},
         "max_end_date": info["max_end_date"],
         "markets": info["markets"],
         "include_st": info["include_st"],
@@ -148,12 +157,14 @@ def create(payload: AnalysisCreate) -> dict[str, Any]:
         "hits": 0,
         "control": 0,
         "failures": 0,
+        "unverifiable": 0,
         "progress": {
             "days_total": info["days"],
             "days_done": 0,
             "hits": 0,
             "control": 0,
             "failures": 0,
+            "unverifiable": 0,
             "avg_ms": 0,
             "elapsed_s": 0,
             "eta_s": None,
@@ -193,12 +204,15 @@ def _forward_dates(calendar: list[_dt.date], index: dict[_dt.date, int], d0: _dt
 
 def _rows_for(
     items: list[dict[str, Any]],
-    bars: dict[str, list[tuple[_dt.date, float, float, float]]],
+    bars: dict[str, list[tuple]],
+    missing: dict[str, int],
     fwd_dates: list[_dt.date],
     d0: _dt.date,
     is_control: int,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], int]:
+    """把命中/对照清单 + 行情算成待入库的行；返回 ``(rows, 不可验证数)``。"""
     rows: list[dict[str, Any]] = []
+    unverifiable = 0
     for item in items:
         code = str(item.get("code") or item.get("c") or "")
         symbol = str(item.get("symbol") or item.get("s") or "")
@@ -206,9 +220,12 @@ def _rows_for(
         if not series or series[0][0] != d0:
             # d0 当天没有有效 K 线：没有基准价，这条不算（宁缺毋滥）
             continue
-        result = forward.build_forward(series, fwd_dates)
+        result = forward.build_forward(series, fwd_dates, forward.limit_pct(code, d0))
         if result is None:
             continue
+        adj_missing = int(missing.get(symbol, 0))
+        if adj_missing or result.verif == 0:
+            unverifiable += 1
         row: dict[str, Any] = {
             "d0": d0.isoformat(),
             "code": code,
@@ -218,13 +235,21 @@ def _rows_for(
             "is_control": int(is_control),
             "d0_close": round(result.d0_close, 4),
             "avail": int(result.avail),
+            "entry_open": result.entry_open,
+            "entry_days": int(result.entry_days),
+            "verif": 0 if adj_missing else int(result.verif),
+            "stale_days": int(result.stale_days),
+            "unfillable": 1 if result.unfillable else 0,
+            "adj_missing": adj_missing,
         }
         for index, value in enumerate(result.returns, start=1):
             row[f"r{index}"] = value
+        for index, value in enumerate(result.exec_returns, start=1):
+            row[f"x{index}"] = value
         for index, horizon in enumerate(HORIZONS):
             row[f"t{horizon}"] = result.touches[index] if index < len(result.touches) else None
         rows.append(row)
-    return rows
+    return rows, unverifiable
 
 
 def _loop(preset_name: str, run_id: str) -> None:
@@ -247,6 +272,7 @@ def _loop(preset_name: str, run_id: str) -> None:
         hits_total = int(meta.get("hits") or 0)
         control_total = int(meta.get("control") or 0)
         failures = int(meta.get("failures") or 0)
+        unverifiable_total = int(meta.get("unverifiable") or 0)
         done_count = len([day for day in days if day.isoformat() in done])
         sample_size = int(meta.get("sample_size") or 0)
         recent = list((meta.get("progress") or {}).get("recent_days") or [])
@@ -259,13 +285,16 @@ def _loop(preset_name: str, run_id: str) -> None:
                 continue
             day_started = time.perf_counter()
             try:
+                screen_started = time.perf_counter()
                 response = run_screen(request, asof=d0)
                 items = list(response.get("items") or [])
+                screen_ms = int((time.perf_counter() - screen_started) * 1000)
+                forward_started = time.perf_counter()
                 fwd_dates = _forward_dates(calendar, index, d0)
                 last_day = fwd_dates[-1] if fwd_dates else d0
                 symbols = [str(item.get("s") or item.get("symbol") or "") for item in items]
-                bars = forward.fetch_bars(conn, d0, symbols, last_day) if symbols else {}
-                rows = _rows_for(items, bars, fwd_dates, d0, 0)
+                bars, missing = forward.fetch_bars(conn, d0, symbols, last_day) if symbols else ({}, {})
+                rows, unverifiable = _rows_for(items, bars, missing, fwd_dates, d0, 0)
                 # 信号当天的横截面（分组统计用）：一次查完当天命中的全部股票
                 if rows:
                     snapshots = forward.fetch_snapshots(conn, d0, [row["code"] for row in rows])
@@ -279,23 +308,38 @@ def _loop(preset_name: str, run_id: str) -> None:
                         row["crowd"] = crowd
 
                 control_rows: list[dict[str, Any]] = []
+                control_unverifiable = 0
                 if sample_size > 0:
-                    controls = forward.control_sample(
-                        conn, d0, sample_size, request.markets, bool(request.include_st)
+                    # 对照组按命中股票的市值档配比抽，并排除命中股票自己
+                    controls = forward.control_sample_matched(
+                        conn, d0, sample_size, request.markets, bool(request.include_st),
+                        hit_mcaps=[row.get("mcap") for row in rows],
+                        exclude=[row["code"] for row in rows],
                     )
                     control_symbols = [item["symbol"] for item in controls]
-                    control_bars = (
-                        forward.fetch_bars(conn, d0, control_symbols, last_day) if control_symbols else {}
+                    control_bars, control_missing = (
+                        forward.fetch_bars(conn, d0, control_symbols, last_day) if control_symbols else ({}, {})
                     )
-                    control_rows = _rows_for(controls, control_bars, fwd_dates, d0, 1)
+                    control_rows, control_unverifiable = _rows_for(
+                        controls, control_bars, control_missing, fwd_dates, d0, 1
+                    )
 
+                coverage = forward.day_coverage(conn, d0)
                 store.insert_signals(db, rows + control_rows)
                 elapsed_ms = int((time.perf_counter() - day_started) * 1000)
-                store.record_day(db, d0.isoformat(), len(rows), len(control_rows), elapsed_ms)
+                forward_ms = int((time.perf_counter() - forward_started) * 1000)
+                store.record_day(
+                    db, d0.isoformat(), len(rows), len(control_rows), elapsed_ms,
+                    coverage=coverage,
+                    usable=len(rows) - unverifiable,
+                    screen_ms=screen_ms,
+                    forward_ms=forward_ms,
+                )
                 done.add(d0.isoformat())
                 done_count += 1
                 hits_total += len(rows)
                 control_total += len(control_rows)
+                unverifiable_total += unverifiable + control_unverifiable
                 consecutive_errors = 0
                 recent = ([{"d0": d0.isoformat(), "hits": len(rows), "control": len(control_rows),
                             "elapsed_ms": elapsed_ms}] + recent)[:20]
@@ -309,12 +353,14 @@ def _loop(preset_name: str, run_id: str) -> None:
                     hits=hits_total,
                     control=control_total,
                     failures=failures,
+                    unverifiable=unverifiable_total,
                     progress={
                         "days_total": len(days),
                         "days_done": done_count,
                         "hits": hits_total,
                         "control": control_total,
                         "failures": failures,
+                        "unverifiable": unverifiable_total,
                         "avg_ms": int(avg_ms),
                         "elapsed_s": int(elapsed_s),
                         "eta_s": int(avg_ms * remaining / 1000),
@@ -340,6 +386,7 @@ def _loop(preset_name: str, run_id: str) -> None:
             hits=hits_total,
             control=control_total,
             failures=failures,
+            unverifiable=unverifiable_total,
             finished_at=store._now(),
             elapsed_s=int(elapsed_s),
         )
