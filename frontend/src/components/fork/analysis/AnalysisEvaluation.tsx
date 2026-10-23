@@ -65,6 +65,7 @@ export const ANALYSIS_EVALUATION_TEXTS_ZH = {
   attributionAdjusted: '控制后超额',
   attributionExplained: '被这些变量解释掉',
   attributionFeature: '主要解释变量（每 1 个标准差的边际贡献）',
+  attributionSignal: (z: string, p: string) => `条件自身（控制后）z=${z} · p=${p}`,
   attributionHead: { name: '变量', pp: '边际(pp)', z: 'z', p: 'p' },
   attributionUnavailable: '样本不足或缺少横截面字段，无法归因',
   heterogeneityTitle: '年度异质性',
@@ -277,6 +278,11 @@ export function AnalysisEvaluation({ report, runId }: { report: AnalysisReport; 
               <span className="text-muted-foreground">
                 {T.attributionExplained} {fmt(attribution.explained_pct, 1)}%
               </span>
+              {attribution.signal_z != null && (
+                <span className="text-muted-foreground">
+                  {T.attributionSignal(fmt(attribution.signal_z), fmt(attribution.signal_p, 3))}
+                </span>
+              )}
             </div>
             {(attribution.features ?? []).length > 0 && (
               <table className="w-full max-w-[520px] text-[11px]">
