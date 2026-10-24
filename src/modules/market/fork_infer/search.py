@@ -1,0 +1,616 @@
+"""条件推理的主循环：在基础条件之上反复「改一点 → 跑一轮训练段 → 记分 → 留优」。
+
+搜索策略（贪心 + 精英池）
+------------------------
+1. 先把基础条件本身跑一遍，作为基准分。
+2. 之后每一次「调整优化」：从精英池里挑一个父代（少部分直接拿基础条件），
+   施加一个变异算子（补条件 / 调参数 / 去条件），得到一个**新**变体。
+3. 用训练段的抽样交易日评估它，按用户选的统计口径打分；达到门槛就进精英池。
+4. 全部次数跑完后，取精英池里最好的几个，做两件事：
+   * 在**完整训练段**上重算（抽样只用于排序，给人看的数字必须用全量）
+   * 在**验证段**上验算（这一段搜索全程没看过）
+   两边都站得住的条件才进「可保存」清单。
+
+为什么搜索用抽样交易日
+--------------------
+一个变体跑 485 个交易日要 70 秒以上，100 个变体就是 2 小时。均匀抽 120 天
+（所有变体用同一批天，配对比较）已足够给变体排序 —— 排序靠的是**相对**差异，
+不是绝对精度；最后入选的少数几个再用全量重算。这是搜索与出报告的分工。
+
+可停止 / 可暂停
+--------------
+* 停止：写 ``stop`` 文件，循环在当前变体边界退出，已跑完的结果保留，仍然会做
+  最终验算（用已经找到的精英）。
+* 暂停：写 ``pause`` 文件，循环原地等待（每秒看一次），解除后继续。
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import logging
+import random
+import threading
+import time
+from typing import Any, Callable, Optional, Sequence
+
+from ..api import fork_market
+from ..fork_analysis import forward, methods
+from ..fork_screen import presets
+from ..fork_screen.evaluator import compile_rule, required_bars_of_group
+from ..fork_screen.models import ScreenRequest
+from . import space, store
+from .data import load_calendar, load_dataset, load_universe
+from .engine import Engine, score_of
+from .models import (
+    ELITE_SIZE,
+    FINALISTS,
+    INFER_HORIZONS,
+    MAX_FORWARD,
+    MIN_DAYS_WITH_HITS,
+    MIN_SIGNALS,
+    SEARCH_DAYS,
+    InferCreate,
+)
+
+logger = logging.getLogger(__name__)
+
+#: 同一进程同时只跑一个推理任务（4 核机器，跑两个只会互相拖慢）
+_RUNNING: dict[str, threading.Thread] = {}
+_LOCK = threading.Lock()
+
+#: 训练段之前多读多少个交易日的行情（给均线 / 创新高预热）
+WARMUP_DAYS = 130
+
+#: 连续多少次「变异失败 / 重复 / 不合法」就提前结束（说明空间搜得差不多了）
+MAX_MISSES = 40
+
+#: 云端实测的单日评估耗时（秒），用于创建前的耗时预估
+SECONDS_PER_DAY = 0.16
+
+
+class InferBusy(RuntimeError):
+    """已有推理任务在跑。"""
+
+
+class InferParamsInvalid(ValueError):
+    """参数不合法。"""
+
+
+def is_running(run_id: str) -> bool:
+    thread = _RUNNING.get(run_id)
+    return bool(thread and thread.is_alive())
+
+
+def any_running() -> Optional[str]:
+    for run_id, thread in list(_RUNNING.items()):
+        if thread.is_alive():
+            return run_id
+    return None
+
+
+def base_request_of(preset_name: str, markets: Optional[Sequence[str]],
+                    include_st: Optional[bool]) -> ScreenRequest:
+    record = presets.load(preset_name)
+    raw = record.get("request")
+    if not isinstance(raw, dict):
+        raise InferParamsInvalid(f"条件「{preset_name}」文件里没有可用的请求")
+    request = ScreenRequest.model_validate(raw)
+    update: dict[str, Any] = {}
+    if markets:
+        update["markets"] = list(markets)
+    if include_st is not None:
+        update["include_st"] = bool(include_st)
+    return request.model_copy(update=update) if update else request
+
+
+def base_summary(request: ScreenRequest) -> str:
+    """基础条件的一句话描述（结果表里给人看）。"""
+    parts: list[str] = []
+
+    def walk(node: Any) -> None:
+        if getattr(node, "type", "") == "condition":
+            parts.append(space.describe_condition(node.name, dict(node.params or {})))
+        else:
+            for child in getattr(node, "children", []) or []:
+                walk(child)
+
+    walk(request.rule)
+    return " 且 ".join(parts) if parts else "（无条件）"
+
+
+def two_segment_days(payload: InferCreate) -> dict[str, Any]:
+    """把训练段 / 验证段落成真实交易日，并给出可验证的结束日上限。"""
+    conn = fork_market._connect()
+    try:
+        latest = forward.latest_trade_date(conn)
+        if latest is None:
+            raise InferParamsInvalid("行情库里没有任何数据")
+        # 前瞻行情不够的日期验算不出来：统一夹到「最新日往前 MAX_FORWARD 个交易日」
+        max_verifiable = forward.shift_back(conn, latest, MAX_FORWARD)
+        train_end = min(payload.train_end, max_verifiable)
+        valid_end = min(payload.valid_end or max_verifiable, max_verifiable)
+        if payload.train_start > train_end:
+            raise InferParamsInvalid(
+                f"训练段开始日 {payload.train_start} 晚于可验证的结束日 {max_verifiable}")
+        if payload.valid_start > valid_end:
+            raise InferParamsInvalid(
+                f"验证段开始日 {payload.valid_start} 晚于可验证的结束日 {max_verifiable}")
+        if payload.valid_start <= train_end:
+            raise InferParamsInvalid("验证段必须晚于训练段（否则等于拿训练集当测试集）")
+        train_days = forward.trading_calendar(conn, payload.train_start, train_end)
+        valid_days = forward.trading_calendar(conn, payload.valid_start, valid_end)
+        version = forward.data_version(conn)
+    finally:
+        conn.close()
+    if not train_days:
+        raise InferParamsInvalid("训练段内没有任何交易日")
+    if not valid_days:
+        raise InferParamsInvalid("验证段内没有任何交易日")
+    return {
+        "latest_trade_date": latest.isoformat(),
+        "max_verifiable": max_verifiable.isoformat(),
+        "train_days": train_days,
+        "valid_days": valid_days,
+        "data_version": version,
+    }
+
+
+def preview(payload: InferCreate) -> dict[str, Any]:
+    """创建前的预估：两段各有多少交易日、要读多少行情、大概跑多久。"""
+    method_id = methods.normalize(payload.method)
+    spec = methods.spec(method_id)
+    info = two_segment_days(payload)
+    request = base_request_of(payload.preset, payload.markets, payload.include_st)
+    base_k = max(1, required_bars_of_group(compile_rule(request), int(request.trading_days)))
+    search_days = min(SEARCH_DAYS, len(info["train_days"]))
+    estimate = int(
+        SECONDS_PER_DAY * search_days * payload.iterations
+        + SECONDS_PER_DAY * (len(info["train_days"]) + len(info["valid_days"])) * FINALISTS
+        + 90  # 读行情的一次性开销
+    )
+    return {
+        "method": method_id,
+        "method_name": spec.name,
+        "train_days": len(info["train_days"]),
+        "valid_days": len(info["valid_days"]),
+        "train_first": str(info["train_days"][0]),
+        "train_last": str(info["train_days"][-1]),
+        "valid_first": str(info["valid_days"][0]),
+        "valid_last": str(info["valid_days"][-1]),
+        "search_days": search_days,
+        "iterations": int(payload.iterations),
+        "max_verifiable": info["max_verifiable"],
+        "latest_trade_date": info["latest_trade_date"],
+        "latest_trade_date": info["latest_trade_date"],
+        "base_summary": base_summary(request),
+        "base_trading_days": int(request.trading_days),
+        "base_bars": int(base_k),
+        "estimate_seconds": estimate,
+        "horizons": list(INFER_HORIZONS),
+        "data_version": info.get("data_version") or {},
+    }
+
+
+def create(payload: InferCreate) -> dict[str, Any]:
+    """建任务目录 + 起后台线程。"""
+    info = preview(payload)
+    busy = any_running()
+    if busy:
+        raise InferBusy(f"已有条件推理任务在跑（{busy}），等它结束或先停止")
+    run_id = store.new_run_id()
+    request = base_request_of(payload.preset, payload.markets, payload.include_st)
+    meta = {
+        "run_id": run_id,
+        "kind": "infer",
+        "created_at": store._now(),
+        "status": store.STATUS_PENDING,
+        "preset": presets.normalize_name(payload.preset),
+        "base_summary": info["base_summary"],
+        "base_rule": request.model_dump(mode="json")["rule"],
+        "base_request": request.model_dump(mode="json"),
+        "method": info["method"],
+        "method_name": info["method_name"],
+        "train_start": str(payload.train_start),
+        "train_end": info["train_last"],
+        "valid_start": str(payload.valid_start),
+        "valid_end": info["valid_last"],
+        "train_days": [str(day) for day in info["train_days"]],
+        "valid_days": [str(day) for day in info["valid_days"]],
+        "search_days": info["search_days"],
+        "iterations": info["iterations"],
+        "max_verifiable": info["max_verifiable"],
+        "latest_trade_date": info["latest_trade_date"],
+        "seed": int(payload.seed),
+        "horizons": info["horizons"],
+        "markets": list(request.markets),
+        "include_st": bool(request.include_st),
+        "estimate_seconds": info["estimate_seconds"],
+        "data_version": info.get("data_version") or {},
+        "progress": {
+            "phase": "pending",
+            "done_iterations": 0,
+            "iterations": info["iterations"],
+            "current": "",
+            "best_score": None,
+            "best_desc": "",
+            "elite": 0,
+            "elapsed_s": 0,
+            "eta_s": None,
+            "variants_evaluated": 0,
+            "load_progress": 0,
+            "load_label": "",
+        },
+        "error": None,
+    }
+    store.run_dir(run_id)
+    store.save_meta(run_id, meta)
+    start(run_id)
+    return store.load_meta(run_id)
+
+
+def start(run_id: str) -> None:
+    with _LOCK:
+        if is_running(run_id):
+            return
+        store.clear_stop(run_id)
+        thread = threading.Thread(target=_loop, args=(run_id,),
+                                  name=f"infer-{run_id}", daemon=True)
+        _RUNNING[run_id] = thread
+        thread.start()
+
+
+def pause(run_id: str) -> dict[str, Any]:
+    store.request_pause(run_id)
+    return store.patch_meta(run_id, status=store.STATUS_PAUSED)
+
+
+def resume(run_id: str) -> dict[str, Any]:
+    store.clear_pause(run_id)
+    meta = store.load_meta(run_id)
+    if meta.get("status") != store.STATUS_PAUSED:
+        return meta
+    if is_running(run_id):
+        return store.patch_meta(run_id, status=store.STATUS_RUNNING)
+    # 线程已经不在了（进程重启过）：起一个新的，从「已完成次数之后」继续
+    store.patch_meta(run_id, status=store.STATUS_PENDING)
+    start(run_id)
+    return store.load_meta(run_id)
+
+
+def stop(run_id: str) -> dict[str, Any]:
+    store.request_stop(run_id)
+    store.clear_pause(run_id)
+    return store.load_meta(run_id)
+
+
+# --------------------------------------------------------------------------- #
+# 主循环
+# --------------------------------------------------------------------------- #
+def _sample(days: list[_dt.date], limit: int) -> list[_dt.date]:
+    """均匀抽样（保持时间顺序），用于搜索阶段的排序。"""
+    if len(days) <= limit:
+        return list(days)
+    step = len(days) / float(limit)
+    return [days[int(index * step)] for index in range(limit)]
+
+
+class _Control:
+    """暂停 / 停止的收口点（只在这里读写 meta，别处不要重复判断）。"""
+
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        self._started = time.perf_counter()
+
+    def stop_requested(self) -> bool:
+        return store.stop_requested(self.run_id)
+
+    def wait_if_paused(self) -> bool:
+        """暂停中原地等待；返回 True 表示应该收工（停止）。"""
+        paused = False
+        while store.pause_requested(self.run_id) and not store.stop_requested(self.run_id):
+            if not paused:
+                paused = True
+                progress = dict(store.load_meta(self.run_id).get("progress") or {})
+                progress["phase"] = "paused"
+                store.patch_meta(self.run_id, status=store.STATUS_PAUSED, progress=progress)
+            time.sleep(1.0)
+        if paused and not store.stop_requested(self.run_id):
+            progress = dict(store.load_meta(self.run_id).get("progress") or {})
+            progress["phase"] = "searching"
+            store.patch_meta(self.run_id, status=store.STATUS_RUNNING, progress=progress)
+        return store.stop_requested(self.run_id)
+
+    def elapsed(self) -> int:
+        return int(time.perf_counter() - self._started)
+
+
+def _loop(run_id: str) -> None:
+    control = _Control(run_id)
+    meta = store.load_meta(run_id)
+    try:
+        store.patch_meta(run_id, status=store.STATUS_RUNNING,
+                         progress={**(meta.get("progress") or {}), "phase": "loading"})
+        request = base_request_of(meta["preset"], meta.get("markets"), meta.get("include_st"))
+        method_id = meta.get("method") or "stat_v3"
+        train_days = [_dt.date.fromisoformat(day) for day in meta["train_days"]]
+        valid_days = [_dt.date.fromisoformat(day) for day in meta["valid_days"]]
+        search = _sample(train_days, int(meta.get("search_days") or SEARCH_DAYS))
+        iterations = int(meta.get("iterations") or 0)
+        base_rule = meta["base_rule"]
+        summary = meta.get("base_summary") or "基础条件"
+
+        conn = fork_market._connect()
+        try:
+            universe = load_universe(conn, request.markets, request.include_st)
+            base_k = max(1, required_bars_of_group(compile_rule(request), int(request.trading_days)))
+            warm_need = max(WARMUP_DAYS, base_k)
+            warm = forward.trading_calendar(
+                conn, train_days[0] - _dt.timedelta(days=warm_need * 2 + 60), train_days[0])
+            world_start = warm[-(warm_need + 1)] if len(warm) > warm_need else train_days[0]
+            # 读到最后一天：最后一段信号还要向前看 31 个交易日才算得出涨幅，
+            # 只读到 valid_end 会让尾部的信号全部「不可验证」
+            world_end = _dt.date.fromisoformat(
+                meta.get("latest_trade_date") or str(max(valid_days[-1], train_days[-1])))
+            calendar = load_calendar(conn, world_start, world_end)
+
+            def load_progress(done: int, total: int) -> None:
+                progress = dict(store.load_meta(run_id).get("progress") or {})
+                progress["load_progress"] = round(done / max(1, total), 3)
+                progress["load_label"] = f"{done}/{total} 只股票"
+                store.patch_meta(run_id, progress=progress)
+
+            dataset = load_dataset(conn, universe, calendar, progress=load_progress,
+                                   should_stop=control.stop_requested)
+        finally:
+            conn.close()
+
+        engine = Engine(dataset, request)
+        store.patch_meta(run_id, progress={**(store.load_meta(run_id).get("progress") or {}),
+                                           "phase": "searching", "load_progress": 1.0})
+
+        indices = [index for index in (dataset.day_index(day) for day in search)
+                   if index is not None]
+        if not indices:
+            raise InferParamsInvalid("抽样后的交易日为空（行情数据可能没覆盖训练段）")
+
+        rng = random.Random(int(meta.get("seed") or 0))
+        seen = {space.canonical(space.make_rule(base_rule, []))}
+        elite: list[dict[str, Any]] = []
+        evaluated = 0
+        done = 0
+        misses = 0
+        last_seconds = 0.0
+
+        def run_variant(rule: dict[str, Any], filters: list[dict[str, Any]],
+                        parent: Optional[dict[str, Any]], operator: str,
+                        trial: bool = True) -> Optional[dict[str, Any]]:
+            nonlocal evaluated, last_seconds
+            issues = engine.validate(rule)
+            if issues:
+                return None
+            began = time.perf_counter()
+            metrics = engine.evaluate(rule, indices, should_stop=control.stop_requested)
+            last_seconds = time.perf_counter() - began
+            evaluated += 1
+            score, horizon = score_of(metrics, method_id)
+            row = {
+                "index": evaluated,
+                "desc": space.describe(summary, filters),
+                "filters": [{"name": item["name"], "params": dict(item.get("params") or {})}
+                            for item in filters],
+                "operator": operator,
+                "parent": parent.get("index") if parent else None,
+                "rule": rule,
+                "score": score,
+                "best_horizon": horizon,
+                "signals": metrics.signals(),
+                "days_with_hits": metrics.days_with_hits(),
+                "days": metrics.days,
+                "evaluated_at": store._now(),
+                "seconds": round(last_seconds, 1),
+                "rows": metrics.table(),
+                "trial": trial,
+            }
+            store.append_result(run_id, row)
+            remaining = max(0, iterations - done)
+            store.patch_meta(run_id, done_iterations=done, progress={
+                "phase": "searching",
+                "done_iterations": done,
+                "iterations": iterations,
+                "current": row["desc"],
+                "current_score": score,
+                "current_signals": metrics.signals(),
+                "best_score": elite[0]["score"] if elite else None,
+                "best_desc": elite[0]["desc"] if elite else "",
+                "elite": len(elite),
+                "elapsed_s": control.elapsed(),
+                "eta_s": int(last_seconds * remaining) if last_seconds else None,
+                "variants_evaluated": evaluated,
+                "load_progress": 1.0,
+                "load_label": f"{len(universe)} 只股票",
+            })
+            return row
+
+        def consider(row: Optional[dict[str, Any]]) -> None:
+            if not row or row.get("score") is None:
+                return
+            elite.append(row)
+            elite.sort(key=lambda item: float(item.get("score") or -999), reverse=True)
+            while len(elite) > ELITE_SIZE:
+                elite.pop()
+
+        # ---- 第 0 步：基础条件本身（不计入优化次数，只做基准）
+        consider(run_variant(space.make_rule(base_rule, []), [], None, "base"))
+
+        # ---- 主循环：每一次循环 = 一次「调整优化」
+        while done < iterations:
+            if control.wait_if_paused():
+                break
+            parent: Optional[dict[str, Any]] = None
+            if elite and rng.random() < 0.85:
+                # 偏向排名靠前的父代（平方分布），但不是只盯着第一名
+                pick = int((rng.random() ** 2) * len(elite))
+                parent = elite[min(pick, len(elite) - 1)]
+            filters = list(parent["filters"]) if parent else []
+            tree = base_rule
+            operator = rng.choices(("add", "tune", "tree", "remove"),
+                                   weights=(0.35, 0.30, 0.25, 0.10))[0]
+            if operator == "add":
+                candidate = space.add_filter(filters, rng)
+                if candidate is None:
+                    operator = "tune"
+                else:
+                    filters = candidate
+            if operator == "tune":
+                candidate = space.jitter_filters(filters, rng)
+                if candidate is None:
+                    operator = "tree"
+                else:
+                    filters = candidate
+            if operator == "tree":
+                tree, key = space.jitter_tree(base_rule, rng)
+                if key is None:
+                    misses += 1
+                    if misses >= MAX_MISSES:
+                        break
+                    continue
+            if operator == "remove":
+                candidate = space.remove_filter(filters, rng)
+                if candidate is None:
+                    misses += 1
+                    if misses >= MAX_MISSES:
+                        break
+                    continue
+                filters = candidate
+            rule = space.make_rule(tree, filters)
+            canonical = space.canonical(rule)
+            if canonical in seen:
+                misses += 1
+                if misses >= MAX_MISSES:
+                    break
+                continue
+            seen.add(canonical)
+            row = run_variant(rule, filters, parent, operator)
+            if row is None:
+                misses += 1
+                if misses >= MAX_MISSES:
+                    break
+                continue
+            misses = 0
+            done += 1
+            consider(row)
+
+        # ---- 最终验算：完整训练段 + 验证段
+        finals: list[dict[str, Any]] = []
+        if elite:
+            store.patch_meta(run_id, progress={
+                **(store.load_meta(run_id).get("progress") or {}),
+                "phase": "verifying", "current": "最终验算（完整训练段 + 验证段）",
+            })
+            train_all = [index for index in (dataset.day_index(day) for day in train_days)
+                         if index is not None]
+            valid_all = [index for index in (dataset.day_index(day) for day in valid_days)
+                         if index is not None]
+            min_valid_signals = max(100, MIN_SIGNALS // 3)
+            min_valid_days = max(10, MIN_DAYS_WITH_HITS // 2)
+            for rank, row in enumerate(elite[:FINALISTS], start=1):
+                if control.stop_requested():
+                    break
+                try:
+                    train_metrics = engine.evaluate(row["rule"], train_all,
+                                                    should_stop=control.stop_requested)
+                    valid_metrics = engine.evaluate(row["rule"], valid_all,
+                                                    should_stop=control.stop_requested)
+                except InterruptedError:
+                    break
+                train_score, train_horizon = score_of(train_metrics, method_id)
+                valid_score, valid_horizon = score_of(valid_metrics, method_id)
+                passed = bool(
+                    train_score is not None and valid_score is not None
+                    and train_score > 0 and valid_score > 0
+                    and valid_metrics.signals() >= min_valid_signals
+                    and valid_metrics.days_with_hits() >= min_valid_days
+                )
+                finals.append({
+                    "rank": rank,
+                    "desc": row["desc"],
+                    "rule": row["rule"],
+                    "filters": row["filters"],
+                    "operator": row["operator"],
+                    "trial_score": row.get("score"),
+                    "trial_horizon": row.get("best_horizon"),
+                    "train_score": train_score,
+                    "train_horizon": train_horizon,
+                    "train_signals": train_metrics.signals(),
+                    "train_days": train_metrics.days,
+                    "valid_score": valid_score,
+                    "valid_horizon": valid_horizon,
+                    "valid_signals": valid_metrics.signals(),
+                    "valid_days": valid_metrics.days,
+                    "passed": passed,
+                    "train_rows": train_metrics.table(),
+                    "valid_rows": valid_metrics.table(),
+                })
+        store.save_finalists(run_id, finals)
+
+        stopped = control.stop_requested()
+        store.patch_meta(run_id, status=store.STATUS_STOPPED if stopped else store.STATUS_DONE,
+                         done_iterations=done, progress={
+                             **(store.load_meta(run_id).get("progress") or {}),
+                             "phase": "finished",
+                             "elapsed_s": control.elapsed(),
+                             "eta_s": 0,
+                             "finalists": len(finals),
+                             "passed": sum(1 for item in finals if item["passed"]),
+                         })
+    except InterruptedError:
+        store.patch_meta(run_id, status=store.STATUS_STOPPED,
+                         progress={**(store.load_meta(run_id).get("progress") or {}),
+                                   "phase": "stopped"})
+    except Exception as exc:  # noqa: BLE001 - 任何异常都落进 meta，别让界面一直转圈
+        logger.exception("条件推理失败：%s", exc)
+        store.patch_meta(run_id, status=store.STATUS_FAILED, error=str(exc),
+                         progress={**(store.load_meta(run_id).get("progress") or {}),
+                                   "phase": "failed"})
+
+
+# --------------------------------------------------------------------------- #
+# 读结果 / 保存条件
+# --------------------------------------------------------------------------- #
+def results(run_id: str, limit: int = 50) -> dict[str, Any]:
+    rows = store.read_results(run_id)
+    ranked = [row for row in rows if row.get("score") is not None]
+    ranked.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    return {
+        "run_id": run_id,
+        "evaluated": len(rows),
+        "ranked": len(ranked),
+        "rows": ranked[:limit],
+        "finalists": store.read_finalists(run_id),
+    }
+
+
+def save_condition(run_id: str, index: int, name: Optional[str] = None) -> dict[str, Any]:
+    """把一个变体保存成「已保存条件」，之后可以直接拿去条件选股 / 数据分析。"""
+    meta = store.load_meta(run_id)
+    rule: Optional[dict[str, Any]] = None
+    for row in store.read_finalists(run_id):
+        if int(row.get("rank") or 0) == index:
+            rule = row.get("rule")
+            break
+    if rule is None:
+        for row in store.read_results(run_id):
+            if int(row.get("index") or 0) == index:
+                rule = row.get("rule")
+                break
+    if rule is None:
+        raise InferParamsInvalid(f"没有编号为 {index} 的变体")
+    base = meta.get("base_request") or {}
+    request = ScreenRequest.model_validate({
+        "trading_days": base.get("trading_days", 30),
+        "markets": base.get("markets", ["sh", "sz", "cyb", "kcb"]),
+        "include_st": bool(base.get("include_st", False)),
+        "rule": rule,
+    })
+    final_name = name or f"{meta.get('preset', 'xg')}_{index}"
+    return presets.save(final_name, request, overwrite=False)
