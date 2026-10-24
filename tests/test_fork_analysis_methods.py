@@ -47,13 +47,15 @@ def event(d0: str, code: str, buy: float, path: list[tuple[float, float]],
 # --------------------------------------------------------------------------- #
 # 注册表与契约
 # --------------------------------------------------------------------------- #
-def test_两个方法都注册且默认是方法1():
+def test_三个方法都注册且默认是方法1():
     specs = methods.list_specs()
-    assert [spec.id for spec in specs] == ["stat_v1", "stat_v2"]
+    assert [spec.id for spec in specs] == ["stat_v1", "stat_v2", "stat_v3"]
     assert methods.normalize(None) == "stat_v1"
     payload = methods.specs_payload()
     assert payload[0]["default"] is True
     assert payload[1]["forward_days"] == 35
+    assert payload[2]["forward_days"] == 30
+    assert payload[2]["windows"] == [5, 10, 20, 25, 30]
 
 
 def test_未知方法报错而不是静默降级():
