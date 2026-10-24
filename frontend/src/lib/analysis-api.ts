@@ -17,6 +17,29 @@ export interface AnalysisRunMeta {
   preset: string
   created_at: string
   status: AnalysisStatus
+  /** 任务类型：analysis = 条件评估，infer = 条件推理（历史记录里混排） */
+  kind?: 'analysis' | 'infer'
+  /** 推理段评分（0–100，跑完才有） */
+  score_train?: number | null
+  /** 测试段评分（0–100，跑完才有） */
+  score_test?: number | null
+  score_grade?: string | null
+  score_verdict?: { verdict?: string; score?: number | null; text?: string }
+  /** 两段时间（推理段 / 测试段） */
+  segments?: { kind: string; label: string; start: string; end: string; end_display?: string }[]
+  test_start_date?: string | null
+  test_end_date?: string | null
+  /** 条件推理任务沿用同一套字段名（历史记录混排时取这两段） */
+  train_start?: string
+  train_end?: string
+  valid_start?: string
+  valid_end?: string
+  train_days?: number | null
+  test_days?: number | null
+  iterations?: number
+  done_iterations?: number
+  successes?: number
+  exhausted?: boolean
   /** 统计分析方法（老任务是 stat_v1） */
   method?: string
   method_name?: string
@@ -471,7 +494,17 @@ export interface AnalysisPreview {
   first_day: string
   last_day: string
   latest_trade_date: string
+  /** 显示口径的结束日上限（可以填到最新交易日） */
   max_end_date: string
+  /** 实际分析的末日（结束日往前推验证天数） */
+  effective_end_date?: string
+  train_days?: number
+  test_days?: number
+  test_first_day?: string | null
+  test_last_day?: string | null
+  test_effective_end_date?: string | null
+  max_test_end_date?: string | null
+  segments?: { kind: string; label: string; start: string; end: string; end_display?: string }[]
   validate_days: number
   /** 方法需要多少个交易日的前瞻行情（方法 1 = 30，方法 2 = 35） */
   forward_days?: number
@@ -487,10 +520,18 @@ export interface AnalysisPreview {
 
 export interface AnalysisCreateBody {
   preset: string
-  /** 统计分析方法 id（默认 stat_v1；老调用方不传） */
+  /** 统计分析方法 id（只有 stat_v3，保留字段是为了兼容） */
   method?: string
   start_date: string
   end_date?: string | null
+  /** 测试段（可选）：只做验算，不参与任何挑选 */
+  test_start_date?: string | null
+  test_end_date?: string | null
+  /** 条件推理任务沿用同一套字段名（历史记录混排时取这两段） */
+  train_start?: string
+  train_end?: string
+  valid_start?: string
+  valid_end?: string
   validate_days?: number
   markets?: ScreenMarket[]
   include_st?: boolean
@@ -617,6 +658,15 @@ export async function createAnalysis(body: AnalysisCreateBody): Promise<Analysis
     timeoutMs: 30000,
   })
   return data.item
+}
+
+/** 历史记录：分析与条件推理混排，带两个评分 */
+export async function listAnalysisHistory(limit = 100): Promise<AnalysisRunMeta[]> {
+  const data = await fetchAPI<{ items: AnalysisRunMeta[] }>(
+    `/stocks/analysis/history?limit=${limit}`,
+    { timeoutMs: 20000 },
+  )
+  return data?.items ?? []
 }
 
 export async function listAnalysisRuns(preset?: string): Promise<AnalysisRunMeta[]> {

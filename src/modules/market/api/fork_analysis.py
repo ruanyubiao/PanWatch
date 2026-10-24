@@ -68,6 +68,14 @@ def _meta_view(preset_name: str, meta: dict[str, Any]) -> dict[str, Any]:
     view["running"] = running
     view["method"] = methods.method_of(meta)
     view["method_name"] = meta.get("method_name") or methods.spec(view["method"]).name
+    # 任务类型：分析 / 条件推理（历史记录里要分开显示）
+    view["kind"] = "analysis"
+    # 两个评分：推理段 + 测试段（跑完才有，跑的过程中是 None）
+    scores = meta.get("scores") or {}
+    view["score_train"] = (scores.get("train") or {}).get("score")
+    view["score_test"] = (scores.get("test") or {}).get("score")
+    view["score_grade"] = (scores.get("train") or {}).get("grade")
+    view["score_verdict"] = meta.get("score_verdict") or {}
     if str(view.get("status")) == store.STATUS_RUNNING and not running:
         view["status"] = "interrupted"
     try:
@@ -155,6 +163,53 @@ def resume_analysis_run(run_id: str) -> dict[str, Any]:
         return {"item": _meta_view(preset_name, meta)}
     runner.start(preset_name, run_id)
     return {"item": _meta_view(preset_name, store.load_meta(preset_name, run_id))}
+
+
+@router.get("/analysis/history")
+def analysis_history(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    """历史记录：**分析与条件推理混在一起**（用户 2026-10-24 第 6 条）。
+
+    两种任务的字段统一成同一套：``kind`` / ``preset`` / ``status`` / ``created_at`` /
+    ``score_train`` / ``score_test`` / ``hits`` / ``days_total``，界面一张表就能显示。
+    """
+    from ..fork_infer import search as infer_search
+    from ..fork_infer import store as infer_store
+
+    items: list[dict[str, Any]] = []
+    for meta in store.list_runs(None):
+        items.append(_meta_view(meta.get("preset") or "", meta))
+    try:
+        infer_search.reconcile()
+        for meta in infer_store.list_runs(limit):
+            view = dict(meta)
+            view.pop("train_days", None)
+            view.pop("valid_days", None)
+            alive = infer_search.is_running(str(meta.get("run_id") or ""))
+            status = str(meta.get("status") or "")
+            if status in ("running", "pending", "paused") and not alive:
+                status = "interrupted"
+            scores = meta.get("scores") or {}
+            items.append({
+                **view,
+                "kind": "infer",
+                "status": status,
+                "running": alive,
+                "score_train": (scores.get("train") or {}).get("score"),
+                "score_test": (scores.get("test") or {}).get("score"),
+                "score_grade": (scores.get("train") or {}).get("grade"),
+                "score_verdict": scores.get("verdict") or {},
+                "hits": int(meta.get("hits") or 0),
+                "days_total": int(meta.get("train_day_count") or 0)
+                              + int(meta.get("valid_day_count") or 0)
+                              or len(meta.get("train_days") or []) + len(meta.get("valid_days") or []),
+                "iterations": int(meta.get("iterations") or 0),
+                "done_iterations": int(meta.get("done_iterations") or 0),
+            })
+    except Exception:  # noqa: BLE001 - 推理任务读挂了不该让分析历史一起挂
+        logger.exception("读取条件推理历史失败")
+    items.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("run_id") or "")),
+               reverse=True)
+    return {"items": items[:limit]}
 
 
 @router.get("/analysis/runs/{run_id}/report")
