@@ -25,6 +25,10 @@ const mocks = vi.hoisted(() => ({
   report: vi.fn(),
   result: vi.fn(),
   methods: vi.fn(),
+  history: vi.fn(),
+  inferList: vi.fn(),
+  inferCreate: vi.fn(),
+  inferGet: vi.fn(),
   stocks: vi.fn(),
   signals: vi.fn(),
   download: vi.fn(),
@@ -43,6 +47,7 @@ vi.mock('@/lib/analysis-api', () => ({
   getAnalysisReport: mocks.report,
   getAnalysisResult: mocks.result,
   getAnalysisMethods: mocks.methods,
+  listAnalysisHistory: mocks.history,
   getAnalysisStocks: mocks.stocks,
   getAnalysisSignals: mocks.signals,
   downloadAnalysisExcel: mocks.download,
@@ -51,6 +56,19 @@ vi.mock('@/lib/analysis-api', () => ({
   deleteAnalysisRun: mocks.remove,
   recomputeAnalysisRun: vi.fn(),
   formatDuration: (seconds: number | null) => (seconds === null ? '—' : `${Math.round(seconds)} 秒`),
+}))
+
+vi.mock('@/lib/infer-api', () => ({
+  createInfer: mocks.inferCreate,
+  getInferRun: mocks.inferGet,
+  listInferRuns: mocks.inferList,
+  pauseInfer: vi.fn(),
+  resumeInfer: vi.fn(),
+  stopInfer: vi.fn(),
+  saveInferVariant: vi.fn(),
+  getInferResults: vi.fn(async () => ({ run_id: 'x', evaluated: 0, ranked: 0, rows: [], finalists: [] })),
+  formatInferDuration: (seconds: number | null) => (seconds == null ? '—' : `${Math.round(seconds)} 秒`),
+  INFER_POLL_MS: 2000,
 }))
 
 const presets: ScreenPreset[] = [
@@ -265,12 +283,19 @@ describe('AnalysisDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.listRuns.mockResolvedValue([])
+    mocks.history.mockResolvedValue([])
+    mocks.inferList.mockResolvedValue([])
     mocks.preview.mockResolvedValue({
       days: 1650,
       first_day: '2020-01-02',
       last_day: '2026-10-21',
       latest_trade_date: '2026-10-21',
-      max_end_date: '2026-09-09',
+      max_end_date: '2026-10-21',
+      max_test_end_date: '2026-10-21',
+      effective_end_date: '2026-09-09',
+      test_effective_end_date: '2026-09-09',
+      train_days: 433,
+      test_days: 160,
       validate_days: 30,
       horizons: [5, 10, 15, 20, 25, 30],
       trading_days: 30,
@@ -329,7 +354,8 @@ describe('AnalysisDialog', () => {
     await waitFor(() => expect(mocks.create).toHaveBeenCalledTimes(1))
     const payload = mocks.create.mock.calls[0][0]
     expect(payload.preset).toBe('xg1')
-    expect(payload.start_date).toBe('2020-01-01')
+    expect(payload.start_date).toBe('2024-01-01')
+    expect(payload.test_start_date).toBe('2026-01-01')
     expect(payload.markets).toEqual(['sh', 'sz', 'cyb', 'kcb'])
     await waitFor(() => expect(document.querySelector('[data-fork-analysis-run="running"]')).toBeTruthy())
     expect(screen.getByRole('button', { name: '停止' })).toBeTruthy()
@@ -380,19 +406,25 @@ describe('AnalysisDialog', () => {
     expect(end.compareDocumentPosition(days) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(days.value).toBe('30')
     expect(days.getAttribute('min')).toBe('1')
-    // 结束日默认 = 最后一个「验证得完」的交易日（后端给的 max_end_date）
+    // 结束时间默认 = 最新交易日（显示口径；实际分析到哪天由后端 effective_end_date 决定）
     await waitFor(() => expect((document.querySelector('[data-fork-analysis-end]') as HTMLInputElement).value)
-      .toBe('2026-09-09'))
+      .toBe('2026-10-21'))
   })
 
-  it('用户选的结束日不能晚于可验证的最后一天', async () => {
+  it('推理结束时间按显示口径收到最新交易日，实际分析到「减验证天数」那天', async () => {
     renderDialog()
     const user = userEvent.setup()
-    const end = (await screen.findByLabelText('结束日期')) as HTMLInputElement
-    await waitFor(() => expect(end.value).toBe('2026-09-09'))
+    const end = (await screen.findByLabelText('推理结束时间')) as HTMLInputElement
+    // 显示口径 = 最新交易日；提示里写明实际分析到 2026-09-09
+    await waitFor(() => expect(end.value).toBe('2026-10-21'))
+    // 预估回来之后提示里写明实际分析到哪天（要等 300ms 防抖）
+    await waitFor(() =>
+      expect(document.querySelector('[data-fork-analysis-end-hint]')?.textContent)
+        .toContain('2026-09-09'),
+    )
     await user.clear(end)
     await user.type(end, '2026-12-31')
-    expect(end.value <= '2026-09-09').toBe(true)
+    expect(end.value <= '2026-10-21').toBe(true)
   })
 
   it('创建时把验证天数带给后端', async () => {
@@ -408,8 +440,9 @@ describe('AnalysisDialog', () => {
   })
 
   it('点历史任务开的是任务详情窗口，不是数据分析界面', async () => {
-    mocks.listRuns.mockResolvedValue([
-      runMeta({ status: 'done', running: false, days_done: 1650, hits: 1800, excel_ready: true }),
+    mocks.history.mockResolvedValue([
+      runMeta({ status: 'done', running: false, days_done: 1650, hits: 1800, excel_ready: true,
+        kind: 'analysis', score_train: 66.2, score_test: 61.8 }),
     ])
     mocks.detail.mockResolvedValue({
       run: runMeta({ status: 'done', running: false, excel_ready: true }),
@@ -440,66 +473,105 @@ describe('AnalysisDialog', () => {
 
   it('打开时若有任务在跑，直接进那个任务的进度页', async () => {
     mocks.listRuns.mockResolvedValue([runMeta()])
+    mocks.history.mockResolvedValue([runMeta()])
     renderDialog()
     await waitFor(() => expect(document.querySelector('[data-fork-analysis-run="running"]')).toBeTruthy())
     expect(screen.getByRole('button', { name: '停止' })).toBeTruthy()
   })
 
-  it('「选股条件」标签与「统计方法」下拉：下拉排在条件下面', async () => {
+  it('选股条件还在、统计方法下拉已删除（只剩一套方法）', async () => {
     renderDialog()
     await screen.findByText('创建数据分析任务')
     const body = document.body.textContent ?? ''
     expect(body).toContain('选股条件')
     expect(body).not.toContain('已保存条件')
-    const preset = document.querySelector('[data-fork-analysis-preset]') as HTMLElement
-    const method = document.querySelector('[data-fork-analysis-method]') as HTMLElement
-    expect(preset && method).toBeTruthy()
-    // DOM 顺序 = 显示顺序：统计方法紧跟选股条件
-    expect(preset.compareDocumentPosition(method) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    // 方法列表来自后端；默认方法 1（有验证天数）
-    expect(await screen.findByText('统计分析方法 1：持有期胜率与超额')).toBeTruthy()
-    expect(document.querySelector('[data-fork-analysis-validate-days]')).toBeTruthy()
+    expect(document.querySelector('[data-fork-analysis-method]')).toBeNull()
+    expect(body).not.toContain('统计方法')
   })
 
-  it('选方法 2：同一个输入框改成不可编辑（35），不再换控件、不跳版', async () => {
-    mocks.create.mockResolvedValue(runMeta())
+  it('四行时间：推理开始 / 推理结束 / 测试开始 / 测试结束，顺序与默认值正确', async () => {
+    renderDialog()
+    await screen.findByText('创建数据分析任务')
+    const start = document.querySelector('[data-fork-analysis-start]') as HTMLElement
+    const end = document.querySelector('[data-fork-analysis-end]') as HTMLElement
+    const testStart = document.querySelector('[data-fork-analysis-test-start]') as HTMLElement
+    const testEnd = document.querySelector('[data-fork-analysis-test-end]') as HTMLElement
+    const days = document.querySelector('[data-fork-analysis-validate-days]') as HTMLInputElement
+    expect(start && end && testStart && testEnd && days).toBeTruthy()
+    expect(start.compareDocumentPosition(end) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(end.compareDocumentPosition(testStart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(testStart.compareDocumentPosition(testEnd) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(testEnd.compareDocumentPosition(days) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect((start as HTMLInputElement).value).toBe('2024-01-01')
+    expect((testStart as HTMLInputElement).value).toBe('2026-01-01')
+    expect(days.value).toBe('30')
+  })
+
+  it('条件推理：不勾选时次数不可编辑，勾选后能改，默认 100 次', async () => {
     renderDialog()
     const user = userEvent.setup()
     await screen.findByText('创建数据分析任务')
+    const enable = document.querySelector('[data-fork-analysis-infer-enabled]') as HTMLInputElement
+    const iterations = document.querySelector('[data-fork-analysis-infer-iterations]') as HTMLInputElement
+    expect(enable.checked).toBe(false)
+    expect(iterations.disabled).toBe(true)
+    expect(iterations.value).toBe('100')
+    await user.click(enable)
+    expect(iterations.disabled).toBe(false)
+    await user.clear(iterations)
+    await user.type(iterations, '300')
+    expect(iterations.value).toBe('300')
+  })
 
-    // 方法 1：可编辑，默认 30，提示「向未来看几个交易日」
-    const editInput = document.querySelector('[data-fork-analysis-validate-days]') as HTMLInputElement
-    expect(editInput.disabled).toBe(false)
-    expect(editInput.value).toBe('30')
-    expect(document.querySelector('[data-fork-analysis-validate-row]')?.getAttribute('data-fork-analysis-validate-row')).toBe('edit')
-    expect(document.querySelector('[data-fork-analysis-validate-hint]')?.textContent).toBe('向未来看几个交易日')
-    const editClass = editInput.className
-
-    await user.click(document.querySelector('[data-fork-analysis-method]') as HTMLElement)
-    const option = await screen.findByRole('option', { name: /统计分析方法 2/ })
-    await user.click(option)
-
-    // 方法 2：还是那一个输入框，值固定 35、不可编辑，提示说明固定窗口
-    await waitFor(() =>
-      expect(document.querySelector('[data-fork-analysis-validate-row]')?.getAttribute('data-fork-analysis-validate-row')).toBe('fixed'),
-    )
-    const fixedInput = document.querySelector('[data-fork-analysis-validate-days]') as HTMLInputElement
-    expect(fixedInput).toBeTruthy()
-    expect(fixedInput.value).toBe('35')
-    expect(fixedInput.disabled).toBe(true)
-    expect(fixedInput.readOnly).toBe(true)
-    // 尺寸类与可编辑态完全一致（切换方法不会引起 UI 跳动）
-    expect(fixedInput.className).toBe(`${editClass} cursor-not-allowed opacity-70`)
-    expect(document.querySelector('[data-fork-analysis-validate-hint]')?.textContent)
-      .toBe('该方法固定使用 35 个交易日窗口')
-
-    // 预估也带上了方法（后端按方法的 forward_days 夹结束日）
-    await waitFor(() =>
-      expect(mocks.preview.mock.calls.at(-1)?.[0].method).toBe('stat_v2'),
-    )
+  it('勾选条件推理后创建的是推理任务，不是分析任务', async () => {
+    mocks.inferCreate.mockResolvedValue({
+      run_id: '20261024-120000-abcd',
+      created_at: '2026-10-24T12:00:00+08:00',
+      status: 'running',
+      preset: 'xg1',
+      train_start: '2024-01-01',
+      train_end: '2025-12-31',
+      valid_start: '2026-01-01',
+      valid_end: '2026-09-09',
+      iterations: 100,
+      done_iterations: 0,
+      alive: true,
+      progress: { phase: 'searching', done_iterations: 0, iterations: 100, current: '',
+        best_score: null, best_desc: '', elite: 0, elapsed_s: 5, eta_s: 600,
+        variants_evaluated: 1, load_progress: 1 },
+    })
+    renderDialog()
+    const user = userEvent.setup()
+    await screen.findByText('创建数据分析任务')
+    await user.click(document.querySelector('[data-fork-analysis-infer-enabled]') as HTMLElement)
     await user.click(screen.getByRole('button', { name: '创建任务' }))
-    await waitFor(() => expect(mocks.create).toHaveBeenCalledTimes(1))
-    expect(mocks.create.mock.calls[0][0].method).toBe('stat_v2')
+    await waitFor(() => expect(mocks.inferCreate).toHaveBeenCalledTimes(1))
+    expect(mocks.create).not.toHaveBeenCalled()
+    const payload = mocks.inferCreate.mock.calls[0][0]
+    expect(payload.train_start).toBe('2024-01-01')
+    expect(payload.valid_start).toBe('2026-01-01')
+    expect(payload.iterations).toBe(100)
+    await waitFor(() => expect(document.querySelector('[data-fork-infer-panel]')).toBeTruthy())
+    expect(document.body.textContent).toContain('已完成 0 / 100 次')
+  })
+
+  it('历史记录同时显示两类任务，并带两个评分', async () => {
+    mocks.history.mockResolvedValue([
+      runMeta({ status: 'done', running: false, kind: 'analysis', score_train: 66.2, score_test: 61.8 }),
+      runMeta({ run_id: '20261024-120000-abcd', status: 'done', running: false, kind: 'infer',
+        score_train: 78.4, score_test: 70.1, created_at: '2026-10-24T12:00:00+08:00' }),
+    ])
+    renderDialog()
+    await screen.findByText('创建数据分析任务')
+    expect(document.body.textContent).toContain('历史记录')
+    await waitFor(() => expect(document.querySelectorAll('[data-fork-history-item]').length).toBe(2))
+    expect(document.body.textContent).toContain('分析')
+    expect(document.body.textContent).toContain('条件推理')
+    const scores = Array.from(document.querySelectorAll('[data-fork-history-score]')).map(
+      node => node.textContent,
+    )
+    expect(scores.some(text => text?.includes('78.4'))).toBe(true)
+    expect(scores.some(text => text?.includes('66.2'))).toBe(true)
   })
 
   it('方法 2 跑完：用统一信封渲染（结论卡 + 表 + 产物），没有 Excel 按钮', async () => {

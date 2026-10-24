@@ -47,15 +47,15 @@ def event(d0: str, code: str, buy: float, path: list[tuple[float, float]],
 # --------------------------------------------------------------------------- #
 # 注册表与契约
 # --------------------------------------------------------------------------- #
-def test_三个方法都注册且默认是方法1():
+def test_只剩一套方法且默认是方法3():
+    """2026-10-24：方法 1 / 方法 2 已下线（界面与创建接口都不再提供）。"""
     specs = methods.list_specs()
-    assert [spec.id for spec in specs] == ["stat_v1", "stat_v2", "stat_v3"]
-    assert methods.normalize(None) == "stat_v1"
+    assert [spec.id for spec in specs] == ["stat_v3"]
+    assert methods.normalize(None) == "stat_v3"
     payload = methods.specs_payload()
     assert payload[0]["default"] is True
-    assert payload[1]["forward_days"] == 35
-    assert payload[2]["forward_days"] == 30
-    assert payload[2]["windows"] == [5, 10, 20, 25, 30]
+    assert payload[0]["forward_days"] == 30
+    assert payload[0]["windows"] == [5, 10, 20, 25, 30]
 
 
 def test_未知方法报错而不是静默降级():
@@ -63,9 +63,13 @@ def test_未知方法报错而不是静默降级():
         methods.normalize("stat_v9")
 
 
-def test_老任务没有方法字段按方法1():
-    assert methods.method_of({"run_id": "x"}) == "stat_v1"
+def test_老任务没有方法字段按方法3_但老任务本身仍可读():
+    assert methods.method_of({"run_id": "x"}) == "stat_v3"
+    # 老任务 meta 里的 id 照样认得（不然历史报告打不开）
     assert methods.method_of({"method": "stat_v2"}) == "stat_v2"
+    # 但不能再新建这两种方法
+    with pytest.raises(methods.UnknownMethod):
+        methods.normalize("stat_v2")
 
 
 def test_存储窗口与方法2窗口一致():

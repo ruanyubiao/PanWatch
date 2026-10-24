@@ -91,7 +91,12 @@ def _request_of(preset_name: str, markets: Optional[Sequence[str]], include_st: 
 
 
 def preview(payload: AnalysisCreate) -> dict[str, Any]:
-    """创建前的预估：区间内有几个交易日、方法要多少前瞻行情、结束日上限。"""
+    """创建前的预估：区间内有几个交易日、方法要多少前瞻行情、结束日上限。
+
+    两段时间（用户 2026-10-24）：推理段 + 测试段。**结束日按「显示口径」收**：
+    用户填的结束日可以一直填到最新交易日，但实际只分析到「结束日往前推验证天数」，
+    因为后面的交易日还要留着向前看。
+    """
     method_id = methods.normalize(payload.method)
     spec = methods.spec(method_id)
     request = _request_of(payload.preset, payload.markets, payload.include_st)
@@ -100,31 +105,67 @@ def preview(payload: AnalysisCreate) -> dict[str, Any]:
         latest = forward.latest_trade_date(conn)
         if latest is None:
             raise AnalysisParamsInvalid("行情库里没有任何数据")
-        # 结束日上限：再往后就没有 forward_days 个交易日的验证行情了
-        max_end = forward.shift_back(conn, latest, spec.forward_days)
-        end = payload.end_date or max_end
-        if end > max_end:
-            end = max_end
-        if payload.start_date > end:
+        # 显示口径：结束日最晚可以填到最新交易日
+        end_display = payload.end_date or latest
+        if end_display > latest:
+            end_display = latest
+        # 实际分析到的最后一天：再往后就没有 forward_days 个交易日的验证行情了
+        effective_end = forward.shift_back(conn, end_display, spec.forward_days)
+        if payload.start_date > effective_end:
             raise AnalysisParamsInvalid(
-                f"开始日期晚于可验证的结束日期（{max_end.isoformat()}）"
+                f"开始日期晚于可分析的结束日期（{effective_end.isoformat()} = "
+                f"结束日往前推 {spec.forward_days} 个交易日）"
             )
-        calendar = forward.trading_calendar(conn, payload.start_date, end)
+        calendar = forward.trading_calendar(conn, payload.start_date, effective_end)
+        segments = [{"kind": "train", "label": "推理段",
+                     "start": payload.start_date.isoformat(),
+                     "end": effective_end.isoformat(),
+                     "end_display": end_display.isoformat()}]
+        test_days: list[_dt.date] = []
+        if payload.test_start_date is not None:
+            test_end_display = payload.test_end_date or latest
+            if test_end_display > latest:
+                test_end_display = latest
+            test_effective_end = forward.shift_back(conn, test_end_display, spec.forward_days)
+            if payload.test_start_date <= effective_end:
+                raise AnalysisParamsInvalid(
+                    f"测试段必须晚于推理段（推理段实际分析到 {effective_end.isoformat()}）"
+                )
+            if payload.test_start_date > test_effective_end:
+                raise AnalysisParamsInvalid(
+                    f"测试段太短：结束日往前推 {spec.forward_days} 个交易日后是 "
+                    f"{test_effective_end.isoformat()}，早于开始日"
+                )
+            test_days = forward.trading_calendar(conn, payload.test_start_date, test_effective_end)
+            segments.append({"kind": "test", "label": "测试段",
+                             "start": payload.test_start_date.isoformat(),
+                             "end": test_effective_end.isoformat(),
+                             "end_display": test_end_display.isoformat()})
         version = forward.data_version(conn)
     finally:
         conn.close()
     if not calendar:
         raise AnalysisParamsInvalid("该区间内没有任何交易日")
-    if len(calendar) > MAX_CALENDAR_DAYS:
+    if len(calendar) + len(test_days) > MAX_CALENDAR_DAYS:
         raise AnalysisParamsInvalid(f"区间最多 {MAX_CALENDAR_DAYS} 个交易日")
     return {
-        "days": len(calendar),
+        "days": len(calendar) + len(test_days),
         "first_day": str(calendar[0]),
         "last_day": str(calendar[-1]),
+        "train_days": len(calendar),
+        "test_days": len(test_days),
+        "test_first_day": str(test_days[0]) if test_days else None,
+        "test_last_day": str(test_days[-1]) if test_days else None,
         "latest_trade_date": str(latest),
-        "max_end_date": str(max_end),
+        # 显示口径的上限（用户能填到哪天）
+        "max_end_date": str(latest),
+        "max_test_end_date": str(latest),
+        # 实际会分析到的最后一天（扣掉验证天数）
+        "effective_end_date": str(effective_end),
+        "test_effective_end_date": (str(test_days[-1]) if test_days else None),
         "validate_days": int(payload.validate_days),
         "forward_days": int(spec.forward_days),
+        "segments": segments,
         "horizons": (list(spec.windows) if method_id != "stat_v1"
                      else list(horizons_for(payload.validate_days))),
         "trading_days": int(request.trading_days),
@@ -160,6 +201,14 @@ def create(payload: AnalysisCreate) -> dict[str, Any]:
         "forward_days": info["forward_days"],
         "start_date": payload.start_date.isoformat(),
         "end_date": info["last_day"],
+        # 用户填的结束日（显示口径，可以是最新交易日）；实际分析的末日是 end_date
+        "end_date_display": info["segments"][0].get("end_display"),
+        "segments": info["segments"],
+        "train_days": info.get("train_days"),
+        "test_days": info.get("test_days"),
+        "test_start_date": payload.test_start_date.isoformat() if payload.test_start_date else None,
+        "test_end_date": payload.test_end_date.isoformat() if payload.test_end_date else None,
+        "test_effective_end_date": info.get("test_effective_end_date"),
         "end_date_requested": (payload.end_date or None) and payload.end_date.isoformat(),
         "validate_days": info["validate_days"] if method_id == "stat_v1" else info["forward_days"],
         "horizons": info["horizons"],
@@ -757,7 +806,16 @@ def _loop_m3(preset_name: str, run_id: str) -> None:
         index = {day: position for position, day in enumerate(calendar)}
         start = _dt.date.fromisoformat(meta["start_date"])
         end = _dt.date.fromisoformat(meta["end_date"])
-        days = [day for day in calendar if start <= day <= end]
+        # 两段（推理段 + 测试段）逐日回放；事件用 d0 落在哪段来区分，不需要额外列
+        segments = [item for item in (meta.get("segments") or []) if isinstance(item, dict)]
+        if not segments:
+            segments = [{"start": meta["start_date"], "end": meta["end_date"]}]
+        days = []
+        for item in segments:
+            seg_start = _dt.date.fromisoformat(str(item.get("start") or meta["start_date"]))
+            seg_end = _dt.date.fromisoformat(str(item.get("end") or meta["end_date"]))
+            days.extend(day for day in calendar if seg_start <= day <= seg_end)
+        days = sorted(set(days))
         store.patch_meta(preset_name, run_id, status=store.STATUS_RUNNING, days_total=len(days))
         hits_total = int(meta.get("hits") or 0)
         control_total = int(meta.get("control") or 0)
@@ -950,5 +1008,8 @@ def write_method3_artifacts(preset_name: str, run_id: str) -> list[str]:
         report_headline=report.headline.as_dict(),
         valid_events=report.data_quality.get("valid_events"),
         usable_segments=report.data_quality.get("usable_segments"),
+        # 评分落到 meta：历史记录列表要显示两个分数，不能为了列个表去重算整份报告
+        scores=report.data_quality.get("scores"),
+        score_verdict=report.data_quality.get("score_verdict"),
     )
     return names
