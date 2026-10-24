@@ -61,7 +61,10 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   methodHint: (forwardDays: number) =>
     `该方法需要 ${forwardDays} 个交易日的前瞻行情，结束日会自动往前留出这段`,
   methodFixedDays: (days: number) => `该方法固定使用 ${days} 个交易日窗口`,
-  methodShort: (id: string) => (id === 'stat_v2' ? '方法 2' : '方法 1'),
+  methodShort: (id: string) => {
+    const matched = /^stat_v(\d+)$/.exec(id)
+    return matched ? `方法 ${matched[1]}` : '方法 1'
+  },
   methodFallback: '统计分析方法 1：持有期胜率与超额',
   start: '开始日期',
   end: '结束日期',

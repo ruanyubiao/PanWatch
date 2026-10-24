@@ -73,7 +73,10 @@ _IDX_ANY = _IDX_NET + len(WINDOWS)
 
 #: 判断「特别有效」的门槛
 MIN_SAMPLE_DEFAULT = 100
+MIN_BASE_SAMPLE = 100
 MIN_EXCESS_PP = 2.0
+#: 「有效分类」要覆盖多少比例的信号才算有实际意义（%）
+MIN_COVER_PCT = 2.0
 FDR_Q = 0.10
 
 METHOD = MethodSpec(
@@ -326,44 +329,75 @@ def _daily_series(rows: Iterable[tuple], index: int) -> dict[str, tuple[int, int
 
 def _cluster_excess(signal_rows: Sequence[tuple], base_rows: Sequence[tuple],
                     index: int) -> dict[str, Any]:
-    """条件组 − 基准组的超额（百分点），按日配对 + Newey–West。
+    """条件组 − 基准组的超额（百分点），按日聚类的 delta 法。
 
-    这是方法 3 唯一承认的「显著性」。按笔合并两比例 z 会把 300 只同一天命中的股票
-    当成 300 个独立样本，t 值虚高一个数量级。
+    为什么不是「两比例 z」
+    ---------------------
+    同一只股票连续两天命中，窗口重叠；同一天命中 300 只，共享同一段大盘。把 18 万条当成
+    18 万个独立样本，t 值会虚高一个数量级。
+
+    为什么不是「按日配对再平均」
+    ---------------------------
+    第一版就是这么写的，结果在薄样本分类上炸了：行业「住宿业」只有 232 条信号，对照里
+    这个行业只在几十天里被抽到，那几十天的基准胜率恰好很低，于是「按日配对均值」给出
+    +21pp，而两边合并的真实差值是 −3pp。两个估计量差了 24pp，纯粹是小样本噪声。
+
+    现在改成**影响函数 + 按日聚类**（delta 法）：点估计就是两组合并比率的差（与报告里
+    显示的 条件概率 / 基准概率 完全一致，不会再出现「显示 −3pp、结论 +21pp」），方差由
+    日度影响函数求和得到，哪天才有一两条对照，那一天的权重大、方差也大，区间自然变宽。
     """
     if not signal_rows or not base_rows:
-        return {"pp": None, "t": None, "days": 0, "n_eff": 0, "low": None, "high": None,
-                "base_p": None, "base_n": 0}
+        return _no_base()
     signal_days = _daily_series(signal_rows, index)
     base_days = _daily_series(base_rows, index)
-    diffs: list[float] = []
-    for day in sorted(set(signal_days) & set(base_days)):
-        signal_wins, signal_n = signal_days[day]
-        base_wins, base_n = base_days[day]
-        if signal_n and base_n:
-            diffs.append(signal_wins / signal_n - base_wins / base_n)
-    total_base = sum(n for _, n in base_days.values())
-    base_wins = sum(wins for wins, _ in base_days.values())
-    if not diffs:
-        return {"pp": None, "t": None, "days": 0, "n_eff": 0, "low": None, "high": None,
-                "base_p": (base_wins / total_base * 100.0) if total_base else None,
-                "base_n": total_base}
-    summary = significance.summarize_series(diffs, block=max(2, WINDOWS[index]))
-    pp = (summary.get("mean") or 0.0) * 100.0
+    signal_n = sum(n for _, n in signal_days.values())
+    base_n = sum(n for _, n in base_days.values())
+    if signal_n <= 0 or base_n <= 0:
+        return _no_base()
+    signal_p = sum(wins for wins, _ in signal_days.values()) / signal_n
+    base_p = sum(wins for wins, _ in base_days.values()) / base_n
+
+    days = sorted(set(signal_days) | set(base_days))
+    lag = max(1, min(int(WINDOWS[index]) - 1, len(days) - 1))
+
+    # 关键：日度差值必须**相减后再算方差**，不能把两组方差相加。
+    # 条件组和对照组的日度胜率在同一天高度同向（同一段大盘），协方差几乎把方差抵消；
+    # 忽略它会把标准误放大到 10 倍以上，把 −0.8pp 的差值说成「不显著」（实测 t 从 −4.4 崩到 −0.29）。
+    combined = []
+    for day in days:
+        wins, count = signal_days.get(day, (0, 0))
+        signal_term = (wins - signal_p * count) / signal_n
+        wins, count = base_days.get(day, (0, 0))
+        base_term = (wins - base_p * count) / base_n
+        combined.append(signal_term - base_term)
+
+    # newey_west_se 返回「均值」的标准误，这里要的是「求和」的：乘回天数
+    se = significance.newey_west_se(combined, lag) * len(days)
+    delta = signal_p - base_p
+    t_value = (delta / se) if se > 0 else None
     return {
-        "pp": pp,
-        "t": summary.get("nw_t"),
-        "days": summary.get("days"),
-        "n_eff": summary.get("n_eff"),
-        "low": (summary.get("ci_low") or 0.0) * 100.0 if summary.get("ci_low") is not None else None,
-        "high": (summary.get("ci_high") or 0.0) * 100.0 if summary.get("ci_high") is not None else None,
-        "base_p": (base_wins / total_base * 100.0) if total_base else None,
-        "base_n": total_base,
+        "pp": delta * 100.0,
+        "t": t_value,
+        "days": len(days),
+        "n_eff": max(1, len(days) // max(1, WINDOWS[index])),
+        "low": (delta - 1.96 * se) * 100.0 if se > 0 else None,
+        "high": (delta + 1.96 * se) * 100.0 if se > 0 else None,
+        "base_p": base_p * 100.0,
+        "base_n": base_n,
+        "se": se,
     }
 
 
-def _judge(n: int, excess: Optional[float], q: Optional[float], min_sample: int) -> str:
+def _no_base() -> dict[str, Any]:
+    return {"pp": None, "t": None, "days": 0, "n_eff": 0, "low": None, "high": None,
+            "base_p": None, "base_n": 0, "se": None}
+
+
+def _judge(n: int, excess: Optional[float], q: Optional[float], min_sample: int,
+           base_n: int = 0) -> str:
     if excess is None:
+        return "无基准"
+    if base_n and base_n < MIN_BASE_SAMPLE:
         return "无基准"
     if n < min_sample:
         return "样本不足"
@@ -481,7 +515,8 @@ def build(conn: sqlite3.Connection, meta: dict[str, Any]) -> StandardReport:
     qvalues = _bh([item["p_value"] for item in tests])
     for item, qvalue in zip(tests, qvalues):
         item["q"] = qvalue
-        item["verdict"] = _judge(item["n"], item["excess_pp"], qvalue, min_sample)
+        item["verdict"] = _judge(item["n"], item["excess_pp"], qvalue, min_sample,
+                                 item.get("base_n") or 0)
 
     # 每个取值只保留「最好那个周期」，做成适用说明书
     by_segment: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -543,7 +578,11 @@ def build(conn: sqlite3.Connection, meta: dict[str, Any]) -> StandardReport:
             "best_window": WINDOWS[best_stock],
             "best_p": shrunk[best_stock],
             "median_10": blocks[1]["median"],
-            "verdict": "样本不足" if n < 20 else ("有效" if (shrunk[best_stock] or 0) >= 55 and blocks[best_stock]["n"] >= 20 else "一般"),
+            # 个股没有自己的基准（对照是随机抽的，不可能按个股配比），
+            # 所以这里只说「概率高低 + 样本够不够」，不用「有效」这种需要基准的词
+            "verdict": ("样本不足" if n < 30 else
+                        ("较强" if (shrunk[best_stock] or 0) >= 60 else
+                         ("偏弱" if (shrunk[best_stock] or 0) < 40 else "一般"))),
         })
     stock_rows.sort(key=lambda item: (item["best_p"] or 0.0), reverse=True)
 
@@ -579,6 +618,9 @@ def build(conn: sqlite3.Connection, meta: dict[str, Any]) -> StandardReport:
         "同一天的多只股票不是独立样本。",
         "分层面结论做了 Benjamini–Hochberg 多重比较校正（q ≤ 0.1），"
         f"且要求样本 ≥ {min_sample}、超额 ≥ {MIN_EXCESS_PP:g}pp 才判「有效」。",
+        "本方法的概率按**每一笔信号等权**（真实交易口径）。方法 1 的超额按**每一天等权**，"
+        "两者不同：命中股票多的日子超额接近 0、命中少的日子更差，所以方法 1 会把整体说得更差。"
+        "看「买了之后赚不赚」用本方法，看「随便挑一天买一篮子」用方法 1。",
         "退市股不在库里（数据源限制），历史概率存在幸存者偏差，方向是偏高。",
         "行业为当前快照（stock_info.industry），不是信号日的历史行业分类。",
     ]
@@ -644,6 +686,23 @@ def _headline(signal: Sequence[tuple], windows_rows: Sequence[dict[str, Any]],
                 f"五个周期里最好的是 {best['window']} 日：{_fmt(best['p_net'])}% 对随机 "
                 f"{_fmt(best.get('base_p'))}%（{_signed(best_pp)}pp，t={_fmt(t_value, 2)}），"
                 f"没有任何分类满足「样本≥{min_sample} + 校正后显著 + 超额≥{MIN_EXCESS_PP:g}pp」。"
+            ),
+            metrics=metrics,
+        )
+
+    # 覆盖太小的分类不能当结论：202 条信号、覆盖 0.1%，q 刚好压在 0.1 边缘，
+    # 这种「有效」在统计上勉强、在用的时候挑不出来（那个行业全市场才十几只股票）。
+    if usable and cover < MIN_COVER_PCT:
+        top = usable[0]
+        return Headline(
+            verdict="no_edge",
+            title="整体没有可确认的盈利优势",
+            detail=(
+                f"五个周期里最好的是 {best['window']} 日：{_fmt(best['p_net'])}% 对随机 "
+                f"{_fmt(best.get('base_p'))}%（{_signed(best_pp)}pp，t={_fmt(t_value, 2)}）。"
+                f"只有 {top['level_label']}「{top['value']}」勉强过线"
+                f"（{_fmt(top['p_net'])}% 对 {_fmt(top['base_p'])}%，{_signed(top['excess_pp'])}pp，"
+                f"q={_fmt(top['q'])}），但只覆盖 {cover:.1f}% 的信号，不足以支撑「这个条件能用」。"
             ),
             metrics=metrics,
         )
