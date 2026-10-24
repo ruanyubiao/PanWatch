@@ -13,11 +13,11 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, Optional
 
-from . import method1, method2
+from . import method1, method2, method3
 from .contracts import SCHEMA_VERSION, MethodSpec, StandardReport
 
 #: 注册顺序 = 界面下拉顺序（方法 1 在前，它是既有任务的默认口径）
-_MODULES = (method1, method2)
+_MODULES = (method1, method2, method3)
 
 #: 老任务（2026-10-23 之前创建）的 meta 里没有 ``method`` 字段，一律当方法 1
 DEFAULT_METHOD = method1.METHOD.id
