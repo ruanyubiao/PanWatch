@@ -12,7 +12,7 @@ import type { ScreenMarket } from '@/lib/screen-rule'
 /** 进度轮询间隔（推理任务一次变体要十几秒，2 秒一次足够） */
 export const INFER_POLL_MS = 2500
 
-export type InferStatus = 'pending' | 'running' | 'paused' | 'done' | 'stopped' | 'failed'
+export type InferStatus = 'pending' | 'running' | 'paused' | 'interrupted' | 'done' | 'stopped' | 'failed'
 
 export interface InferProgress {
   phase: string
@@ -29,6 +29,14 @@ export interface InferProgress {
   load_label?: string
   current_score?: number | null
   current_signals?: number
+  /** 成功 / 失败次数（失败的变体只在内存里计数，不落盘） */
+  successes?: number
+  failures?: number
+  attempts?: number
+  /** 搜索空间耗尽（提前结束的唯一合法原因） */
+  exhausted?: boolean
+  finalists?: number
+  passed?: number
 }
 
 export interface InferRunMeta {
@@ -56,6 +64,39 @@ export interface InferRunMeta {
   error?: string | null
   alive: boolean
   progress: InferProgress
+  /** 历史记录用：任务类型与两个评分 */
+  kind?: 'infer'
+  score_train?: number | null
+  score_test?: number | null
+  score_grade?: string | null
+  score_verdict?: { verdict?: string; text?: string; score?: number | null }
+  scores?: InferScores | null
+  best_desc?: string | null
+  successes?: number
+  failures?: number
+  exhausted?: boolean
+  finished_at?: string | null
+}
+
+/** 推理段 / 测试段两个 0–100 分（用户 2026-10-24 第 9 条） */
+export interface InferGrade {
+  score?: number | null
+  grade?: string
+  grade_text?: string
+  best_window?: number | null
+  excess_pp?: number | null
+  lower_pp?: number | null
+  events?: number
+  days?: number
+  caps?: string[]
+  components?: Record<string, number | null>
+}
+
+export interface InferScores {
+  train?: InferGrade
+  test?: InferGrade
+  verdict?: { verdict?: string; score?: number | null; text?: string }
+  desc?: string
 }
 
 export interface InferHorizonRow {
@@ -111,6 +152,10 @@ export interface InferFinalist {
   passed: boolean
   train_rows: InferHorizonRow[]
   valid_rows: InferHorizonRow[]
+  /** 0–100 分（新任务有；老任务没有） */
+  train_grade?: InferGrade
+  valid_grade?: InferGrade
+  combined?: { verdict?: string; score?: number | null; text?: string }
 }
 
 export interface InferResults {
@@ -119,6 +164,15 @@ export interface InferResults {
   ranked: number
   rows: InferVariantRow[]
   finalists: InferFinalist[]
+}
+
+export interface InferHistoryItem {
+  run_id: string
+  status: InferStatus
+  preset: string
+  created_at: string
+  score_train?: number | null
+  score_test?: number | null
 }
 
 export interface InferPreview {

@@ -215,6 +215,42 @@ class VariantMetrics:
             return None
         return sum(values) / len(values) * 100.0
 
+    def day_excess_series(self, horizon_index: int, metric: str) -> list[float]:
+        """逐日的「条件胜率 − 当天基准」（小数，不是百分数）。评分要它的 t 值。"""
+        diffs: list[float] = []
+        for record in self.records:
+            if record.hits <= 0:
+                continue
+            if metric == "close":
+                base = record.base_close[horizon_index]
+                if base is None or record.close_n[horizon_index] <= 0:
+                    continue
+                diffs.append(record.close_win[horizon_index] / record.close_n[horizon_index] - base)
+            elif metric == "exec":
+                base = record.base_exec[horizon_index]
+                if base is None or record.exec_n[horizon_index] <= 0:
+                    continue
+                diffs.append(record.exec_win[horizon_index] / record.exec_n[horizon_index] - base)
+            else:
+                base = record.base_touch[horizon_index]
+                if base is None or record.touch_n[horizon_index] <= 0:
+                    continue
+                diffs.append(record.touch_win[horizon_index] / record.touch_n[horizon_index] - base)
+        return diffs
+
+    def day_t(self, horizon_index: int, metric: str) -> Optional[float]:
+        """逐日超额的 t 值（按日聚类：同一天的多只股票不算独立样本）。"""
+        diffs = self.day_excess_series(horizon_index, metric)
+        count = len(diffs)
+        if count < 3:
+            return None
+        mean = sum(diffs) / count
+        variance = sum((value - mean) ** 2 for value in diffs) / (count - 1)
+        if variance <= 0:
+            return None
+        standard_error = (variance / count) ** 0.5
+        return mean / standard_error if standard_error > 0 else None
+
     def day_excess(self, horizon_index: int, metric: str) -> Optional[float]:
         """按日等权的超额（百分点）：每天先算「条件胜率 − 当天基准」，再对天平均。
 
