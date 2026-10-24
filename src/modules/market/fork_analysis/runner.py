@@ -472,6 +472,15 @@ def _loop(preset_name: str, run_id: str) -> None:
                     raise RuntimeError(f"连续 5 个交易日失败，最后一次：{exc}") from exc
                 continue
 
+        # 先把产物与评分算完再标 done：否则界面第一次看到 done 时 scores 还是 null
+        artifacts_done = False
+        try:
+            write_method3_artifacts(preset_name, run_id)
+            artifacts_done = True
+        except Exception as exc:  # noqa: BLE001 - 产物失败不影响数据
+            logger.exception("生成方法 3 产物失败：%s", run_id)
+            store.patch_meta(preset_name, run_id, artifacts_error=str(exc))
+
         status = store.STATUS_STOPPED if stopped else store.STATUS_DONE
         elapsed_s = time.perf_counter() - started
         store.patch_meta(
@@ -698,6 +707,15 @@ def _loop_m2(preset_name: str, run_id: str) -> None:
                 if consecutive_errors >= 5:
                     raise RuntimeError(f"连续 5 个交易日失败，最后一次：{exc}") from exc
                 continue
+
+        # 先把产物与评分算完再标 done：否则界面第一次看到 done 时 scores 还是 null
+        artifacts_done = False
+        try:
+            write_method3_artifacts(preset_name, run_id)
+            artifacts_done = True
+        except Exception as exc:  # noqa: BLE001 - 产物失败不影响数据
+            logger.exception("生成方法 3 产物失败：%s", run_id)
+            store.patch_meta(preset_name, run_id, artifacts_error=str(exc))
 
         status = store.STATUS_STOPPED if stopped else store.STATUS_DONE
         elapsed_s = time.perf_counter() - started
@@ -954,6 +972,15 @@ def _loop_m3(preset_name: str, run_id: str) -> None:
                     raise RuntimeError(f"连续 5 个交易日失败，最后一次：{exc}") from exc
                 continue
 
+        # 先把产物与评分算完再标 done：否则界面第一次看到 done 时 scores 还是 null
+        artifacts_done = False
+        try:
+            write_method3_artifacts(preset_name, run_id)
+            artifacts_done = True
+        except Exception as exc:  # noqa: BLE001 - 产物失败不影响数据
+            logger.exception("生成方法 3 产物失败：%s", run_id)
+            store.patch_meta(preset_name, run_id, artifacts_error=str(exc))
+
         status = store.STATUS_STOPPED if stopped else store.STATUS_DONE
         elapsed_s = time.perf_counter() - started
         store.patch_meta(
@@ -981,14 +1008,15 @@ def _loop_m3(preset_name: str, run_id: str) -> None:
                 conn.close()
             except Exception:  # noqa: BLE001
                 pass
-        try:
-            write_method3_artifacts(preset_name, run_id)
-        except Exception as exc:  # noqa: BLE001 - 产物失败不影响数据
-            logger.exception("生成方法 3 产物失败：%s", run_id)
+        if not locals().get("artifacts_done"):
             try:
-                store.patch_meta(preset_name, run_id, artifacts_error=str(exc))
-            except Exception:  # noqa: BLE001
-                pass
+                write_method3_artifacts(preset_name, run_id)
+            except Exception as exc:  # noqa: BLE001 - 产物失败不影响数据
+                logger.exception("生成方法 3 产物失败：%s", run_id)
+                try:
+                    store.patch_meta(preset_name, run_id, artifacts_error=str(exc))
+                except Exception:  # noqa: BLE001
+                    pass
         db.close()
 
 
