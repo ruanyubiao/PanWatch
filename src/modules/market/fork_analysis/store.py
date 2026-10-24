@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from ..fork_screen import presets
+from . import store_m3
 from .models import FORWARD_DAYS, HORIZONS
 
 #: src/modules/market/fork_analysis/store.py → 仓库根
@@ -297,6 +298,7 @@ def open_db(preset: str, run_id: str) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA)
     conn.executescript(_M2_SCHEMA)
+    conn.executescript(store_m3.schema(SNAPSHOT_COLUMNS))
     _migrate_signals(conn)
     conn.commit()
     return conn
@@ -404,10 +406,11 @@ def counts(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def counts_for(conn: sqlite3.Connection, method: str = "stat_v1") -> dict[str, int]:
-    """按方法数行数：方法 2 的数据在 ``m2_events``，用 ``counts`` 会一律读到 0。"""
-    if method == "stat_v2":
-        total = conn.execute("SELECT COUNT(*) AS n FROM m2_events").fetchone()["n"]
-        hits = conn.execute("SELECT COUNT(*) AS n FROM m2_events WHERE is_control = 0").fetchone()["n"]
+    """按方法数行数：方法 2/3 的数据在各自的事件表，用 ``counts`` 会一律读到 0。"""
+    if method in ("stat_v2", "stat_v3"):
+        table = "m2_events" if method == "stat_v2" else "m3_events"
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+        hits = conn.execute(f"SELECT COUNT(*) AS n FROM {table} WHERE is_control = 0").fetchone()["n"]
         days = conn.execute("SELECT COUNT(*) AS n FROM days").fetchone()["n"]
         return {"signals": int(total), "hits": int(hits), "control": int(total) - int(hits),
                 "days": int(days)}
