@@ -48,7 +48,20 @@ def _view(meta: dict[str, Any]) -> dict[str, Any]:
     view["valid_day_count"] = len(meta.get("valid_days") or [])
     view.pop("train_days", None)
     view.pop("valid_days", None)
-    view["alive"] = search.is_running(str(meta.get("run_id") or ""))
+    alive = search.is_running(str(meta.get("run_id") or ""))
+    view["alive"] = alive
+    view["kind"] = "infer"
+    # 两个评分（推理段 / 测试段）：跑完才有值，历史记录列表用它排序
+    scores = meta.get("scores") or {}
+    train = (scores or {}).get("train") or {}
+    test = (scores or {}).get("test") or {}
+    view["score_train"] = train.get("score")
+    view["score_test"] = test.get("score")
+    view["score_grade"] = train.get("grade")
+    view["score_verdict"] = (scores or {}).get("verdict") or {}
+    # 僵死记录：meta 说在跑但线程没了 → 界面按中断显示，别让用户点停止
+    if str(view.get("status")) in ("running", "pending", "paused") and not alive:
+        view["status"] = "interrupted"
     return view
 
 
@@ -80,6 +93,7 @@ def create_infer_run(payload: InferCreate) -> dict[str, Any]:
 
 @router.get("/infer/runs")
 def list_infer_runs(limit: int = Query(default=20, ge=1, le=200)) -> dict[str, Any]:
+    search.reconcile()
     return {"items": [_view(meta) for meta in store.list_runs(limit)]}
 
 

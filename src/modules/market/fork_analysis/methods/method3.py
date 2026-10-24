@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
 from .. import costs as cost_model
+from .. import scoring
 from .. import significance
 from .contracts import (
     Artifact,
@@ -422,27 +423,14 @@ SEGMENT_LEVELS: tuple[tuple[str, int, str], ...] = (
 )
 
 
-def build(conn: sqlite3.Connection, meta: dict[str, Any]) -> StandardReport:
-    """算整份方法 3 报告（纯函数：只读 ``conn``，产物由调用方按 ``_artifacts_dir`` 落盘）。"""
-    params = {"min_sample": int((meta.get("params") or {}).get("min_sample") or MIN_SAMPLE_DEFAULT)}
-    min_sample = max(20, params["min_sample"])
-
-    events, reasons, duplicates = load_events(conn)
-    valid = [row for row in events if row[10] and all(
-        row[_IDX_NET + index] is not None for index in range(len(WINDOWS)))]
-    base = [row for row in valid if row[9]]
-    signal = [row for row in valid if not row[9]]
-
-    if not signal:
-        return _empty_report(meta, params, events, reasons, duplicates)
-
-    # ---------------- 总体：五个周期 + 总盈利 ----------------
-    windows_rows: list[dict[str, Any]] = []
+def _windows_rows(signal: Sequence[tuple], base: Sequence[tuple]) -> list[dict[str, Any]]:
+    """一组事件的五个周期统计（总体表）。两段评分与整份报告共用同一段代码。"""
+    rows: list[dict[str, Any]] = []
     for index, window in enumerate(WINDOWS):
         block = _window_block(signal, index)
         base_block = _window_block(base, index)
         excess = _cluster_excess(signal, base, index)
-        windows_rows.append({
+        rows.append({
             "window": window,
             "n": block["n"],
             "p_net": block["p"],
@@ -459,6 +447,111 @@ def build(conn: sqlite3.Connection, meta: dict[str, Any]) -> StandardReport:
             "payoff": block["payoff"],
             "expectancy": block["mean"],
         })
+    return rows
+
+
+def _stress_excess(signal: Sequence[tuple], base: Sequence[tuple], index: int,
+                   cost: float = scoring.STRESS_COST) -> Optional[float]:
+    """成本抬到 ``cost`` 后、该周期的超额（pp）。简单差分，只作为评分门槛用。"""
+    def rate(rows: Sequence[tuple]) -> Optional[float]:
+        values = []
+        for row in rows:
+            net = row[_IDX_NET + index]
+            if net is None:
+                continue
+            values.append(net + float(row[12]) - cost)
+        if not values:
+            return None
+        return sum(1 for value in values if value > 0) / len(values) * 100.0
+
+    picked = rate(signal)
+    benchmark = rate(base)
+    if picked is None or benchmark is None:
+        return None
+    return picked - benchmark
+
+
+def _segment_extras(seg_signal: Sequence[tuple], seg_base: Sequence[tuple],
+                    index: int) -> tuple[list[Optional[float]], list[Optional[float]]]:
+    """分年 / 分板块的超额（一致性用）。板块只有四个值，代价可以忽略。"""
+    years = sorted({str(row[0])[:4] for row in seg_signal})
+    year_excess: list[Optional[float]] = []
+    for year in years:
+        picked = [row for row in seg_signal if str(row[0]).startswith(year)]
+        peers = [row for row in seg_base if str(row[0]).startswith(year)]
+        year_excess.append(_cluster_excess(picked, peers, index)["pp"])
+    boards = sorted({str(row[3]) for row in seg_signal if row[3]})
+    layer_excess: list[Optional[float]] = []
+    for board in boards:
+        picked = [row for row in seg_signal if str(row[3]) == board]
+        peers = [row for row in seg_base if str(row[3]) == board]
+        if len(picked) < 100:
+            continue
+        layer_excess.append(_cluster_excess(picked, peers, index)["pp"])
+    return year_excess, layer_excess
+
+
+def _segment_scores(meta: dict[str, Any], signal: Sequence[tuple],
+                    base: Sequence[tuple]) -> dict[str, Any]:
+    """推理段 / 测试段各打一个分（没配测试段时只有推理段）。
+
+    事件按 ``d0`` 落在哪一段来分 —— 两段在创建任务时就校验过不重叠，
+    所以不需要在表里多存一列 segment。
+    """
+    segments = [item for item in (meta.get("segments") or []) if isinstance(item, dict)]
+    if not segments:
+        segments = [{"kind": "train", "label": "全段",
+                     "start": meta.get("start_date"), "end": meta.get("end_date")}]
+    results: dict[str, Any] = {}
+    for item in segments:
+        kind = str(item.get("kind") or "train")
+        start = str(item.get("start") or "")
+        end = str(item.get("end") or "9999-12-31")
+        picked_signal = [row for row in signal if start <= str(row[0]) <= end]
+        picked_base = [row for row in base if start <= str(row[0]) <= end]
+        if not picked_signal:
+            results[kind] = {
+                "score": None, "grade": "-", "grade_text": "这一段没有可用信号",
+                "components": {}, "caps": ["没有信号"], "best_window": None,
+                "lower_pp": None, "excess_pp": None,
+                "events": 0, "days": 0, "label": item.get("label") or kind,
+            }
+            continue
+        windows = _windows_rows(picked_signal, picked_base)
+        best = scoring.best_horizon_by_lower(windows) or windows[0]
+        index = WINDOWS.index(best["window"])
+        year_excess, layer_excess = _segment_extras(picked_signal, picked_base, index)
+        days_with_hits = len({str(row[0]) for row in picked_signal})
+        scored = scoring.score_segment(
+            windows=windows,
+            events=len(picked_signal),
+            days=days_with_hits,
+            year_excess=year_excess,
+            layer_excess=layer_excess,
+            stress_excess=_stress_excess(picked_signal, picked_base, index),
+        )
+        scored["label"] = item.get("label") or kind
+        scored["windows"] = windows
+        results[kind] = scored
+    return results
+
+
+def build(conn: sqlite3.Connection, meta: dict[str, Any]) -> StandardReport:
+    """算整份方法 3 报告（纯函数：只读 ``conn``，产物由调用方按 ``_artifacts_dir`` 落盘）。"""
+    params = {"min_sample": int((meta.get("params") or {}).get("min_sample") or MIN_SAMPLE_DEFAULT)}
+    min_sample = max(20, params["min_sample"])
+
+    events, reasons, duplicates = load_events(conn)
+    valid = [row for row in events if row[10] and all(
+        row[_IDX_NET + index] is not None for index in range(len(WINDOWS)))]
+    base = [row for row in valid if row[9]]
+    signal = [row for row in valid if not row[9]]
+
+    if not signal:
+        return _empty_report(meta, params, events, reasons, duplicates)
+
+    # ---------------- 总体：五个周期 + 总盈利 ----------------
+    windows_rows = _windows_rows(signal, base)
 
     any_values = [row[_IDX_ANY] for row in signal if row[_IDX_ANY] is not None]
     any_base = [row[_IDX_ANY] for row in base if row[_IDX_ANY] is not None]
@@ -592,8 +685,93 @@ def build(conn: sqlite3.Connection, meta: dict[str, Any]) -> StandardReport:
     # ---------------- 结论卡 ----------------
     headline = _headline(signal, windows_rows, best, p_any, base_any, usable, usable_n, total_n, min_sample)
 
+    # ---------------- 评分（推理段 / 测试段） ----------------
+    scores = _segment_scores(meta, signal, base)
+    train_score = scores.get("train")
+    test_score = scores.get("test")
+    combined = scoring.combined(train_score or {}, test_score)
+    # 测试段的衰减惩罚要有推理段做参照，所以在算完之后补一次
+    if train_score and test_score and test_score.get("score") is not None:
+        rescored = scoring.score_segment(
+            windows=test_score.get("windows") or [],
+            events=int(test_score.get("events") or 0),
+            days=int(test_score.get("days") or 0),
+            year_excess=(),
+            layer_excess=(),
+            stress_excess=None,
+            reference=train_score,
+        )
+        # 只补衰减这一项，门槛与其它分量保持第一次的结果
+        delta = float(rescored.get("components", {}).get("decay") or 0.0) \
+            - float(test_score.get("components", {}).get("decay") or 0.0)
+        if delta:
+            test_score["score"] = round(max(0.0, float(test_score["score"]) + delta), 1)
+            test_score["components"] = {**test_score.get("components", {}),
+                                        "decay": round(delta + float(
+                                            test_score.get("components", {}).get("decay") or 0.0), 1)}
+            test_score["grade"], test_score["grade_text"] = scoring.grade_of(test_score["score"])
+            combined = scoring.combined(train_score, test_score)
+
+    score_rows: list[dict[str, Any]] = []
+    for key, label in (("train", "推理评分"), ("test", "验证评分")):
+        item = scores.get(key)
+        if not item:
+            continue
+        score_rows.append({
+            "segment": label,
+            "score": item.get("score"),
+            "grade": item.get("grade"),
+            "best_window": item.get("best_window"),
+            "excess_pp": item.get("excess_pp"),
+            "lower_pp": item.get("lower_pp"),
+            "events": item.get("events"),
+            "days": item.get("days"),
+            "caps": "；".join(item.get("caps") or []),
+        })
+    score_table = Table(
+        key="scores",
+        title="评分",
+        hint="50 = 和随机买入一样；60 = 及格（能拿去用）；85 以上 = 优秀。只用置信下界算分，样本少的条件拿不到高分。",
+        columns=[
+            Column("segment", "时间段", "text"),
+            Column("score", "评分", "number", hint="0–100"),
+            Column("grade", "等级", "text"),
+            Column("best_window", "最优持有期", "int", hint="交易日"),
+            Column("excess_pp", "超额", "pp"),
+            Column("lower_pp", "超额下界", "pp", hint="评分用的就是这个数"),
+            Column("events", "有效信号", "int"),
+            Column("days", "有信号的天数", "int"),
+            Column("caps", "封顶原因", "text"),
+        ],
+        rows=score_rows,
+    )
+
+    _train_text = (train_score or {}).get("score")
+    _test_text = (test_score or {}).get("score")
+    _train_text = "—" if _train_text is None else _train_text
+    _test_text = "—" if _test_text is None else _test_text
+    if combined.get("verdict") == "fail":
+        headline.verdict = "worse"
+        headline.title = f"不可用（{_train_text} 分）：" + headline.title
+    elif combined.get("verdict") == "pass":
+        headline.title = f"两段都及格（{_train_text} / {_test_text}）：" + headline.title
+    else:
+        headline.title = (f"评分 {_train_text}" + (f" / {_test_text}" if test_score else "")
+                          + "：" + headline.title)
+    headline.detail = (headline.detail + f" 综合判断：{combined.get('text')}。").strip()
+    headline.metrics = [
+        metric("score_train", "推理评分", (train_score or {}).get("score"), "分",
+               str((train_score or {}).get("grade_text") or "")),
+        *([
+            metric("score_test", "验证评分", test_score.get("score"), "分",
+                   str(test_score.get("grade_text") or ""))
+        ] if test_score else []),
+        metric("score_verdict", "结论", combined.get("verdict"), "", str(combined.get("text") or "")),
+        *headline.metrics,
+    ]
+
     # ---------------- 表格 ----------------
-    tables = _tables(windows_rows, profile, stock_rows, tests, distribution, min_sample)
+    tables = [score_table, *_tables(windows_rows, profile, stock_rows, tests, distribution, min_sample)]
 
     data_quality = {
         "events": len(events),
@@ -608,6 +786,10 @@ def build(conn: sqlite3.Connection, meta: dict[str, Any]) -> StandardReport:
         "min_sample": min_sample,
         "usable_segments": len(usable),
         "tests": len(tests),
+        "scores": {key: {"score": value.get("score"), "grade": value.get("grade"),
+                         "components": value.get("components"), "caps": value.get("caps")}
+                   for key, value in scores.items()},
+        "score_verdict": combined,
     }
 
     notes = [

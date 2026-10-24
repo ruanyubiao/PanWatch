@@ -16,15 +16,19 @@ import {
   DialogTitle,
 } from '@panwatch/base-ui/components/ui/dialog'
 import { toLocalDateTimeInput } from '@panwatch/base-ui/datetime'
-import { deleteAnalysisRun, listAnalysisRuns, type AnalysisRunMeta } from '@/lib/analysis-api'
+import { deleteAnalysisRun, listAnalysisHistory, type AnalysisRunMeta } from '@/lib/analysis-api'
 
 export const ANALYSIS_RUN_LIST_TEXTS_ZH = {
   title: '全部历史任务',
-  description: '所有条件跑过的数据分析，新的在上。点一行看详情。',
+  description: '数据分析与条件推理混在一起，新的在上。点一行看详情。',
   empty: '还没有跑过任何数据分析任务。',
   loading: '正在读取任务列表…',
   loadFailed: (message: string) => `读取失败：${message}`,
-  columns: { preset: '条件', range: '区间', status: '状态', hits: '命中', created: '创建时间', actions: '' },
+  columns: { kind: '类型', preset: '条件', range: '区间', score: '评分', status: '状态', hits: '命中', created: '创建时间', actions: '' },
+  kindAnalysis: '分析',
+  kindInfer: '条件推理',
+  scorePair: (train: number | null | undefined, test: number | null | undefined) =>
+    `${train ?? '—'}${test != null ? ` / ${test}` : ''}`,
   row: (start: string, end: string) => `${start} ~ ${end}`,
   validateSuffix: (days: number) => ` · 验证 ${days} 日`,
   status: {
@@ -68,7 +72,7 @@ export function AnalysisRunListDialog({
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setRuns(await listAnalysisRuns())
+      setRuns(await listAnalysisHistory(200))
       setError(null)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc))
@@ -117,8 +121,10 @@ export function AnalysisRunListDialog({
               <table className="w-full text-[11px]">
                 <thead>
                   <tr className="border-b border-border/60 text-muted-foreground">
+                    <th className="px-2 py-1 text-left font-medium">{T.columns.kind}</th>
                     <th className="px-2 py-1 text-left font-medium">{T.columns.preset}</th>
                     <th className="px-2 py-1 text-left font-medium">{T.columns.range}</th>
+                    <th className="px-2 py-1 text-right font-medium">{T.columns.score}</th>
                     <th className="px-2 py-1 text-left font-medium">{T.columns.status}</th>
                     <th className="px-2 py-1 text-right font-medium">{T.columns.hits}</th>
                     <th className="px-2 py-1 text-left font-medium">{T.columns.created}</th>
@@ -132,10 +138,18 @@ export function AnalysisRunListDialog({
                       className="cursor-pointer border-b border-border/30 hover:bg-accent/20"
                       onClick={() => onOpenRun(run)}
                     >
+                      <td className="px-2 py-1 text-muted-foreground">
+                        {run.kind === 'infer' ? T.kindInfer : T.kindAnalysis}
+                      </td>
                       <td className="px-2 py-1">{run.preset}</td>
                       <td className="px-2 py-1 text-muted-foreground">
-                        {T.row(run.start_date, run.end_date)}
+                        {run.kind === 'infer'
+                          ? `${run.train_start ?? ''} ~ ${run.valid_end ?? ''}`
+                          : T.row(run.start_date, run.end_date)}
                         {run.validate_days ? T.validateSuffix(run.validate_days) : ''}
+                      </td>
+                      <td className="px-2 py-1 text-right tabular-nums">
+                        {T.scorePair(run.score_train, run.score_test)}
                       </td>
                       <td className="px-2 py-1">
                         <span className={run.status === 'failed' ? 'text-destructive' : ''}>

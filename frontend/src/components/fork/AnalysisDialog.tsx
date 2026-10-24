@@ -28,15 +28,14 @@ import {
   createAnalysis,
   downloadAnalysisExcel,
   formatDuration,
-  getAnalysisMethods,
   getAnalysisReport,
   getAnalysisResult,
   getAnalysisRun,
+  listAnalysisHistory,
   listAnalysisRuns,
   previewAnalysis,
   resumeAnalysisRun,
   stopAnalysisRun,
-  type AnalysisMethodSpec,
   type AnalysisPreview,
   type AnalysisReport,
   type AnalysisRunMeta,
@@ -47,11 +46,25 @@ import { AnalysisMethodResult } from './analysis/AnalysisMethodResult'
 import { AnalysisStockTable } from './analysis/AnalysisStockTable'
 import { AnalysisSummaryBody } from './analysis/AnalysisSummary'
 import { AnalysisTaskDetailDialog } from './analysis/AnalysisTaskDetail'
+import { AnalysisInferPanel } from './analysis/AnalysisInferPanel'
+import { AnalysisScoreCard } from './analysis/AnalysisScoreCard'
+import {
+  createInfer,
+  getInferResults,
+  getInferRun,
+  listInferRuns,
+  pauseInfer,
+  resumeInfer,
+  saveInferVariant,
+  stopInfer,
+  type InferFinalist,
+  type InferRunMeta,
+} from '@/lib/infer-api'
 
 export const ANALYSIS_DIALOG_TEXTS_ZH = {
   button: '数据分析',
   title: '数据分析',
-  description: '用一个选股条件回测历史每一天，按选定的统计方法给出这个条件准不准。',
+  description: '用一个选股条件回测历史，给出两个评分：推理段找规律、测试段验真假。',
   createTitle: '创建数据分析任务',
   createHint: '选择条件、区间与股票范围，任务在后台跑，可以关掉页面。',
   preset: '选股条件',
@@ -66,12 +79,17 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
     return matched ? `方法 ${matched[1]}` : '方法 1'
   },
   methodFallback: '统计分析方法 1：持有期胜率与超额',
-  start: '开始日期',
-  end: '结束日期',
-  endHint: (last: string) => `不能晚于 ${last}（再往后验证行情不够）`,
+  start: '推理开始时间',
+  end: '推理结束时间',
+  testStart: '测试开始时间',
+  testEnd: '测试结束时间',
+  // 结束日按「显示口径」收：可以填到最新交易日，实际只分析到「减去验证天数」的那一天
+  endHint: (effective: string, days: number) => `实际分析到 ${effective}（留 ${days} 个交易日做验证）`,
+  testEndHint: (effective: string, days: number) => `实际验证到 ${effective}（留 ${days} 个交易日）`,
+  testOptionalHint: '测试段用于验证，不参与任何挑选',
   validateDays: '验证天数',
   // 用户 2026-10-23：提示改成「向未来看几个交易日」，不再带 1–30（范围由控件自己限住）
-  validateDaysHint: '向未来看几个交易日',
+  validateDaysHint: '向未来看几个交易日，结束时间会自动往前留出这段',
   validateDaysUnit: '个交易日',
   market: '股票范围',
   marketAll: '全部',
@@ -105,7 +123,16 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   excel: '下载 Excel',
   excelPending: 'Excel 生成中',
   newTask: '新建任务',
-  historyTitle: '历史任务',
+  historyTitle: '历史记录',
+  kindAnalysis: '分析',
+  kindInfer: '条件推理',
+  scoreShort: (train: number | null, test: number | null) =>
+    `评分 ${train ?? '—'}${test != null ? ` / ${test}` : ''}`,
+  inferTitle: '条件推理',
+  inferEnable: '启用',
+  inferIterations: '推演次数',
+  inferIterationsUnit: '次',
+  inferHint: '在基础条件上反复微调，每次调整都跑一轮完整评估；启用后任务会先搜索再验算',
   historyViewAll: '查看全部',
   historyEmpty: '这个条件还没有跑过',
   historyItem: (created: string, days: number, hits: number) => `${created} · ${days} 天 · ${hits} 条`,
@@ -125,21 +152,31 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   downloaded: (name: string) => `已开始下载 ${name}`,
 }
 
-const DEFAULT_START = '2020-01-01'
+const DEFAULT_START = '2024-01-01'
+const DEFAULT_TRAIN_END = '2025-12-31'
+const DEFAULT_TEST_START = '2026-01-01'
+const DEFAULT_ITERATIONS = 100
 
-type Mode = 'create' | 'run'
+type Mode = 'create' | 'run' | 'infer'
 
 interface FormState {
   preset: string
-  /** 统计分析方法 id */
+  /** 统计分析方法 id（只剩 stat_v3，保留字段是为了兼容后端） */
   method: string
+  /** 推理段 */
   startDate: string
   endDate: string
+  /** 测试段（只验算，不参与挑选） */
+  testStart: string
+  testEnd: string
   /** 验证天数（向前看几个交易日），默认 30，最小 1 */
   validateDays: number
   marketAll: boolean
   markets: ScreenMarket[]
   includeSt: boolean
+  /** 条件推理：在基础条件上反复微调（用户 2026-10-24 第 5 条） */
+  inferEnabled: boolean
+  inferIterations: number
 }
 
 /** 验证天数上限：signals.db 只有 r1..r30 列（再多就要改表结构） */
@@ -155,6 +192,23 @@ const MARKET_LABELS: Record<ScreenMarket, string> = {
 function formatCreatedAt(instant: string): string {
   // 用共享的本地时间转换（不能用 slice + replace 直接裁 ISO：会丢掉时区偏移）
   return toLocalDateTimeInput(instant).slice(0, 16).replace('T', ' ')
+}
+
+/** 从统一信封里取两个评分（后端 data_quality.scores） */
+function scoresOf(envelope: AnalysisResultEnvelope): {
+  train: number | null
+  test: number | null
+  trainGrade: string | null
+  verdict: { verdict?: string; text?: string; score?: number | null } | null
+} {
+  const scores = (envelope.result?.data_quality as { scores?: Record<string, { score?: number | null; grade?: string }> } | undefined)?.scores
+  const verdict = (envelope.result?.data_quality as { score_verdict?: { verdict?: string; text?: string; score?: number | null } } | undefined)?.score_verdict
+  return {
+    train: scores?.train?.score ?? null,
+    test: scores?.test?.score ?? null,
+    trainGrade: scores?.train?.grade ?? null,
+    verdict: verdict ?? null,
+  }
 }
 
 function statusLabel(status: string): string {
@@ -190,26 +244,30 @@ export function AnalysisDialog({
 }) {
   const T = ANALYSIS_DIALOG_TEXTS_ZH
   const [mode, setMode] = useState<Mode>('create')
-  const [methods, setMethods] = useState<AnalysisMethodSpec[]>([])
-  // ref 供 reset 读默认方法（避免 methods 进 reset 依赖导致表单被重置）
-  const methodsRef = useRef<AnalysisMethodSpec[]>([])
   const [form, setForm] = useState<FormState>({
     preset: '',
-    method: 'stat_v1',
+    method: 'stat_v3',
     startDate: DEFAULT_START,
     endDate: '',
+    testStart: DEFAULT_TEST_START,
+    testEnd: '',
     validateDays: 30,
     marketAll: true,
     markets: [...SCREEN_MARKETS],
     includeSt: false,
+    inferEnabled: false,
+    inferIterations: DEFAULT_ITERATIONS,
   })
   // 用户手选过结束日就不再自动跟随验证天数（否则改天数会把他选的日期盖掉）
   const endTouchedRef = useRef(false)
   const [preview, setPreview] = useState<AnalysisPreview | null>(null)
   // 验证天数的输入框文本单独存：数字输入框清空时若立刻夹回 1，用户打字会变成「1x」
   const [daysText, setDaysText] = useState('30')
+  // 推演次数的输入框文本（和验证天数一样：清空时不要立刻夹回 1，否则打字会变成 1xxx）
+  const [iterText, setIterText] = useState(String(DEFAULT_ITERATIONS))
   const [previewError, setPreviewError] = useState<string | null>(null)
-  const [runs, setRuns] = useState<AnalysisRunMeta[]>([])
+  // 历史记录：分析与条件推理混排（第 6 条）
+  const [history, setHistory] = useState<AnalysisRunMeta[]>([])
   const [run, setRun] = useState<AnalysisRunMeta | null>(null)
   const [report, setReport] = useState<AnalysisReport | null>(null)
   // 方法 2（以及以后的新方法）走统一信封
@@ -219,6 +277,11 @@ export function AnalysisDialog({
   const [stopping, setStopping] = useState(false)
   // 历史任务点开的是「任务详情」窗口；「查看全部」是完整列表
   const [detailRunId, setDetailRunId] = useState<string | null>(null)
+  // 条件推理（从本弹窗创建，取代主界面原来的「条件推理」按钮）
+  const [inferRun, setInferRun] = useState<InferRunMeta | null>(null)
+  const [inferFinalists, setInferFinalists] = useState<InferFinalist[]>([])
+  const [inferSaved, setInferSaved] = useState<Record<number, string>>({})
+  const [inferBusy, setInferBusy] = useState(false)
   const [listOpen, setListOpen] = useState(false)
   const timer = useRef<number | null>(null)
 
@@ -232,19 +295,24 @@ export function AnalysisDialog({
     setPreviewError(null)
     setStopping(false)
     setDaysText('30')
+    setIterText(String(DEFAULT_ITERATIONS))
     endTouchedRef.current = false
     setForm({
       preset: presets[0]?.name ?? '',
       // 方法列表是异步来的；用 ref 读默认方法，避免把它写进 reset 的依赖
       // （否则列表一回来 reset 就重跑，把用户刚填的表单清掉）
-      method: methodsRef.current[0]?.id ?? 'stat_v1',
+      method: 'stat_v3',
       startDate: DEFAULT_START,
-      // 预估回来之前先给条件选股的日期，回来后由 max_end_date 覆盖（用户没手选时）
-      endDate: asof ?? '',
+      // 预估回来之前先给一个合理的默认，回来后由 max_end_date 覆盖（用户没手选时）
+      endDate: asof ?? DEFAULT_TRAIN_END,
+      testStart: DEFAULT_TEST_START,
+      testEnd: asof ?? '',
       validateDays: 30,
       marketAll: true,
       markets: [...SCREEN_MARKETS],
       includeSt: false,
+      inferEnabled: false,
+      inferIterations: DEFAULT_ITERATIONS,
     })
   }, [asof, presets])
 
@@ -255,9 +323,12 @@ export function AnalysisDialog({
     let cancelled = false
     void (async () => {
       try {
-        const list = await listAnalysisRuns()
+        const [list, merged] = await Promise.all([
+          listAnalysisRuns(),
+          listAnalysisHistory(50).catch(() => [] as AnalysisRunMeta[]),
+        ])
         if (cancelled) return
-        setRuns(list)
+        setHistory(merged)
         const active = list.find(item => item.status === 'running' || item.status === 'pending')
         if (active) {
           setRun(active)
@@ -267,18 +338,6 @@ export function AnalysisDialog({
         if (!cancelled) setError(T.loadFailed(exc instanceof Error ? exc.message : String(exc)))
       }
     })()
-    void getAnalysisMethods()
-      .then(items => {
-        if (cancelled) return
-        methodsRef.current = items
-        setMethods(items)
-        // 列表回来时表单还是初始方法（用户没改过）→ 用后端标记的默认方法
-        setForm(current => ({
-          ...current,
-          method: current.method || items[0]?.id || 'stat_v1',
-        }))
-      })
-      .catch(() => undefined)
     return () => {
       cancelled = true
     }
@@ -299,6 +358,8 @@ export function AnalysisDialog({
             method: form.method,
             start_date: form.startDate,
             end_date: form.endDate || null,
+            test_start_date: form.testStart || null,
+            test_end_date: form.testEnd || null,
             validate_days: form.validateDays,
             markets: form.marketAll ? [...SCREEN_MARKETS] : form.markets,
             include_st: form.includeSt,
@@ -306,9 +367,13 @@ export function AnalysisDialog({
           if (!cancelled) {
             setPreview(data)
             setPreviewError(null)
-            // 结束日默认 = 最后一个「验证得完」的交易日；用户手选过就不动
+            // 结束时间默认 = 最新交易日（显示口径）；用户手选过就不动
             if (!endTouchedRef.current && data.max_end_date) {
-              setForm(current => ({ ...current, endDate: data.max_end_date }))
+              setForm(current => ({
+                ...current,
+                endDate: data.max_end_date,
+                testEnd: current.testEnd || data.max_test_end_date || data.max_end_date,
+              }))
             }
           }
         } catch (exc) {
@@ -324,7 +389,7 @@ export function AnalysisDialog({
       window.clearTimeout(handle)
     }
   }, [form.endDate, form.includeSt, form.marketAll, form.markets, form.method, form.preset,
-      form.startDate, form.validateDays, mode, open])
+      form.startDate, form.testEnd, form.testStart, form.validateDays, mode, open])
 
   // 进行中：轮询；到终态后拉统计
   useEffect(() => {
@@ -341,7 +406,7 @@ export function AnalysisDialog({
           const next = await getAnalysisRun(run.run_id)
           setRun(current => ({ ...(current ?? next), ...next }))
           if (next.status !== 'running' && next.status !== 'pending') {
-            void listAnalysisRuns().then(setRuns).catch(() => undefined)
+            void listAnalysisHistory(50).then(setHistory).catch(() => undefined)
           }
         } catch {
           /* 轮询失败不打扰用户：下一轮再试 */
@@ -402,25 +467,120 @@ export function AnalysisDialog({
     if (!form.preset || submitting) return
     setSubmitting(true)
     setError(null)
+    const markets = form.marketAll ? [...SCREEN_MARKETS] : form.markets
     try {
+      if (form.inferEnabled) {
+        // 条件推理：训练段搜索 + 测试段验算（两段都由后端把「验证天数」扣掉）
+        const created = await createInfer({
+          preset: form.preset,
+          method: 'stat_v3',
+          train_start: form.startDate,
+          train_end: form.endDate,
+          valid_start: form.testStart,
+          valid_end: form.testEnd || null,
+          iterations: form.inferIterations,
+          markets,
+          include_st: form.includeSt,
+        })
+        setInferRun(created)
+        setInferFinalists([])
+        setInferSaved({})
+        setMode('infer')
+        return
+      }
       const created = await createAnalysis({
         preset: form.preset,
         method: form.method,
         start_date: form.startDate,
         end_date: form.endDate || null,
+        test_start_date: form.testStart || null,
+        test_end_date: form.testEnd || null,
         validate_days: form.validateDays,
-        markets: form.marketAll ? [...SCREEN_MARKETS] : form.markets,
+        markets,
         include_st: form.includeSt,
       })
       setRun(created)
       setReport(null)
       setStandard(null)
       setMode('run')
-      setRuns(current => [created, ...current])
+
     } catch (exc) {
       setError(T.createFailed(exc instanceof Error ? exc.message : String(exc)))
     } finally {
       setSubmitting(false)
+    }
+  }
+
+  // ---- 条件推理：轮询 + 终态拉结果
+  useEffect(() => {
+    if (!open || mode !== 'infer' || !inferRun) return
+    const active = ['pending', 'running', 'paused'].includes(inferRun.status) && inferRun.alive !== false
+    if (!active) return
+    const handle = window.setInterval(() => {
+      void (async () => {
+        try {
+          const next = await getInferRun(inferRun.run_id)
+          setInferRun(next)
+          if (!['pending', 'running', 'paused'].includes(next.status)) {
+            void getInferResults(next.run_id)
+              .then(data => setInferFinalists(data.finalists ?? []))
+              .catch(() => undefined)
+          }
+        } catch {
+          /* 轮询失败下一轮再试 */
+        }
+      })()
+    }, 2500)
+    return () => window.clearInterval(handle)
+  }, [inferRun, mode, open])
+
+  // 打开弹窗时如果最近有推理任务在跑，直接进推理界面
+  useEffect(() => {
+    if (!open || mode !== 'create') return
+    if (inferRun) return
+    void listInferRuns(1)
+      .then(items => {
+        const active = items[0]
+        if (active && ['pending', 'running', 'paused'].includes(active.status) && active.alive !== false) {
+          setInferRun(active)
+          setMode('infer')
+        }
+      })
+      .catch(() => undefined)
+  }, [inferRun, mode, open])
+
+  const handleInferControl = async (action: 'pause' | 'resume' | 'stop') => {
+    if (!inferRun) return
+    setInferBusy(true)
+    try {
+      const next = action === 'pause'
+        ? await pauseInfer(inferRun.run_id)
+        : action === 'resume'
+          ? await resumeInfer(inferRun.run_id)
+          : await stopInfer(inferRun.run_id)
+      setInferRun(next)
+      if (action === 'stop' || next.status === 'done') {
+        const data = await getInferResults(inferRun.run_id).catch(() => null)
+        if (data) setInferFinalists(data.finalists ?? [])
+      }
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc))
+    } finally {
+      setInferBusy(false)
+    }
+  }
+
+  const handleSaveInfer = async (item: InferFinalist) => {
+    if (!inferRun || inferSaved[item.rank]) return
+    setInferBusy(true)
+    try {
+      const saved = await saveInferVariant(inferRun.run_id, item.rank)
+      setInferSaved(current => ({ ...current, [item.rank]: saved.name }))
+      setError(null)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc))
+    } finally {
+      setInferBusy(false)
     }
   }
 
@@ -483,23 +643,9 @@ export function AnalysisDialog({
     return Math.min(100, Math.round((done / total) * 100))
   }, [progress, run])
 
-  const presetRuns = useMemo(
-    () => runs.filter(item => !form.preset || item.preset === form.preset).slice(0, 10),
-    [form.preset, runs],
-  )
+  // 历史记录不再按条件过滤：用户要看「两种任务混在一起」的最近记录（第 6 条）
+  const recentHistory = useMemo(() => history.slice(0, 10), [history])
 
-  const selectedMethod = useMemo(
-    () => methods.find(item => item.id === form.method) ?? null,
-    [form.method, methods],
-  )
-  // 方法是否自己声明了「验证天数」参数（方法 1 有；方法 2 的窗口是固定的）
-  const daysEditable = !selectedMethod || selectedMethod.params.some(item => item.key === 'validate_days')
-  // 固定窗口取方法最长窗口（方法 2 = 35），没有 windows 就退回 forward_days
-  const fixedWindow = selectedMethod
-    ? (selectedMethod.windows[selectedMethod.windows.length - 1] ?? selectedMethod.forward_days)
-    : 35
-  // 固定模式只是「同一行里的输入框不可编辑」——两种模式共用一套控件与尺寸，
-  // 切换方法时行高/列位置不变（用户 2026-10-23：原来换成一行纯文本，UI 会跳动）
   const inputClass = 'h-7 w-[80px] rounded-md border border-input bg-background px-2 text-[12px]'
 
   return (
@@ -546,37 +692,7 @@ export function AnalysisDialog({
                     )}
                   </div>
 
-                  {/* 统计方法（用户第 5 条：放在「选股条件」下面） */}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.method}</span>
-                    <Select
-                      value={form.method}
-                      onValueChange={value =>
-                        setForm(current => ({ ...current, method: value }))
-                      }
-                    >
-                      <SelectTrigger className="h-7 w-[280px] text-[12px]" data-fork-analysis-method>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {(methods.length > 0
-                          ? methods
-                          : [{ id: 'stat_v1', name: T.methodFallback }]
-                        ).map(item => (
-                          <SelectItem key={item.id} value={item.id}>
-                            {item.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {selectedMethod && (
-                      <span className="text-[10px] text-muted-foreground">
-                        {T.methodHint(selectedMethod.forward_days)}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* 三行竖排（用户第 2 条）：开始日期 / 结束日期 / 验证天数 */}
+                  {/* 推理段（用户 2026-10-24：开始/结束改名为「推理开始/结束时间」） */}
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.start}</span>
                     <input
@@ -601,7 +717,6 @@ export function AnalysisDialog({
                         const value = event.target.value
                         const cap = preview?.max_end_date
                         endTouchedRef.current = true
-                        // 用户手选也不能晚于可验证的最后一天（第 2 条）
                         setForm(current => ({
                           ...current,
                           endDate: cap && value > cap ? cap : value,
@@ -609,59 +724,77 @@ export function AnalysisDialog({
                       }}
                       className="h-7 rounded-md border border-input bg-background px-2 text-[12px]"
                     />
-                    <span className="text-[10px] text-muted-foreground">
-                      {preview ? T.endHint(preview.max_end_date) : ''}
+                    <span className="text-[10px] text-muted-foreground" data-fork-analysis-end-hint>
+                      {preview?.effective_end_date
+                        ? T.endHint(preview.effective_end_date, preview.forward_days ?? 30)
+                        : ''}
                     </span>
                   </div>
 
-                  {/* 验证天数：两种统计方法共用这一行同一套控件（方法 2 = 同一个输入框但不可编辑） */}
-                  <div
-                    className="flex flex-wrap items-center gap-2"
-                    data-fork-analysis-validate-row={daysEditable ? 'edit' : 'fixed'}
-                  >
+                  {/* 测试段（用户第 1 条）：和推理段一样扣掉验证天数 */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.testStart}</span>
+                    <input
+                      type="date"
+                      value={form.testStart}
+                      aria-label={T.testStart}
+                      data-fork-analysis-test-start
+                      onChange={event => setForm(current => ({ ...current, testStart: event.target.value }))}
+                      className="h-7 rounded-md border border-input bg-background px-2 text-[12px]"
+                    />
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.testEnd}</span>
+                    <input
+                      type="date"
+                      value={form.testEnd}
+                      aria-label={T.testEnd}
+                      data-fork-analysis-test-end
+                      max={preview?.max_test_end_date ?? preview?.max_end_date ?? undefined}
+                      onChange={event =>
+                        setForm(current => ({ ...current, testEnd: event.target.value }))
+                      }
+                      className="h-7 rounded-md border border-input bg-background px-2 text-[12px]"
+                    />
+                    <span className="text-[10px] text-muted-foreground">
+                      {preview?.test_effective_end_date
+                        ? T.testEndHint(preview.test_effective_end_date, preview.forward_days ?? 30)
+                        : T.testOptionalHint}
+                    </span>
+                  </div>
+
+                  {/* 验证天数 */}
+                  <div className="flex flex-wrap items-center gap-2" data-fork-analysis-validate-row="edit">
                     <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.validateDays}</span>
-                    {daysEditable ? (
-                      <input
-                        type="number"
-                        min={1}
-                        max={MAX_VALIDATE_DAYS}
-                        step={1}
-                        value={daysText}
-                        aria-label={T.validateDays}
-                        data-fork-analysis-validate-days
-                        onChange={event => {
-                          const raw = event.target.value
-                          setDaysText(raw)
-                          const parsed = Math.trunc(Number(raw))
-                          if (!Number.isFinite(parsed) || raw === '') return
-                          const next = Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
-                          endTouchedRef.current = false  // 改天数 → 结束日跟着上限走
-                          setForm(current => ({ ...current, validateDays: next }))
-                        }}
-                        onBlur={() => {
-                          const parsed = Math.trunc(Number(daysText))
-                          const next = Number.isFinite(parsed) && daysText !== ''
-                            ? Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
-                            : 30
-                          setDaysText(String(next))
-                          setForm(current => ({ ...current, validateDays: next }))
-                        }}
-                        className={inputClass}
-                      />
-                    ) : (
-                      <input
-                        type="number"
-                        value={fixedWindow}
-                        readOnly
-                        disabled
-                        aria-label={T.validateDays}
-                        data-fork-analysis-validate-days
-                        data-fork-analysis-fixed-window
-                        className={`${inputClass} cursor-not-allowed opacity-70`}
-                      />
-                    )}
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_VALIDATE_DAYS}
+                      step={1}
+                      value={daysText}
+                      aria-label={T.validateDays}
+                      data-fork-analysis-validate-days
+                      onChange={event => {
+                        const raw = event.target.value
+                        setDaysText(raw)
+                        const parsed = Math.trunc(Number(raw))
+                        if (!Number.isFinite(parsed) || raw === '') return
+                        const next = Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
+                        setForm(current => ({ ...current, validateDays: next }))
+                      }}
+                      onBlur={() => {
+                        const parsed = Math.trunc(Number(daysText))
+                        const next = Number.isFinite(parsed) && daysText !== ''
+                          ? Math.min(MAX_VALIDATE_DAYS, Math.max(1, parsed))
+                          : 30
+                        setDaysText(String(next))
+                        setForm(current => ({ ...current, validateDays: next }))
+                      }}
+                      className={inputClass}
+                    />
                     <span className="text-[10px] text-muted-foreground" data-fork-analysis-validate-hint>
-                      {daysEditable ? T.validateDaysHint : T.methodFixedDays(fixedWindow)}
+                      {T.validateDaysHint}
                     </span>
                   </div>
 
@@ -733,6 +866,60 @@ export function AnalysisDialog({
                     </div>
                   </div>
 
+                  {/* 条件推理（用户第 5 条）：股票范围下面一行，勾选后才可填次数 */}
+                  <div className="mt-1 border-t border-border/40 pt-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.inferTitle}</span>
+                      <label className="flex items-center gap-1.5 text-[11px]">
+                        <input
+                          type="checkbox"
+                          checked={form.inferEnabled}
+                          aria-label={T.inferEnable}
+                          data-fork-analysis-infer-enabled
+                          onChange={event =>
+                            setForm(current => ({ ...current, inferEnabled: event.target.checked }))
+                          }
+                          className="h-3.5 w-3.5 accent-primary"
+                        />
+                        {T.inferEnable}
+                      </label>
+                      <span className="text-[10px] text-muted-foreground">{T.inferHint}</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.inferIterations}</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={5000}
+                        step={1}
+                        value={iterText}
+                        disabled={!form.inferEnabled}
+                        aria-label={T.inferIterations}
+                        data-fork-analysis-infer-iterations
+                        onChange={event => {
+                          const raw = event.target.value
+                          setIterText(raw)
+                          const parsed = Math.trunc(Number(raw))
+                          if (!Number.isFinite(parsed) || raw === '') return
+                          setForm(current => ({
+                            ...current,
+                            inferIterations: Math.min(5000, Math.max(1, parsed)),
+                          }))
+                        }}
+                        onBlur={() => {
+                          const parsed = Math.trunc(Number(iterText))
+                          const next = Number.isFinite(parsed) && iterText !== ''
+                            ? Math.min(5000, Math.max(1, parsed))
+                            : DEFAULT_ITERATIONS
+                          setIterText(String(next))
+                          setForm(current => ({ ...current, inferIterations: next }))
+                        }}
+                        className={`${inputClass} ${form.inferEnabled ? '' : 'cursor-not-allowed opacity-60'}`}
+                      />
+                      <span className="text-[10px] text-muted-foreground">{T.inferIterationsUnit}</span>
+                    </div>
+                  </div>
+
                   <p className="text-[10px] text-muted-foreground" data-fork-analysis-estimate>
                     {preview
                       ? T.estimate(preview.days, formatDuration(preview.days * 4))
@@ -768,31 +955,79 @@ export function AnalysisDialog({
                     {T.historyViewAll}
                   </button>
                 </div>
-                {presetRuns.length === 0 ? (
+                {recentHistory.length === 0 ? (
                   <p className="text-[10px] text-muted-foreground">{T.historyEmpty}</p>
                 ) : (
                   <ul className="space-y-0.5">
-                    {presetRuns.map(item => (
+                    {recentHistory.map(item => (
                       <li key={item.run_id}>
                         <button
                           type="button"
-                          className="flex w-full items-center justify-between rounded border border-transparent px-1.5 py-1 text-[11px] hover:border-border/60 hover:bg-accent/20"
+                          className="flex w-full items-center justify-between gap-2 rounded border border-transparent px-1.5 py-1 text-[11px] hover:border-border/60 hover:bg-accent/20"
                           aria-label={T.openTask}
                           onClick={() => {
-                            // 历史任务 → 任务详情窗口（用户第 5 条），不再进数据分析界面
+                            if (item.kind === 'infer') {
+                              // 推理任务有自己的进度/结果面板，不能走分析的任务详情接口
+                              void getInferRun(item.run_id)
+                                .then(next => {
+                                  setInferRun(next)
+                                  setMode('infer')
+                                  if (!['pending', 'running', 'paused'].includes(next.status)) {
+                                    void getInferResults(next.run_id)
+                                      .then(data => setInferFinalists(data.finalists ?? []))
+                                      .catch(() => undefined)
+                                  }
+                                })
+                                .catch(() => setDetailRunId(item.run_id))
+                              return
+                            }
                             setDetailRunId(item.run_id)
                           }}
+                          data-fork-history-item={item.kind ?? 'analysis'}
                         >
-                          <span>
-                            {T.historyItem(formatCreatedAt(item.created_at), item.days_total, item.hits)}
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span className="rounded border border-border/60 px-1 text-[10px] text-muted-foreground">
+                              {item.kind === 'infer' ? T.kindInfer : T.kindAnalysis}
+                            </span>
+                            <span className="truncate">
+                              {item.preset} · {formatCreatedAt(item.created_at)}
+                            </span>
                           </span>
-                          <span className="text-muted-foreground">{statusLabel(item.status)}</span>
+                          <span className="flex shrink-0 items-center gap-2">
+                            <span className="tabular-nums" data-fork-history-score>
+                              {T.scoreShort(
+                                item.score_train ?? null,
+                                item.score_test ?? null,
+                              )}
+                            </span>
+                            <span className="text-muted-foreground">{statusLabel(item.status)}</span>
+                          </span>
                         </button>
                       </li>
                     ))}
                   </ul>
                 )}
               </section>
+            </div>
+          )}
+
+          {mode === 'infer' && inferRun && (
+            <div className="space-y-3" data-fork-analysis-infer>
+              <AnalysisInferPanel
+                run={inferRun}
+                finalists={inferFinalists}
+                savedIndex={inferSaved}
+                busy={inferBusy}
+                onPause={() => void handleInferControl('pause')}
+                onResume={() => void handleInferControl('resume')}
+                onStop={() => void handleInferControl('stop')}
+                onSave={item => void handleSaveInfer(item)}
+              />
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" className="h-7 px-3 text-[12px]" onClick={reset}>
+                  {T.newTask}
+                </Button>
+              </div>
             </div>
           )}
 
@@ -910,6 +1145,12 @@ export function AnalysisDialog({
 
               {terminal && runMethod !== 'stat_v1' && standard && (
                 <div className="space-y-3" data-fork-analysis-result>
+                  <AnalysisScoreCard
+                    train={scoresOf(standard).train}
+                    test={scoresOf(standard).test}
+                    trainGrade={scoresOf(standard).trainGrade}
+                    verdict={run.score_verdict ?? scoresOf(standard).verdict}
+                  />
                   <AnalysisMethodResult runId={run.run_id} report={standard.result} compact />
                   <div className="flex flex-wrap items-center gap-2">
                     <Button
