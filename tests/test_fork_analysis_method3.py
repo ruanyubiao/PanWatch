@@ -258,3 +258,57 @@ def test_cost_model_is_used_for_net_probability():
     result = costs.realistic_cost("2022-06-01", 0.2)
     assert result > 0
     assert costs.realistic_cost("2022-06-01", 50.0) < result
+
+
+def test_cluster_excess_equals_pooled_difference():
+    """超额必须等于「条件概率 − 基准概率」——这两个数报告里并排放，不能各算各的。"""
+    signal = [("2022-06-01", f"6000{i:02d}", "", "", "", None, None, None, "2022", 0, 1, 10.0, 0.003,
+               0.05 if i < 60 else -0.05, None, None, None, None, None)
+              for i in range(100)]
+    base = [("2022-06-01", f"0000{i:02d}", "", "", "", None, None, None, "2022", 1, 1, 10.0, 0.003,
+             0.05 if i < 40 else -0.05, None, None, None, None, None)
+            for i in range(100)]
+    excess = method3._cluster_excess(signal, base, 0)
+    assert excess["pp"] == pytest.approx(20.0, abs=1e-9)
+    assert excess["base_p"] == pytest.approx(40.0)
+    assert excess["base_n"] == 100
+
+
+def test_thin_baseline_cannot_be_judged():
+    """基准样本太薄时不给结论（这正是第一版把「住宿业 +21pp」判成有效的那个坑）。"""
+    signal = [("2022-06-01", f"6000{i:02d}", "", "", "", None, None, None, "2022", 0, 1, 10.0, 0.003,
+               0.05, None, None, None, None, None) for i in range(300)]
+    base = [("2022-06-01", "000001", "", "", "", None, None, None, "2022", 1, 1, 10.0, 0.003,
+             -0.05, None, None, None, None, None)]
+    excess = method3._cluster_excess(signal, base, 0)
+    assert excess["base_n"] == 1
+    assert method3._judge(300, excess["pp"], 0.01, 100, excess["base_n"]) == "无基准"
+
+
+def test_cluster_excess_removes_common_market_factor():
+    """两组日胜率同向大幅波动时，超额仍要显著——方差必须「差值之后」再算。
+
+    这正是第一版的错：把两组的方差相加（忽略协方差），同一个数据集上 t 从 −4.4 崩到 −0.29，
+    把「明确跑输」误判成「说不清」。
+    """
+    import random
+
+    rng = random.Random(7)
+    signal: list[tuple] = []
+    base: list[tuple] = []
+    for day in range(200):
+        d0 = f"2022-{day:05d}"
+        factor = 0.15 if day % 2 else 0.80  # 大盘环境：一半日子容易赚、一半难赚
+        for index in range(200):
+            win = rng.random() < (factor + 0.10)
+            value = 0.02 if win else -0.02
+            signal.append((d0, f"6{index:05d}", "", "", "", None, None, None, "2022", 0, 1,
+                           10.0, 0.003, value, value, value, value, value, value))
+        for index in range(200):
+            win = rng.random() < (factor - 0.05)
+            value = 0.02 if win else -0.02
+            base.append((d0, f"0{index:05d}", "", "", "", None, None, None, "2022", 1, 1,
+                         10.0, 0.003, value, value, value, value, value, value))
+    excess = method3._cluster_excess(signal, base, 0)
+    assert excess["pp"] == pytest.approx(15.0, abs=2.0)
+    assert excess["t"] is not None and excess["t"] > 8
