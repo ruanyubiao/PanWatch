@@ -315,3 +315,46 @@ def test_创建任务时交易日存成日期数组而不是个数(monkeypatch):
                               valid_start=dt.date(2026, 1, 1), iterations=2))
     assert box["train_days"] == ["2024-01-02", "2024-01-03"]
     assert box["valid_days"] == ["2026-01-05"]
+
+
+def test_同名同参的补充条件被丢掉_不同参保留():
+    """曾经的 bug：基础条件里已有「连续上涨3天」，变异又加了一条一模一样的，
+    排行榜描述变成「… 连续上涨3天 ＋ … ＋ 连续上涨3天」，白占搜索预算。"""
+    base = {"type": "group", "operator": "AND", "children": [
+        {"type": "condition", "name": "consecutive_rising", "params": {"start": 1, "days": 3}},
+        {"type": "condition", "name": "more_bullish_candles", "params": {"n": 1, "m": 1}},
+    ]}
+    filters = [
+        {"name": "consecutive_rising", "params": {"start": 1, "days": 3}},   # 与基础完全重复 → 丢
+        {"name": "consecutive_rising", "params": {"start": 1, "days": 2}},   # 参数不同 → 留
+        {"name": "more_bullish_candles", "params": {"n": 1, "m": 10}},       # 参数不同 → 留
+    ]
+    rule = space.make_rule(base, filters)
+    tail = rule["children"][1:]
+    assert [(c["name"], c["params"]) for c in tail] == [
+        ("consecutive_rising", {"start": 1, "days": 2}),
+        ("more_bullish_candles", {"n": 1, "m": 10}),
+    ]
+
+
+def test_保存条件时传的是可序列化字典(monkeypatch):
+    """曾经的 bug：直接把 ScreenRequest 交给 json.dump，保存条件 500。"""
+    from src.modules.market.fork_infer import search, store
+    from src.modules.market.fork_screen import presets
+
+    captured = {}
+
+    monkeypatch.setattr(store, "load_meta", lambda run_id: {
+        "preset": "xg1",
+        "base_request": {"trading_days": 30, "markets": ["sh"], "include_st": False},
+    })
+    monkeypatch.setattr(store, "read_finalists", lambda run_id: [{"rank": 1, "rule": BASE_RULE}])
+    monkeypatch.setattr(store, "read_results", lambda run_id: [])
+    monkeypatch.setattr(presets, "save",
+                        lambda name, request, overwrite=False: captured.update(
+                            name=name, request=request))
+
+    search.save_condition("20260101-000000-test", 1, "xg_opt1")
+    assert captured["name"] == "xg_opt1"
+    assert isinstance(captured["request"], dict), "必须是 dict，否则 json.dump 会 TypeError"
+    assert captured["request"]["rule"]["children"][0]["name"] == "consecutive_bullish"

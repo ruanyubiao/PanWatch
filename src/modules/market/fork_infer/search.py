@@ -615,4 +615,5 @@ def save_condition(run_id: str, index: int, name: Optional[str] = None) -> dict[
         "rule": rule,
     })
     final_name = name or f"{meta.get('preset', 'xg')}_{index}"
-    return presets.save(final_name, request, overwrite=False)
+    # presets.save() 直接 json.dump，必须传可序列化的 dict（传 pydantic 模型会 TypeError → 500）
+    return presets.save(final_name, request.model_dump(mode="json"), overwrite=False)
