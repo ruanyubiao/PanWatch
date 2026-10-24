@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import logging
+import os
 import random
 import threading
 import time
@@ -35,6 +36,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from ..api import fork_market
 from ..fork_analysis import forward, methods
+from ..fork_analysis import scoring as scoring100
 from ..fork_screen import presets
 from ..fork_screen.evaluator import compile_rule, required_bars_of_group
 from ..fork_screen.models import ScreenRequest
@@ -192,12 +194,33 @@ def preview(payload: InferCreate) -> dict[str, Any]:
     }
 
 
+def reconcile() -> None:
+    """把「meta 说在跑、线程其实已经没了」的任务标成 interrupted。
+
+    不做这一步，一个僵死记录会一直占着单任务槽 —— 表现就是用户说的
+    「新的任务不能创建」（2026-10-24 截图里那个 99/100 的任务）。
+    """
+    for meta in store.list_runs(limit=300):
+        status = str(meta.get("status") or "")
+        if status not in (store.STATUS_RUNNING, store.STATUS_PENDING, store.STATUS_PAUSED):
+            continue
+        run_id = str(meta.get("run_id") or "")
+        if not run_id or is_running(run_id):
+            continue
+        try:
+            store.patch_meta(run_id, status="interrupted",
+                             progress={**(meta.get("progress") or {}), "phase": "interrupted"})
+        except Exception:  # noqa: BLE001
+            continue
+
+
 def create(payload: InferCreate) -> dict[str, Any]:
     """建任务目录 + 起后台线程。"""
     info = preview(payload)
     # preview() 里的 train_days / valid_days 是**个数**（给界面显示用），
     # meta 里要存的是日期数组（主循环按日期回看）。所以这里再取一次交易日历。
     segment = two_segment_days(payload)
+    reconcile()
     busy = any_running()
     if busy:
         raise InferBusy(f"已有条件推理任务在跑（{busy}），等它结束或先停止")
@@ -328,7 +351,62 @@ class _Control:
         return int(time.perf_counter() - self._started)
 
 
+def _throttle() -> None:
+    """把推理线程压到「留一个核给系统」：绑核 + 降优先级。
+
+    用户 2026-10-24 第 3 条：*「服务器跑条件推理任务的时候，cpu不能占满，需要给服务器空一个
+    cpu核心」*。Linux 的 ``sched_setaffinity(0, ...)`` 只影响**当前线程**，所以网页/接口
+    线程仍然能用满所有核，只有这个搜索线程被限制在 ``n-1`` 个核上跑。
+    """
+    try:
+        cores = os.cpu_count() or 1
+        if cores > 1:
+            os.sched_setaffinity(0, set(range(cores - 1)))
+    except (AttributeError, OSError):  # 非 Linux 或没权限：不致命
+        pass
+    try:
+        os.nice(10)  # 只降当前线程的优先级（nice 在 Linux 上是 per-thread）
+    except OSError:
+        pass
+
+
+def _score_100(metrics: Any, reference: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """把一次完整评估映射成 0–100 分（与数据分析用的是同一个评分模块）。
+
+    口径：方法 3 的「扣成本可执行胜率」，超额按**日**算（同日基准差），
+    t 值用逐日序列算 —— 同一天命中的几百只股票不是独立样本。
+    """
+    from .engine import primary_metric
+
+    metric, _ = primary_metric("stat_v3")
+    windows: list[dict[str, Any]] = []
+    for index, horizon in enumerate(metrics.horizons):
+        windows.append({
+            "window": horizon,
+            "n": metrics.signal_count(index, metric),
+            "p_net": metrics.rate(index, metric),
+            "base_p": metrics.base_rate(index, metric),
+            "excess_pp": metrics.day_excess(index, metric),
+            "t": metrics.day_t(index, metric),
+            "n_eff": None,
+            "expectancy": None,
+        })
+    best = scoring100.best_horizon_by_lower(windows) or windows[0]
+    best_index = metrics.horizons.index(best["window"])
+    years = [value for value in metrics.year_excess(best_index, metric).values()]
+    return scoring100.score_segment(
+        windows=windows,
+        events=metrics.signals(),
+        days=metrics.days_with_hits(),
+        year_excess=years,
+        layer_excess=(),
+        stress_excess=None,
+        reference=reference,
+    )
+
+
 def _loop(run_id: str) -> None:
+    _throttle()
     control = _Control(run_id)
     meta = store.load_meta(run_id)
     try:
@@ -384,13 +462,19 @@ def _loop(run_id: str) -> None:
         done = 0
         misses = 0
         last_seconds = 0.0
+        # 成功 / 失败次数（用户 2026-10-24 第 7 条）：失败的变体只在内存里计数，
+        # 不写 results.jsonl，也不留任何文件 —— 长跑几千次时磁盘是会被写满的。
+        successes = 0
+        failed = 0
+        exhausted = False
 
         def run_variant(rule: dict[str, Any], filters: list[dict[str, Any]],
                         parent: Optional[dict[str, Any]], operator: str,
                         trial: bool = True) -> Optional[dict[str, Any]]:
-            nonlocal evaluated, last_seconds
+            nonlocal evaluated, last_seconds, failed
             issues = engine.validate(rule)
             if issues:
+                failed += 1
                 return None
             began = time.perf_counter()
             metrics = engine.evaluate(rule, indices, should_stop=control.stop_requested)
@@ -443,8 +527,30 @@ def _loop(run_id: str) -> None:
             while len(elite) > ELITE_SIZE:
                 elite.pop()
 
+        # ---- 断点续跑：把上次已评估的变体读回来（1000 次要跑十几小时，进程重启不能从头来）
+        previous = store.read_results(run_id)
+        if previous:
+            evaluated = len(previous)
+            for row in previous:
+                if not isinstance(row, dict) or not isinstance(row.get("rule"), dict):
+                    continue
+                try:
+                    seen.add(space.canonical(row["rule"]))
+                except Exception:  # noqa: BLE001 - 老结果里可能有画不出来的规则
+                    continue
+                consider(row)
+            done = max(0, min(iterations, len(previous) - 1))  # 第一行是基础条件
+            store.patch_meta(run_id, done_iterations=done,
+                             progress={**(store.load_meta(run_id).get("progress") or {}),
+                                       "phase": "searching",
+                                       "done_iterations": done,
+                                       "successes": done,
+                                       "failures": 0,
+                                       "attempts": done})
+
         # ---- 第 0 步：基础条件本身（不计入优化次数，只做基准）
-        consider(run_variant(space.make_rule(base_rule, []), [], None, "base"))
+        if not previous:
+            consider(run_variant(space.make_rule(base_rule, []), [], None, "base"))
 
         # ---- 主循环：每一次循环 = 一次「调整优化」
         while done < iterations:
@@ -491,6 +597,7 @@ def _loop(run_id: str) -> None:
             if canonical in seen:
                 misses += 1
                 if misses >= MAX_MISSES:
+                    exhausted = True
                     break
                 continue
             seen.add(canonical)
@@ -498,11 +605,19 @@ def _loop(run_id: str) -> None:
             if row is None:
                 misses += 1
                 if misses >= MAX_MISSES:
+                    exhausted = True
                     break
                 continue
             misses = 0
             done += 1
             consider(row)
+            store.patch_meta(run_id, done_iterations=done,
+                             progress={**(store.load_meta(run_id).get("progress") or {}),
+                                       "done_iterations": done,
+                                       "successes": done,
+                                       "failures": failed,
+                                       "attempts": done + failed,
+                                       "exhausted": exhausted})
 
         # ---- 最终验算：完整训练段 + 验证段
         finals: list[dict[str, Any]] = []
@@ -529,12 +644,11 @@ def _loop(run_id: str) -> None:
                     break
                 train_score, train_horizon = score_of(train_metrics, method_id)
                 valid_score, valid_horizon = score_of(valid_metrics, method_id)
-                passed = bool(
-                    train_score is not None and valid_score is not None
-                    and train_score > 0 and valid_score > 0
-                    and valid_metrics.signals() >= min_valid_signals
-                    and valid_metrics.days_with_hits() >= min_valid_days
-                )
+                # 0–100 分（用户 2026-10-24 第 1/9 条）：推理段先算，测试段带衰减惩罚
+                train_grade = _score_100(train_metrics)
+                valid_grade = _score_100(valid_metrics, reference=train_grade)
+                combined = scoring100.combined(train_grade, valid_grade)
+                passed = bool(combined.get("verdict") == "pass")
                 finals.append({
                     "rank": rank,
                     "desc": row["desc"],
@@ -551,6 +665,10 @@ def _loop(run_id: str) -> None:
                     "valid_horizon": valid_horizon,
                     "valid_signals": valid_metrics.signals(),
                     "valid_days": valid_metrics.days,
+                    # 0–100 评分（界面上一眼看的两个数）
+                    "train_grade": train_grade,
+                    "valid_grade": valid_grade,
+                    "combined": combined,
                     "passed": passed,
                     "train_rows": train_metrics.table(),
                     "valid_rows": valid_metrics.table(),
@@ -558,15 +676,49 @@ def _loop(run_id: str) -> None:
         store.save_finalists(run_id, finals)
 
         stopped = control.stop_requested()
-        store.patch_meta(run_id, status=store.STATUS_STOPPED if stopped else store.STATUS_DONE,
-                         done_iterations=done, progress={
-                             **(store.load_meta(run_id).get("progress") or {}),
-                             "phase": "finished",
-                             "elapsed_s": control.elapsed(),
-                             "eta_s": 0,
-                             "finalists": len(finals),
-                             "passed": sum(1 for item in finals if item["passed"]),
-                         })
+        best_final = None
+        if finals:
+            best_final = max(
+                finals,
+                key=lambda item: ((item.get("combined") or {}).get("score") or -1,
+                                  (item.get("train_grade") or {}).get("score") or -1),
+            )
+        scores_payload = None
+        if best_final:
+            scores_payload = {
+                "train": {key: (best_final.get("train_grade") or {}).get(key)
+                          for key in ("score", "grade", "best_window", "excess_pp", "lower_pp", "events", "days")},
+                "test": {key: (best_final.get("valid_grade") or {}).get(key)
+                         for key in ("score", "grade", "best_window", "excess_pp", "lower_pp", "events", "days")},
+                "verdict": best_final.get("combined"),
+                "desc": best_final.get("desc"),
+            }
+        store.patch_meta(
+            run_id,
+            status=store.STATUS_STOPPED if stopped else store.STATUS_DONE,
+            done_iterations=done,
+            successes=done,
+            failures=failed,
+            exhausted=exhausted,
+            finished_at=store._now(),
+            scores=scores_payload,
+            best_desc=(best_final or {}).get("desc"),
+            best_score=(scores_payload or {}).get("verdict", {}).get("score") if scores_payload else None,
+            progress={
+                **(store.load_meta(run_id).get("progress") or {}),
+                "phase": "stopped" if stopped else "finished",
+                "done_iterations": done,
+                "iterations": iterations,
+                "elapsed_s": control.elapsed(),
+                "eta_s": 0,
+                "finalists": len(finals),
+                "passed": sum(1 for item in finals if item.get("passed")),
+                "successes": done,
+                "failures": failed,
+                "attempts": done + failed,
+                "exhausted": exhausted,
+            },
+        )
     except InterruptedError:
         store.patch_meta(run_id, status=store.STATUS_STOPPED,
                          progress={**(store.load_meta(run_id).get("progress") or {}),
