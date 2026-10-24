@@ -272,3 +272,46 @@ def test_成本是千分之二():
 
 def test_持有期是用户指定的五档():
     assert INFER_HORIZONS == (5, 10, 20, 25, 30)
+
+
+def test_创建任务时交易日存成日期数组而不是个数(monkeypatch):
+    """曾经的 bug：preview() 的 train_days 是**个数**，create() 直接迭代它，
+    报 ``'int' object is not iterable``（线上创建 503）。"""
+    from pathlib import Path
+
+    from src.modules.market.fork_infer import search, store
+    from src.modules.market.fork_infer.models import InferCreate
+
+    seg = {
+        "train_days": [dt.date(2024, 1, 2), dt.date(2024, 1, 3)],
+        "valid_days": [dt.date(2026, 1, 5)],
+        "latest_trade_date": "2026-10-23",
+        "max_verifiable": "2026-09-02",
+        "data_version": {},
+    }
+    info = {
+        "method": "stat_v3", "method_name": "m3",
+        "train_days": 2, "valid_days": 1,          # 注意：个数
+        "train_first": "2024-01-02", "train_last": "2024-01-03",
+        "valid_first": "2026-01-05", "valid_last": "2026-01-05",
+        "search_days": 2, "iterations": 2,
+        "max_verifiable": "2026-09-02", "latest_trade_date": "2026-10-23",
+        "base_summary": "x", "base_trading_days": 30, "base_bars": 30,
+        "estimate_seconds": 1, "horizons": [5], "data_version": {},
+    }
+    box: dict = {}
+    monkeypatch.setattr(search, "preview", lambda payload: info)
+    monkeypatch.setattr(search, "two_segment_days", lambda payload: seg)
+    monkeypatch.setattr(search, "base_request_of",
+                        lambda *a, **k: make_request(BASE_RULE))
+    monkeypatch.setattr(search, "start", lambda run_id: None)
+    monkeypatch.setattr(store, "new_run_id", lambda: "20260101-000000-test")
+    monkeypatch.setattr(store, "run_dir", lambda run_id: Path("/tmp"))
+    monkeypatch.setattr(store, "save_meta", lambda run_id, meta: box.update(meta))
+    monkeypatch.setattr(store, "load_meta", lambda run_id: dict(box))
+
+    search.create(InferCreate(preset="xg1", train_start=dt.date(2024, 1, 1),
+                              train_end=dt.date(2025, 12, 31),
+                              valid_start=dt.date(2026, 1, 1), iterations=2))
+    assert box["train_days"] == ["2024-01-02", "2024-01-03"]
+    assert box["valid_days"] == ["2026-01-05"]
