@@ -248,11 +248,14 @@ def list_analysis_artifacts(run_id: str) -> dict[str, Any]:
     method_id = methods.method_of(meta)
     names = method_file_names(preset_name, run_id)
     directory = store.artifacts_dir(preset_name, run_id)
-    if method_id == "stat_v2" and not all((directory / name).is_file() for name in names):
+    if method_id in ("stat_v2", "stat_v3") and not all((directory / name).is_file() for name in names):
         # 跑完了但产物没落全（进程被杀/老任务）：按库里的数据重建一次
         if store.is_terminal(meta):
             try:
-                runner.write_method2_artifacts(preset_name, run_id)
+                if method_id == "stat_v3":
+                    runner.write_method3_artifacts(preset_name, run_id)
+                else:
+                    runner.write_method2_artifacts(preset_name, run_id)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("重建方法 2 产物失败：%s", run_id)
                 raise _bad(500, "analysis_artifacts_failed", str(exc)) from exc
