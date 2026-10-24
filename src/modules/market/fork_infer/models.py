@@ -1,0 +1,83 @@
+"""条件推理（自动搜索更优选股条件）的请求模型与常量。
+
+和「数据分析」的关系
+--------------------
+数据分析回答「**这一个**条件好不好」；条件推理回答「在这个条件的基础上，
+还有没有更好的」。所以它复用数据分析的全部口径（次日开盘买入、扣往返成本、
+停牌顺延、一字涨停剔除），只是把「一个条件跑一遍」换成「一百个变体各跑一遍」。
+
+训练 / 验证两段（用户 2026-10-24）
+--------------------------------
+* 训练段：只在这段历史上搜索，评分用它。
+* 验证段：搜索**完全不看**这段历史，最后拿筛选出来的少数几个条件去验算，
+  看概率是否还对得上。这就是机器学习里训练集 / 测试集的分法 —— 没有验证段，
+  搜出来的「高概率」只是过拟合的产物。
+
+为什么持有期是 5/10/20/25/30
+---------------------------
+用户 2026-10-24 明确要求这五档（区别于方法 1 的 5/10/15/20/25/30、
+方法 2 的 5/10/15/20/25/35）。这里是独立的常量，不跟着别的方法漂。
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+from typing import Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+#: 条件推理使用的持有期（交易日）
+INFER_HORIZONS: tuple[int, ...] = (5, 10, 20, 25, 30)
+
+#: 前瞻交易日上限：最长持有期 30 + 入场那 1 天
+MAX_FORWARD = 31
+
+#: 默认优化次数（用户指定）
+DEFAULT_ITERATIONS = 100
+
+#: 优化次数上限（防止有人填 100 万把机器跑死）
+MAX_ITERATIONS = 5000
+
+#: 搜索阶段每个变体实际回看的交易日数上限。
+#: 训练段可能有两三百个交易日，全跑一遍每个变体要 30 秒以上，100 个变体就 1 小时；
+#: 均匀抽 120 天，配对比较（所有变体用同一天集合）足以给变体排序。见 search.py 注释。
+SEARCH_DAYS = 120
+
+#: 进入排行榜的最少信号数（低于这个数的「高概率」是噪声）
+MIN_SIGNALS = 300
+
+#: 进入排行榜的最少「有信号的天数」（只在几天里出现过的高概率不可信）
+MIN_DAYS_WITH_HITS = 20
+
+#: 精英池大小（同时记住多少个「目前最好」的变体，后续变异从池里挑父代）
+ELITE_SIZE = 20
+
+#: 最终拿几个变体去做完整训练段 + 验证段验算
+FINALISTS = 5
+
+#: 单次变体求值的交易日上限（防御：日期填错导致区间过大）
+MAX_SEARCH_WINDOW_DAYS = 3000
+
+
+class InferCreate(BaseModel):
+    """创建一个条件推理任务。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: 基础条件（已保存条件的名字）
+    preset: str = Field(min_length=1, max_length=64)
+    #: 用哪种统计口径来给变体打分（stat_v1 收盘胜率 / stat_v2 最高价达成 / stat_v3 扣成本盈利）
+    method: str = Field(default="stat_v3", max_length=32)
+    #: 训练段（搜索只看这段）
+    train_start: _dt.date
+    train_end: _dt.date
+    #: 验证段（搜索不看这段，最后验算）
+    valid_start: _dt.date
+    valid_end: Optional[_dt.date] = None
+    #: 在基础条件之上做多少次调整（每调整一次就跑一轮完整评估）
+    iterations: int = Field(default=DEFAULT_ITERATIONS, ge=1, le=MAX_ITERATIONS)
+    #: 股票范围：覆盖条件里存的市场设置
+    markets: Optional[list[Literal["sh", "sz", "cyb", "kcb"]]] = None
+    include_st: Optional[bool] = None
+    #: 随机种子：同一个种子 + 同一份数据 = 同一串变体（可复现）
+    seed: int = Field(default=20260101, ge=0, le=2_000_000_000)
