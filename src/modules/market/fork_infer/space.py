@@ -146,10 +146,55 @@ _STEP: dict[str, float] = {
 }
 
 
+def _condition_keys(rule: Any) -> set[str]:
+    """规则里已有的「条件名 + 参数」组合（去重用）。
+
+    既要吃 pydantic 节点（``ScreenRequest.rule``），也要吃普通 dict
+    （``meta["base_rule"]`` 是 model_dump 出来的），所以都用取值函数读。
+    """
+    keys: set[str] = set()
+
+    def type_of(node: Any) -> str:
+        return node.get("type", "") if isinstance(node, dict) else getattr(node, "type", "")
+
+    def children_of(node: Any) -> list[Any]:
+        if isinstance(node, dict):
+            return list(node.get("children") or [])
+        return list(getattr(node, "children", []) or [])
+
+    def name_of(node: Any) -> str:
+        return node.get("name", "") if isinstance(node, dict) else getattr(node, "name", "")
+
+    def params_of(node: Any) -> dict[str, Any]:
+        raw = node.get("params") if isinstance(node, dict) else getattr(node, "params", {})
+        return dict(raw or {})
+
+    def walk(node: Any) -> None:
+        if type_of(node) == "condition":
+            keys.add(f"{name_of(node)}|{canonical(params_of(node))}")
+        else:
+            for child in children_of(node):
+                walk(child)
+
+    walk(rule)
+    return keys
+
+
 def make_rule(base: dict[str, Any], filters: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    """基础条件 + 补充条件 → 一个 AND 组（基础条件作为子节点原样嵌入）。"""
+    """基础条件 + 补充条件 → 一个 AND 组（基础条件作为子节点原样嵌入）。
+
+    与基础条件**同名同参**的补充条件是空操作（A AND A == A），直接丢掉：
+    否则排行榜里会出现「＋ 连续上涨3天」在后面又重复一遍基础条件里的那一条，
+    既让描述变长，也白占搜索预算。参数不同的同名条件（例如基础条件 5 日、
+    补充 10 日）不算重复，照常保留。
+    """
+    seen = _condition_keys(base)
     children = [copy.deepcopy(base)]
     for item in filters:
+        key = f"{item['name']}|{canonical(item.get('params') or {})}"
+        if key in seen:
+            continue
+        seen.add(key)
         children.append({
             "type": "condition",
             "name": item["name"],
