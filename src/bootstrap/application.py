@@ -30,6 +30,7 @@ from src.modules.automation.api import agents, suggestions, templates
 from src.modules.market.api import (
     discovery,
     fork_analysis,
+    fork_infer,
     fork_market,
     fork_screen,
     klines,
@@ -90,6 +91,11 @@ app.include_router(
 # data/analysis_runs/<条件>/<任务id>/，路径 /api/stocks/analysis/*。
 app.include_router(
     fork_analysis.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
+)
+# fork: 条件推理（在基础条件上自动搜索更优条件）。路径 /api/stocks/infer/*，
+# 逻辑在 src/modules/market/fork_infer/，接口在 api/fork_infer.py。
+app.include_router(
+    fork_infer.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
 )
 app.include_router(
     quotes.router, prefix="/api/quotes", tags=["quotes"], dependencies=protected
