@@ -35,8 +35,8 @@ from ..api import fork_market
 from ..fork_screen import presets
 from ..fork_screen.models import ScreenRequest
 from ..fork_screen.service import run_screen
-from . import forward, methods, stats, store
-from .methods import method2, method2_data
+from . import forward, methods, stats, store, store_m3
+from .methods import method2, method2_data, method3, method3_data
 from .models import (
     DEFAULT_SAMPLE_SIZE,
     FORWARD_DAYS,
@@ -287,6 +287,8 @@ def _loop(preset_name: str, run_id: str) -> None:
     meta = store.load_meta(preset_name, run_id)
     if methods.method_of(meta) == "stat_v2":
         return _loop_m2(preset_name, run_id)
+    if methods.method_of(meta) == "stat_v3":
+        return _loop_m3(preset_name, run_id)
     started = time.perf_counter()
     request = _request_of(preset_name, meta.get("markets"), meta.get("include_st"))
     db = store.open_db(preset_name, run_id)
@@ -708,5 +710,245 @@ def write_method2_artifacts(preset_name: str, run_id: str) -> list[str]:
         report_headline=report.headline.as_dict(),
         valid_events=report.data_quality.get("valid_events"),
         invariant_problems=report.data_quality.get("invariant_problems") or [],
+    )
+    return names
+
+
+# --------------------------------------------------------------------------- #
+# 方法 3 的主循环（收盘口径，判「盈利」；分层面结论在 methods.method3 里算）
+# --------------------------------------------------------------------------- #
+def _m3_row(code: str, symbol: str, name: str, result: dict[str, Any], d0: _dt.date,
+            is_control: int) -> dict[str, Any]:
+    """``method3_data.build_event`` 的结果 → 一行 ``m3_events``。"""
+    row: dict[str, Any] = {
+        "d0": d0.isoformat(),
+        "code": code,
+        "symbol": symbol,
+        "name": name,
+        "board": forward.board_of(code),
+        "is_control": int(is_control),
+        "buy_price": float(result["buy_price"]),
+        "d0_close": float(result["d0_close"]),
+        "avail": int(result["avail"]),
+        "entry_days": int(result["entry_days"]),
+        "valid": 1 if result["valid"] else 0,
+        "reason": result["reason"] or "",
+    }
+    for window in store_m3.M3_WINDOWS:
+        row[f"c{window}"] = result["c"].get(window)
+        row[f"mc{window}"] = result["mc"].get(window)
+        row[f"mn{window}"] = result["mn"].get(window)
+    return row
+
+
+def _loop_m3(preset_name: str, run_id: str) -> None:
+    """逐日回放 + 取 30 天收盘口径行情。结构与方法 2 一致（同一套容错/续跑/进度）。"""
+    started = time.perf_counter()
+    meta = store.load_meta(preset_name, run_id)
+    request = _request_of(preset_name, meta.get("markets"), meta.get("include_st"))
+    db = store.open_db(preset_name, run_id)
+    conn = None
+    stopped = False
+    consecutive_errors = 0
+    try:
+        done = set(store.done_days(db))
+        conn = fork_market._connect()
+        calendar = forward.trading_calendar(conn, _dt.date.fromisoformat(meta["start_date"]), None)
+        index = {day: position for position, day in enumerate(calendar)}
+        start = _dt.date.fromisoformat(meta["start_date"])
+        end = _dt.date.fromisoformat(meta["end_date"])
+        days = [day for day in calendar if start <= day <= end]
+        store.patch_meta(preset_name, run_id, status=store.STATUS_RUNNING, days_total=len(days))
+        hits_total = int(meta.get("hits") or 0)
+        control_total = int(meta.get("control") or 0)
+        failures = int(meta.get("failures") or 0)
+        unverifiable_total = int(meta.get("unverifiable") or 0)
+        done_count = len([day for day in days if day.isoformat() in done])
+        sample_size = int(meta.get("sample_size") or 0)
+        recent = list((meta.get("progress") or {}).get("recent_days") or [])
+        horizon = int(meta.get("forward_days") or method3.FULL_DAYS)
+        horizon = min(horizon, method3.FULL_DAYS)
+        windows = tuple(window for window in store_m3.M3_WINDOWS if window <= horizon)
+
+        for d0 in days:
+            if store.stop_requested(preset_name, run_id):
+                stopped = True
+                break
+            if d0.isoformat() in done:
+                continue
+            day_started = time.perf_counter()
+            try:
+                screen_started = time.perf_counter()
+                response = run_screen(request, asof=d0)
+                items = list(response.get("items") or [])
+                screen_ms = int((time.perf_counter() - screen_started) * 1000)
+                forward_started = time.perf_counter()
+                fwd_dates = _forward_dates(calendar, index, d0, horizon)
+                last_day = fwd_dates[-1] if fwd_dates else d0
+                symbols = [_item_ids(item)[1] for item in items]
+                bars, missing = (method2_data.fetch_bars(conn, d0, symbols, last_day)
+                                 if symbols else ({}, {}))
+
+                rows: list[dict[str, Any]] = []
+                for item in items:
+                    code, symbol, name = _item_ids(item)
+                    result = method3_data.build_event(
+                        bars.get(symbol) or [], fwd_dates, d0, code, windows,
+                        horizon=horizon, adj_missing=int(missing.get(symbol, 0)),
+                    )
+                    if result is None:
+                        continue
+                    if not result["valid"]:
+                        unverifiable_total += 1
+                    rows.append(_m3_row(code, symbol, name, result, d0, 0))
+
+                breadth = forward.market_breadth(conn, d0)
+                hit_snapshots = (forward.fetch_snapshots(conn, d0, [row["code"] for row in rows])
+                                 if rows else {})
+                for row in rows:
+                    sample = hit_snapshots.get(row["code"]) or {}
+                    for name in store.SNAPSHOT_COLUMNS:
+                        row[name] = sample.get(name)
+                    row["breadth"] = breadth
+                    row["crowd"] = len(rows)
+
+                control_rows: list[dict[str, Any]] = []
+                if sample_size > 0:
+                    controls = forward.control_sample_matched(
+                        conn, d0, sample_size, request.markets, bool(request.include_st),
+                        hit_mcaps=[row.get("mcap") for row in rows],
+                        exclude=[row["code"] for row in rows],
+                    )
+                    control_symbols = [item["symbol"] for item in controls]
+                    control_bars, control_missing = (
+                        method2_data.fetch_bars(conn, d0, control_symbols, last_day)
+                        if control_symbols else ({}, {})
+                    )
+                    for item in controls:
+                        code, symbol, name = _item_ids(item)
+                        result = method3_data.build_event(
+                            control_bars.get(symbol) or [], fwd_dates, d0, code, windows,
+                            horizon=horizon,
+                            adj_missing=int(control_missing.get(symbol, 0)),
+                        )
+                        if result is None:
+                            continue
+                        control_rows.append(_m3_row(code, symbol, name, result, d0, 1))
+                    if control_rows:
+                        control_snapshots = forward.fetch_snapshots(
+                            conn, d0, [row["code"] for row in control_rows]
+                        )
+                        for row in control_rows:
+                            sample = control_snapshots.get(row["code"]) or {}
+                            for name in store.SNAPSHOT_COLUMNS:
+                                row[name] = sample.get(name)
+                            row["breadth"] = breadth
+                            row["crowd"] = len(rows)
+
+                coverage = forward.day_coverage(conn, d0)
+                store_m3.insert_rows(db, rows + control_rows, store.SNAPSHOT_COLUMNS)
+                elapsed_ms = int((time.perf_counter() - day_started) * 1000)
+                forward_ms = int((time.perf_counter() - forward_started) * 1000)
+                store.record_day(
+                    db, d0.isoformat(), len(rows), len(control_rows), elapsed_ms,
+                    coverage=coverage,
+                    usable=sum(1 for row in rows if row.get("valid")),
+                    screen_ms=screen_ms,
+                    forward_ms=forward_ms,
+                )
+                done.add(d0.isoformat())
+                done_count += 1
+                hits_total += len(rows)
+                control_total += len(control_rows)
+                consecutive_errors = 0
+                recent = ([{"d0": d0.isoformat(), "hits": len(rows), "control": len(control_rows),
+                            "elapsed_ms": elapsed_ms}] + recent)[:20]
+                elapsed_s = time.perf_counter() - started
+                remaining = len(days) - done_count
+                avg_ms = elapsed_ms if done_count <= 1 else (elapsed_s * 1000 / done_count)
+                store.patch_meta(
+                    preset_name,
+                    run_id,
+                    days_done=done_count,
+                    hits=hits_total,
+                    control=control_total,
+                    failures=failures,
+                    unverifiable=unverifiable_total,
+                    progress={
+                        "days_total": len(days),
+                        "days_done": done_count,
+                        "hits": hits_total,
+                        "control": control_total,
+                        "failures": failures,
+                        "unverifiable": unverifiable_total,
+                        "avg_ms": int(avg_ms),
+                        "elapsed_s": int(elapsed_s),
+                        "eta_s": int(avg_ms * remaining / 1000),
+                        "current_d0": d0.isoformat(),
+                        "recent_days": recent,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - 单日失败不该毁掉整段
+                consecutive_errors += 1
+                failures += 1
+                logger.exception("分析方法 3 任务 %s 在 %s 失败：%s", run_id, d0, exc)
+                if consecutive_errors >= 5:
+                    raise RuntimeError(f"连续 5 个交易日失败，最后一次：{exc}") from exc
+                continue
+
+        status = store.STATUS_STOPPED if stopped else store.STATUS_DONE
+        elapsed_s = time.perf_counter() - started
+        store.patch_meta(
+            preset_name,
+            run_id,
+            status=status,
+            days_done=done_count,
+            hits=hits_total,
+            control=control_total,
+            failures=failures,
+            unverifiable=unverifiable_total,
+            finished_at=store._now(),
+            elapsed_s=int(elapsed_s),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("分析方法 3 任务 %s 失败：%s", run_id, exc)
+        try:
+            store.patch_meta(preset_name, run_id, status=store.STATUS_FAILED,
+                             error=str(exc), finished_at=store._now())
+        except Exception:  # noqa: BLE001
+            logger.exception("写失败状态时出错：%s", run_id)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            write_method3_artifacts(preset_name, run_id)
+        except Exception as exc:  # noqa: BLE001 - 产物失败不影响数据
+            logger.exception("生成方法 3 产物失败：%s", run_id)
+            try:
+                store.patch_meta(preset_name, run_id, artifacts_error=str(exc))
+            except Exception:  # noqa: BLE001
+                pass
+        db.close()
+
+
+def write_method3_artifacts(preset_name: str, run_id: str) -> list[str]:
+    """方法 3 的 6 个 CSV + report.md（跑完一次，也可由接口按需重建）。"""
+    meta = store.load_meta(preset_name, run_id)
+    conn = store.open_db(preset_name, run_id)
+    try:
+        report = method3.build(conn, meta)
+        directory = store.artifacts_dir(preset_name, run_id)
+        names = method3.write_artifacts(directory, report)
+    finally:
+        conn.close()
+    store.patch_meta(
+        preset_name, run_id,
+        artifacts=names,
+        report_headline=report.headline.as_dict(),
+        valid_events=report.data_quality.get("valid_events"),
+        usable_segments=report.data_quality.get("usable_segments"),
     )
     return names
