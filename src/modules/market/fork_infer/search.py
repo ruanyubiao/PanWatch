@@ -181,7 +181,6 @@ def preview(payload: InferCreate) -> dict[str, Any]:
         "iterations": int(payload.iterations),
         "max_verifiable": info["max_verifiable"],
         "latest_trade_date": info["latest_trade_date"],
-        "latest_trade_date": info["latest_trade_date"],
         "base_summary": base_summary(request),
         "base_trading_days": int(request.trading_days),
         "base_bars": int(base_k),
@@ -194,6 +193,9 @@ def preview(payload: InferCreate) -> dict[str, Any]:
 def create(payload: InferCreate) -> dict[str, Any]:
     """建任务目录 + 起后台线程。"""
     info = preview(payload)
+    # preview() 里的 train_days / valid_days 是**个数**（给界面显示用），
+    # meta 里要存的是日期数组（主循环按日期回看）。所以这里再取一次交易日历。
+    segment = two_segment_days(payload)
     busy = any_running()
     if busy:
         raise InferBusy(f"已有条件推理任务在跑（{busy}），等它结束或先停止")
@@ -214,8 +216,8 @@ def create(payload: InferCreate) -> dict[str, Any]:
         "train_end": info["train_last"],
         "valid_start": str(payload.valid_start),
         "valid_end": info["valid_last"],
-        "train_days": [str(day) for day in info["train_days"]],
-        "valid_days": [str(day) for day in info["valid_days"]],
+        "train_days": [str(day) for day in segment["train_days"]],
+        "valid_days": [str(day) for day in segment["valid_days"]],
         "search_days": info["search_days"],
         "iterations": info["iterations"],
         "max_verifiable": info["max_verifiable"],
