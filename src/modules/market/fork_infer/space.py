@@ -411,19 +411,26 @@ def _fmt(value: Any) -> str:
     return str(value)
 
 
-def _span_label(params: dict[str, Any]) -> str:
-    """区间（倒数第 N ～ F 日）。**F=0 是「窗口最后一天」的哨兵**，不是「0 日」——
-    上一轮结果里那条「0日内阳线多于阴线」就是把这个哨兵当成天数打印出来的。"""
+def _span_label(params: dict[str, Any], trading_days: Optional[int] = None) -> str:
+    """区间（倒数第 F ～ N 日，F 更早、N 更近）。**F=0 是「窗口最后一天」的哨兵**，
+    不是「0 日」—— 上一轮结果里那条「0日内阳线多于阴线」就是把这个哨兵当成天数
+    打印出来的。知道统计窗口时就写成「倒数第30～1日」，不知道时才退回「整个窗口」。
+    """
     n = int(params.get("n") or 1)
     m = int(params.get("m") or 0)
     if m <= 0:
-        return f"整个统计窗口（倒数第{n}日～窗口末）"
+        window = int(trading_days or 0)
+        if window > 0:
+            m = window
+        else:
+            return f"整个统计窗口（倒数第{n}日～窗口末）"
     if m == n:
         return f"倒数第{n}日"
     return f"倒数第{m}～{n}日"
 
 
-def describe_condition(name: str, params: dict[str, Any]) -> str:
+def describe_condition(name: str, params: dict[str, Any],
+                       trading_days: Optional[int] = None) -> str:
     """一个条件的中文短句（界面排行榜里给它看的）。
 
     日期范围一律写成「倒数第 F～N 日」（F 更早、N 更近），与条件选股界面同一套写法。
@@ -434,24 +441,24 @@ def describe_condition(name: str, params: dict[str, Any]) -> str:
     if name in ("ma_bullish", "ma_bearish", "ma_bullish_all", "ma_bullish_any"):
         suffix = ""
         if name.endswith("_all") or name.endswith("_any"):
-            suffix = f" · {_span_label(params)}"
+            suffix = f" · {_span_label(params, trading_days)}"
         return f"{label}({_fmt(params.get('periods', []))}){suffix}"
     if name in ("close_above_ma", "close_above_ma_all", "close_above_ma_any"):
         suffix = ""
         if name.endswith("_all") or name.endswith("_any"):
-            suffix = f" · {_span_label(params)}"
+            suffix = f" · {_span_label(params, trading_days)}"
         return f"{label}MA{_fmt(params.get('period', 20))}{suffix}"
     if name in ("ma_golden_cross", "ma_dead_cross", "ma_golden_cross_any"):
-        suffix = f" · {_span_label(params)}" if name.endswith("_any") else ""
+        suffix = f" · {_span_label(params, trading_days)}" if name.endswith("_any") else ""
         return f"{label}MA{_fmt(params.get('fast', 5))}/MA{_fmt(params.get('slow', 20))}{suffix}"
     if name in ("change_pct", "turnover_single"):
         return f"{label}{_fmt(params.get('min'))}%~{_fmt(params.get('max'))}%"
     if name in ("change_pct_all", "change_pct_span"):
-        return f"{_span_label(params)}{label}{_fmt(params.get('min'))}%~{_fmt(params.get('max'))}%"
+        return f"{_span_label(params, trading_days)}{label}{_fmt(params.get('min'))}%~{_fmt(params.get('max'))}%"
     if name in ("turnover_span",):
-        return f"{_span_label(params)}{label}{_fmt(params.get('min'))}%~{_fmt(params.get('max'))}%"
+        return f"{_span_label(params, trading_days)}{label}{_fmt(params.get('min'))}%~{_fmt(params.get('max'))}%"
     if name in ("vol_ratio_single", "vol_ratio_avg"):
-        prefix = _span_label(params) if name.endswith("_avg") else ""
+        prefix = _span_label(params, trading_days) if name.endswith("_avg") else ""
         return f"{prefix}{label}{_fmt(params.get('min'))}~{_fmt(params.get('max'))}倍"
     if name == "vol_ratio_consecutive":
         return f"连续{_fmt(params.get('days', 2))}日{label}{_fmt(params.get('min'))}~{_fmt(params.get('max'))}倍"
@@ -460,7 +467,7 @@ def describe_condition(name: str, params: dict[str, Any]) -> str:
     if name == "amount_single":
         return f"{label}{_fmt(params.get('min'))}~{_fmt(params.get('max'))}亿"
     if name == "amount_span":
-        return f"{_span_label(params)}{label}{_fmt(params.get('min'))}~{_fmt(params.get('max'))}亿"
+        return f"{_span_label(params, trading_days)}{label}{_fmt(params.get('min'))}~{_fmt(params.get('max'))}亿"
     if name == "volume_single":
         return f"{label}{_fmt(params.get('min'))}~{_fmt(params.get('max'))}万手"
     if name == "market_cap":
@@ -473,7 +480,7 @@ def describe_condition(name: str, params: dict[str, Any]) -> str:
     if name == "new_low":
         return f"创{_fmt(params.get('m', 20))}日新低"
     if name in ("more_bullish_candles", "more_bearish_candles"):
-        return f"{_span_label(params)}{label}"
+        return f"{_span_label(params, trading_days)}{label}"
     parts = " ".join(f"{key}={_fmt(value)}" for key, value in params.items())
     return f"{label}({parts})" if parts else label
 
@@ -487,7 +494,7 @@ def describe(base_summary: str, filters: list[dict[str, Any]]) -> str:
     return f"{base_summary} ＋ " + " ＋ ".join(parts)
 
 
-def summarize_tree(node: Any) -> str:
+def summarize_tree(node: Any, trading_days: Optional[int] = None) -> str:
     """基础条件树的中文描述（AND / OR 组都摊平，用「且」连接）。
 
     允许替换基础条件之后，基础条件不再是一个固定字符串 —— 每个变体的基础条件
@@ -499,14 +506,14 @@ def summarize_tree(node: Any) -> str:
         if isinstance(current, dict):
             if current.get("type") == "condition":
                 parts.append(describe_condition(str(current.get("name") or ""),
-                                                dict(current.get("params") or {})))
+                                                dict(current.get("params") or {}), trading_days))
                 return
             for child in current.get("children") or []:
                 walk(child)
         else:
             if getattr(current, "type", "") == "condition":
                 parts.append(describe_condition(str(getattr(current, "name", "")),
-                                                dict(getattr(current, "params", {}) or {})))
+                                                dict(getattr(current, "params", {}) or {}), trading_days))
                 return
             for child in getattr(current, "children", []) or []:
                 walk(child)
@@ -515,9 +522,10 @@ def summarize_tree(node: Any) -> str:
     return " 且 ".join(parts) if parts else "（无条件）"
 
 
-def describe_tree(tree: Any, filters: list[dict[str, Any]]) -> str:
+def describe_tree(tree: Any, filters: list[dict[str, Any]],
+                  trading_days: Optional[int] = None) -> str:
     """变体的完整描述：这一变体自己的基础条件 ＋ 生效的补充条件。"""
-    return describe(summarize_tree(tree), effective_filters(tree, filters))
+    return describe(summarize_tree(tree, trading_days), effective_filters(tree, filters))
 
 
 # --------------------------------------------------------------------------- #
