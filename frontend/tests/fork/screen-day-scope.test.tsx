@@ -50,7 +50,13 @@ describe('按日定位：摘要', () => {
     )
   })
 
-  it('阴阳线计数：M=0 写「统计窗口内」，给了 M 就写区间', () => {
+  it('阴阳线计数：M=0 用统计窗口把区间写全，给了 M 就写 M', () => {
+    // 2026-10-25 第 3 条：范围条件不能只显示「阳线多于阴线」，要把区间写出来。
+    // 知道统计窗口（30）时，M=0 这个哨兵 = 倒数第 30 日。
+    expect(def('more_bullish_candles').summary(params('more_bullish_candles'), 30)).toBe(
+      '倒数第30～1日 阳线多于阴线',
+    )
+    // 不知道窗口长度时退回「（统计窗口内）」，绝不写「倒数第1日」这种假区间
     expect(def('more_bullish_candles').summary(params('more_bullish_candles'))).toBe('阳线多于阴线（统计窗口内）')
     expect(def('more_bullish_candles').summary(params('more_bullish_candles', { n: 1, m: 3 }))).toBe(
       '倒数第3～1日 阳线多于阴线',
@@ -95,16 +101,18 @@ describe('按日定位：校验', () => {
   it('n 超窗口 / f < n 都报错', () => {
     expect(def('ma_bullish').validate(params('ma_bullish', { n: 0 }), 30)).toEqual(['倒数第几个交易日需为 1 至 30 的整数'])
     expect(def('ma_bullish_all').validate(params('ma_bullish_all', { n: 5, m: 3 }), 30)).toEqual([
-      '终点 f 需为 5 至 30 的整数（f ≥ n）',
+      '终点 F 需为 5 至 30 的整数（F ≥ N）',
     ])
   })
 
   it('提示文案里的跨度上限跟着统计窗口走（不是常数 30）', () => {
     expect(METRIC_TEXTS_ZH.hintRange(60)).toContain('跨度不超过 60 个交易日')
-    expect(METRIC_TEXTS_ZH.hintRange(60)).toContain('起点 n')
-    expect(METRIC_TEXTS_ZH.hintRange(60)).toContain('终点 f')
-    expect(METRIC_TEXTS_ZH.startLabel).toBe('起点 n')
-    expect(METRIC_TEXTS_ZH.endLabel).toBe('终点 f')
+    // 2026-10-25 第 2 条：日期范围统一用大写 N（更近）和 F（更早），不再混用小写 n / f
+    expect(METRIC_TEXTS_ZH.hintRange(60)).toContain('起点 N')
+    expect(METRIC_TEXTS_ZH.hintRange(60)).toContain('终点 F')
+    expect(METRIC_TEXTS_ZH.hintRange(60)).not.toContain('起点 n')
+    expect(METRIC_TEXTS_ZH.startLabel).toBe('起点 N')
+    expect(METRIC_TEXTS_ZH.endLabel).toBe('终点 F')
   })
 
   it('跨度上限 = 统计窗口；阴阳线的「整个窗口」也合法', () => {
@@ -113,7 +121,7 @@ describe('按日定位：校验', () => {
     expect(def('more_bullish_candles').validate(params('more_bullish_candles', { n: 1, m: 250 }), 250)).toEqual([])
     // 窗口 30：31 越界
     expect(def('ma_bullish_any').validate(params('ma_bullish_any', { n: 1, m: 31 }), 30)).toEqual([
-      '终点 f 需为 1 至 30 的整数（f ≥ n）',
+      '终点 F 需为 1 至 30 的整数（F ≥ N）',
     ])
   })
 
