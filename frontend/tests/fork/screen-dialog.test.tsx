@@ -172,7 +172,7 @@ describe('条件选股弹窗', () => {
     // 阴阳线计数现在带按日参数（倒数第 N 日 / 终点 M），所以先展开参数表单再确定
     await userEvent.click(await screen.findByRole('button', { name: '确定' }))
     await waitFor(() => expect(condRows()).toHaveLength(1))
-    expect(condRows()[0].textContent).toContain('阳线多于阴线（统计窗口内）')
+    expect(condRows()[0].textContent).toContain('倒数第30～1日 阳线多于阴线')
 
     // 取消确认 → 子树还在
     mocks.confirm.mockResolvedValueOnce(false)

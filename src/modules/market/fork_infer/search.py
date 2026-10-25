@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import copy
 import datetime as _dt
 import logging
 import os
@@ -470,7 +471,9 @@ def _loop(run_id: str) -> None:
 
         def run_variant(rule: dict[str, Any], filters: list[dict[str, Any]],
                         parent: Optional[dict[str, Any]], operator: str,
-                        trial: bool = True) -> Optional[dict[str, Any]]:
+                        trial: bool = True,
+                        tree: Optional[dict[str, Any]] = None,
+                        desc: Optional[str] = None) -> Optional[dict[str, Any]]:
             nonlocal evaluated, last_seconds, failed
             issues = engine.validate(rule)
             if issues:
@@ -483,7 +486,8 @@ def _loop(run_id: str) -> None:
             score, horizon = score_of(metrics, method_id)
             row = {
                 "index": evaluated,
-                "desc": space.describe(summary, filters),
+                "desc": desc or space.describe(summary, filters),
+                "base": tree if tree is not None else base_rule,
                 "filters": [{"name": item["name"], "params": dict(item.get("params") or {})}
                             for item in filters],
                 "operator": operator,
@@ -550,7 +554,8 @@ def _loop(run_id: str) -> None:
 
         # ---- 第 0 步：基础条件本身（不计入优化次数，只做基准）
         if not previous:
-            consider(run_variant(space.make_rule(base_rule, []), [], None, "base"))
+            consider(run_variant(space.make_rule(base_rule, []), [], None, "base",
+                                 tree=base_rule, desc=space.describe_tree(base_rule, [])))
 
         # ---- 主循环：每一次循环 = 一次「调整优化」
         while done < iterations:
@@ -562,11 +567,14 @@ def _loop(run_id: str) -> None:
                 pick = int((rng.random() ** 2) * len(elite))
                 parent = elite[min(pick, len(elite) - 1)]
             filters = list(parent["filters"]) if parent else []
-            tree = base_rule
-            operator = rng.choices(("add", "tune", "tree", "remove"),
-                                   weights=(0.35, 0.30, 0.25, 0.10))[0]
+            # 每个变体自己的基础条件树（用户第 1 条允许替换基础条件之后，它不再是常量）
+            parent_tree = parent.get("base") if parent else None
+            tree = copy.deepcopy(parent_tree if isinstance(parent_tree, dict) else base_rule)
+            # swap = 换基础条件：上一轮在 873 次就把空间穷举完了，就是因为没有这一步
+            operator = rng.choices(("add", "tune", "tree", "remove", "swap"),
+                                   weights=(0.28, 0.24, 0.18, 0.10, 0.20))[0]
             if operator == "add":
-                candidate = space.add_filter(filters, rng)
+                candidate = space.add_filter(filters, rng, excluded=space.base_names(tree))
                 if candidate is None:
                     operator = "tune"
                 else:
@@ -578,8 +586,15 @@ def _loop(run_id: str) -> None:
                 else:
                     filters = candidate
             if operator == "tree":
-                tree, key = space.jitter_tree(base_rule, rng)
+                tree, key = space.jitter_tree(tree, rng)
                 if key is None:
+                    misses += 1
+                    if misses >= MAX_MISSES:
+                        break
+                    continue
+            if operator == "swap":
+                tree, swapped = space.replace_condition(tree, rng)
+                if swapped is None:
                     misses += 1
                     if misses >= MAX_MISSES:
                         break
@@ -601,7 +616,8 @@ def _loop(run_id: str) -> None:
                     break
                 continue
             seen.add(canonical)
-            row = run_variant(rule, filters, parent, operator)
+            row = run_variant(rule, filters, parent, operator,
+                              tree=tree, desc=space.describe_tree(tree, filters))
             if row is None:
                 misses += 1
                 if misses >= MAX_MISSES:
@@ -653,6 +669,7 @@ def _loop(run_id: str) -> None:
                     "rank": rank,
                     "desc": row["desc"],
                     "rule": row["rule"],
+                    "base": row.get("base") or base_rule,
                     "filters": row["filters"],
                     "operator": row["operator"],
                     "trial_score": row.get("score"),

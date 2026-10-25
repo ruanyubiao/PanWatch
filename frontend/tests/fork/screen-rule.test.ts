@@ -580,10 +580,10 @@ describe('量价条件（指标 × 形状）', () => {
     const issues = (params: object, tradingDays = 30) =>
       CONDITION_DEFS_ZH.turnover_all.validate(params as never, tradingDays)
 
-    expect(issues({ n: 5, m: 3, min: 0, max: 1 }).join()).toContain('f ≥ n')
+    expect(issues({ n: 5, m: 3, min: 0, max: 1 }).join()).toContain('F ≥ N')
     // 跨度上限 = 统计窗口：窗口 250 时 m=31 合法，窗口 30 时越界
     expect(issues({ n: 1, m: 31, min: 0, max: 1 }, 250).join()).toBe('')
-    expect(issues({ n: 1, m: 31, min: 0, max: 1 }, 30).join()).toContain('f 需为 n 至 30 之间的整数')
+    expect(issues({ n: 1, m: 31, min: 0, max: 1 }, 30).join()).toContain('F 需为 N 至 30 之间的整数')
     expect(issues({ n: 1, m: 5, min: 9, max: 1 }).join()).toContain('下限必须小于上限')
     // 换手率不能为负（与后端 `_METRIC_BOUNDS` 一致）
     expect(issues({ n: 1, m: 5, min: -3, max: 1 }).join()).toContain('需在 0 至 1000 之间')

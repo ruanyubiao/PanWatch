@@ -66,11 +66,11 @@ const MA_ABOVE_NAMES: ConditionName[] = ['close_above_ma', 'close_above_ma_all',
 const PARAM_TEXTS_ZH = {
   /** 单日：一个 N */
   dayOnly: '只看倒数第 N 个交易日；N = 1 就是数据截至那天（默认）',
-  /** 区间：N ～ M */
-  spanOnly: (limit: number) => `起点 n ～ 终点 f 个交易日（n 更近、f 更早，跨度不超过 ${limit} 个交易日）`,
+  /** 区间：起点 N ～ 终点 F */
+  spanOnly: (limit: number) => `起点 N ～ 终点 F 个交易日（N 更近、F 更早，跨度不超过 ${limit} 个交易日）`,
   nLabel: '倒数第 N 日',
   spanStart: '起点 N（更近）',
-  spanEnd: '终点 M（更早）',
+  spanEnd: '终点 F（更早）',
   endEmpty: '留空 = 统计窗口的最后一天',
 }
 

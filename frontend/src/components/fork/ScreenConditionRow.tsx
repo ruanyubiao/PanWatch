@@ -46,7 +46,7 @@ export function ScreenConditionRow({
     >
       <span className="shrink-0 text-[12px] text-foreground">{def.label}</span>
       <span className="min-w-0 truncate rounded bg-secondary px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
-        {formatNode(node)}
+        {formatNode(node, tradingDays)}
       </span>
       <span className="shrink-0 rounded bg-accent/40 px-1 py-0.5 text-[10px] text-muted-foreground">
         {def.category}
