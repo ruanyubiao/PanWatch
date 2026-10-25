@@ -316,7 +316,12 @@ export function ScreenStocksDialog({
   const request = useMemo(() => toRequest(form), [form])
   const liveIssues = useMemo(() => validateScreenRequest(request), [request])
   const shownIssues = submitted ? liveIssues : issues
-  const preview = useMemo(() => formatRule(form.rule), [form.rule])
+  // 预览要把统计窗口一起传进去：阴阳线计数的「窗口最后一天」是哨兵（m=0），
+  // 不知道窗口长度就只能显示成「阳线多于阴线」，看不出范围（用户第 3 条）。
+  const preview = useMemo(
+    () => formatRule(form.rule, request.trading_days),
+    [form.rule, request.trading_days],
+  )
   const conflict = useMemo(() => findConflictGroup(form.rule), [form.rule])
   const bars = useMemo(() => requiredBarsOf(request), [request])
   const conditions = countConditions(form.rule)
