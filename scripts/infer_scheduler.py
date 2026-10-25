@@ -1,0 +1,848 @@
+#!/usr/bin/env python3
+"""条件推理的常驻调度器：让云服务器 24 小时不停地「找条件」。
+
+职责边界
+--------
+* ``tick``     —— 一次调度决策（cron 每 5 分钟调一次）：没任务就开一个；
+                  卡死超过阈值就停掉再开；顺手把磁盘清一清。
+* ``doctor``   —— 打印健康快照（本机 cron / 本地 Hermes 巡检都读它）。
+* ``plan``     —— 只打印「下一次会开什么」，不创建（排错用）。
+* ``prune``    —— 只清磁盘。
+* ``install-cron`` —— 把本调度器自己的 cron 装上（幂等）。
+
+两种起点交替（用户 2026-10-25 第 3 条）
+--------------------------------------
+* ``refine``  —— 从历史评分最好的一轮里取它第 1 名的条件，加一个「它还没有的」
+                 补充条件当新的基础条件。这是「在好条件的基础上再次修改」。
+* ``explore`` —— 从预设计种子条件里轮换取一个（含「等价无条件」的基准种子），
+                 这是「从没有任何条件的基础上重新开始找」。
+
+每 3 次里 2 次 refine、1 次 explore；还没有任何评分时全部 explore。
+
+为什么不用 agent 做这件事
+------------------------
+一次 tick 的判断完全是确定性的（看状态、看分数、写文件），交给模型每小时
+判断一次既慢又贵，而且模型看不到磁盘和线程。这里全用脚本，零 token。
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import fcntl
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
+from datetime import datetime, timedelta
+from typing import Any, Optional
+
+API = "http://127.0.0.1:8000"
+ROOT = "/opt/PanWatch"
+DATA_DIR = os.path.join(ROOT, "data", "infer_runs")
+ANALYSIS_DIR = os.path.join(ROOT, "data", "analysis_runs")
+PRESET_DIR = os.path.join(ROOT, "data", "screen_presets")
+STATE_FILE = os.path.join(DATA_DIR, ".scheduler.json")
+LOG_FILE = os.path.join(DATA_DIR, "scheduler.log")
+CRED_FILE = os.path.join(ROOT, "data", ".agent_api.json")
+LOCK_FILE = "/tmp/infer_scheduler.lock"
+
+#: 搜索区间（用户定的两段数据集）
+TRAIN_START = "2024-01-01"
+TRAIN_END = "2025-12-31"
+VALID_START = "2026-01-01"
+ITERATIONS = 1000
+METHOD = "stat_v3"
+
+#: 两段都 >= 60 算「能用的条件」，自动保存并优先围绕它继续优化
+PASS_SCORE = 60.0
+#: 单段 >= 这个分也值得保存（供人工复核），避免好条件被丢掉
+SAVE_SCORE = 58.0
+#: 云端硬性卡死阈值（软的 40 分钟由本地巡检负责，这里只兜底）
+HARD_STALL_SEC = 2 * 3600
+#: 24 小时最多开几次（一次约 5 小时；上限是防死循环把机器跑满）
+MAX_STARTS_PER_DAY = 6
+#: 磁盘下限
+MIN_FREE_GB = 3.0
+#: 保留最近多少轮推理（其余删掉，防止长期跑把盘吃满）
+KEEP_RUNS = 20
+#: 分析任务目录保留天数 / 最少份数
+KEEP_ANALYSIS_DAYS = 21
+KEEP_ANALYSIS_MIN = 5
+
+CRON_LINE = (
+    "*/5 * * * * /usr/bin/flock -n {lock} {py} {script} tick "
+    ">> {log} 2>&1"
+)
+
+
+# --------------------------------------------------------------------------- #
+# HTTP
+# --------------------------------------------------------------------------- #
+def _login() -> str:
+    with open(CRED_FILE, "r", encoding="utf-8") as fh:
+        cred = json.load(fh)
+    req = urllib.request.Request(
+        API + "/api/auth/login",
+        data=json.dumps(cred).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.load(resp)["data"]["token"]
+
+
+def _get(path: str, token: str) -> Any:
+    req = urllib.request.Request(API + path, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.load(resp)["data"]
+
+
+def _post(path: str, payload: dict[str, Any], token: str, timeout: int = 60) -> Any:
+    req = urllib.request.Request(
+        API + path,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.load(resp)["data"]
+
+
+def _post_empty(path: str, token: str) -> Any:
+    req = urllib.request.Request(
+        API + path, data=b"", headers={"Authorization": f"Bearer {token}"}, method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        return json.load(resp)["data"]
+
+
+# --------------------------------------------------------------------------- #
+# 状态 / 日志
+# --------------------------------------------------------------------------- #
+def _load_state() -> dict[str, Any]:
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_state(state: dict[str, Any]) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, ensure_ascii=False, indent=1)
+    os.replace(tmp, STATE_FILE)
+
+
+def _log(line: str) -> None:
+    """追加一行日志；超过 1MB 只留最后 300 行。长期跑不能无限涨。"""
+    try:
+        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 1_000_000:
+            with open(LOG_FILE, "r", encoding="utf-8", errors="replace") as fh:
+                tail = fh.readlines()[-300:]
+            with open(LOG_FILE, "w", encoding="utf-8") as fh:
+                fh.writelines(tail)
+    except OSError:
+        pass
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a", encoding="utf-8") as fh:
+        fh.write(f"{stamp} {line}\n")
+
+
+# --------------------------------------------------------------------------- #
+# 确定性小工具
+# --------------------------------------------------------------------------- #
+def _cond(name: str, params: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "condition", "id": str(uuid.uuid4()), "name": name, "params": params}
+
+
+def _rule(*conds: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "group",
+        "id": str(uuid.uuid4()),
+        "operator": "AND",
+        "children": list(conds),
+    }
+
+
+def _flatten(node: Any) -> list[dict[str, Any]]:
+    """把规则树摊平成条件列表（用于「这条条件里已经有什么」）。"""
+    out: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        if node.get("type") == "condition":
+            out.append({"name": node.get("name"), "params": dict(node.get("params") or {})})
+        for child in node.get("children") or []:
+            out.extend(_flatten(child))
+    return out
+
+
+def _preset_name(prefix: str, state: dict[str, Any]) -> str:
+    """已保存条件的名字上限 10 个字符，所以用「前缀+月日时分」。"""
+    stamp = datetime.now().strftime("%m%d%H%M")
+    base = f"{prefix}{stamp}"
+    name, i = base, 1
+    while os.path.exists(os.path.join(PRESET_DIR, f"{name}.json")):
+        name = f"{prefix}{stamp}"[:9] + str(i % 10)
+        i += 1
+    return name[:10]
+
+
+def _write_preset(name: str, rule: dict[str, Any], note: str) -> str:
+    os.makedirs(PRESET_DIR, exist_ok=True)
+    record = {
+        "name": name,
+        "saved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "note": note,
+        "request": {
+            "trading_days": 30,
+            "markets": ["sh", "sz", "cyb", "kcb"],
+            "include_st": True,
+            "market_cap": None,
+            "rule": rule,
+            "asof": None,
+        },
+    }
+    path = os.path.join(PRESET_DIR, name + ".json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(record, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    os.replace(tmp, path)
+    return name
+
+
+# --------------------------------------------------------------------------- #
+# 预设计种子条件（「从零开始」的起点）
+# --------------------------------------------------------------------------- #
+#: 每一条都是「一个完整选股思路」，不含额外量价过滤 —— 过滤交给搜索去加。
+#: 顺序即轮换顺序；第 0 条等价于「无基础条件」。
+SEEDS: tuple[tuple[str, dict[str, Any], str], ...] = (
+    ("e0", _rule(_cond("more_bullish_candles", {"n": 1, "m": 0})),
+     "基准：1 日内阳线多于阴线（等价无条件起点）"),
+    ("e1", _rule(_cond("new_high", {"m": 20, "n": 1}),
+                 _cond("vol_ratio_single", {"n": 1, "min": 1.5, "max": 5.0, "window": 5})),
+     "放量突破 20 日新高"),
+    ("e2", _rule(_cond("ma_bullish", {"periods": [5, 10, 20], "n": 1, "m": 1}),
+                 _cond("change_pct", {"n": 1, "min": -2.0, "max": 2.0}),
+                 _cond("close_above_ma", {"period": 20, "n": 1, "m": 1})),
+     "多头排列里回踩不破（当日振幅 ±2%）"),
+    ("e3", _rule(_cond("vol_ratio_single", {"n": 1, "min": 0.0, "max": 0.8, "window": 5}),
+                 _cond("change_pct", {"n": 1, "min": -3.0, "max": 1.0})),
+     "缩量整理（量比 <0.8 且当日不大跌）"),
+    ("e4", _rule(_cond("vol_ratio_consecutive",
+                       {"start": 1, "days": 2, "min": 1.2, "max": 10.0, "window": 5}),
+                 _cond("change_pct", {"n": 1, "min": 2.0, "max": 9.9})),
+     "连续两日放量上攻"),
+    ("e5", _rule(_cond("market_cap", {"op": "lte", "value": 50.0, "n": 1}),
+                 _cond("turnover_single", {"n": 1, "min": 3.0, "max": 15.0})),
+     "小市值（≤50 亿）活跃股"),
+    ("e6", _rule(_cond("consecutive_falling", {"start": 1, "days": 2}),
+                 _cond("close_above_ma", {"period": 5, "n": 1, "m": 1})),
+     "连跌两日后收复 5 日线（反转）"),
+    ("e7", _rule(_cond("close_above_ma", {"period": 60, "n": 1, "m": 1}),
+                 _cond("ma_bullish", {"periods": [10, 20, 60], "n": 1, "m": 1})),
+     "中期趋势（站上 60 日线且均线多头）"),
+    ("e8", _rule(_cond("turnover_single", {"n": 1, "min": 0.0, "max": 1.0}),
+                 _cond("amount_single", {"n": 1, "min": 0.5, "max": 2.0})),
+     "极度冷门（换手 <1%、成交额 0.5~2 亿）"),
+)
+
+#: refine 时给「已有条件」补的那一条（轮换）。只挑经济含义明确、且不与常见条件冲突的。
+HINTS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("close_above_ma", {"period": 20, "n": 1, "m": 1}),
+    ("change_pct", {"n": 1, "min": 2.0, "max": 9.9}),
+    ("turnover_single", {"n": 1, "min": 0.0, "max": 5.0}),
+    ("vol_ratio_single", {"n": 1, "min": 1.2, "max": 3.0, "window": 5}),
+    ("ma_bullish", {"periods": [5, 10], "n": 1, "m": 1}),
+    ("amount_single", {"n": 1, "min": 2.0, "max": 100.0}),
+    ("new_high", {"m": 10, "n": 1}),
+    ("consecutive_rising", {"start": 1, "days": 2}),
+)
+
+
+# --------------------------------------------------------------------------- #
+# 任务视图
+# --------------------------------------------------------------------------- #
+def _score(item: dict[str, Any]) -> tuple[Optional[float], Optional[float]]:
+    return item.get("score_train"), item.get("score_test")
+
+
+def _combined(item: dict[str, Any]) -> Optional[float]:
+    """综合分：两段取较小值 —— 只有一段好的条件不算好（训练/测试集的基本纪律）。"""
+    tr, te = _score(item)
+    if tr is None or te is None:
+        return None
+    return min(float(tr), float(te))
+
+
+def _latest(runs: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    return runs[0] if runs else None
+
+
+def _alive(item: Optional[dict[str, Any]]) -> bool:
+    return bool(item and item.get("alive") and str(item.get("status")) in ("running", "pending"))
+
+
+def _progress_age(item: dict[str, Any]) -> Optional[float]:
+    """这条任务多久没有写入进展（秒）。
+
+    meta.json 每推进一个变体就被重写，所以它的 mtime 就是「最后一次进展」——
+    比 API 里的 elapsed_s 更可靠（elapsed_s 在 loading 阶段也会涨，看起来像在动）。
+    """
+    run_id = str(item.get("run_id") or "")
+    if not run_id:
+        return None
+    path = os.path.join(DATA_DIR, run_id, "meta.json")
+    try:
+        return max(0.0, time.time() - os.path.getmtime(path))
+    except OSError:
+        return None
+
+
+# --------------------------------------------------------------------------- #
+# plan：决定下一次开什么
+# --------------------------------------------------------------------------- #
+def _best_run(runs: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    scored = [(r, _combined(r)) for r in runs]
+    scored = [(r, s) for r, s in scored if s is not None]
+    if not scored:
+        return None
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return scored[0][0]
+
+
+def _finished(runs: list[dict[str, Any]], need_score: bool = True) -> list[dict[str, Any]]:
+    out = []
+    for item in runs:
+        if _alive(item):
+            continue
+        if str(item.get("status")) not in ("done", "interrupted", "error", "stopped"):
+            continue
+        if need_score and _combined(item) is None:
+            continue
+        out.append(item)
+    return out
+
+
+def _refine_rule(best: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """取最好的一轮的第 1 名条件，再补一个它还没有的补充条件。"""
+    run_id = str(best.get("run_id"))
+    path = os.path.join(DATA_DIR, run_id, "finalists.json")
+    rule: Optional[dict[str, Any]] = None
+    desc = ""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            rows = json.load(fh)
+        if rows:
+            rule = (rows[0] or {}).get("rule")
+            desc = str((rows[0] or {}).get("desc") or "")
+    except (OSError, json.JSONDecodeError):
+        rule = None
+    if not isinstance(rule, dict):
+        # 没有 finalists（老任务/被清理），退回这一轮的基础条件
+        rule = (best.get("base_rule") or {}) if isinstance(best.get("base_rule"), dict) else None
+        desc = str(best.get("base_summary") or "")
+    if not isinstance(rule, dict) or not rule:
+        seed_name, seed_rule, seed_desc = SEEDS[0]
+        return seed_rule, f"退回种子 {seed_name}（{seed_desc}）"
+
+    have = {c.get("name") for c in _flatten(rule)}
+    idx = int(state.get("hint_index") or 0)
+    picked: Optional[tuple[str, dict[str, Any]]] = None
+    for step in range(len(HINTS)):
+        cand = HINTS[(idx + step) % len(HINTS)]
+        if cand[0] not in have:
+            picked = cand
+            state["hint_index"] = (idx + step + 1) % len(HINTS)
+            break
+    if picked is None:
+        return rule, f"沿用 {run_id} 的第 1 名：{desc}（没有可补的条件了）"
+
+    new_rule = {
+        "type": "group",
+        "id": str(uuid.uuid4()),
+        "operator": "AND",
+        "children": [rule, _cond(picked[0], picked[1])],
+    }
+    return new_rule, f"改良 {run_id} 的第 1 名（{desc}）＋ {picked[0]}"
+
+
+def build_plan(runs: list[dict[str, Any]], state: dict[str, Any]) -> dict[str, Any]:
+    """返回 {mode, preset_rule, preset_note, seed, log}。不写文件、不调接口。"""
+    starts = int(state.get("total_starts") or 0)
+    best = _best_run(runs)
+    best_score = _combined(best) if best else None
+
+    # 已有及格条件 → 一直围绕它改良（仍在跑，不会让机器闲着）
+    force_refine = bool(best_score is not None and best_score >= PASS_SCORE)
+    mode = "refine" if force_refine else ("explore" if (best is None or starts % 3 == 2) else "refine")
+
+    if mode == "refine" and best is not None:
+        rule, note = _refine_rule(best, state)
+    else:
+        mode = "explore"
+        idx = int(state.get("seed_index") or 0) % len(SEEDS)
+        name, rule, seed_desc = SEEDS[idx]
+        state["seed_index"] = (idx + 1) % len(SEEDS)
+        note = f"种子 {name}：{seed_desc}"
+
+    seed_value = int(state.get("next_seed") or 20260101)
+    return {
+        "mode": mode,
+        "rule": rule,
+        "note": note,
+        "seed": seed_value,
+        "best": {"run_id": (best or {}).get("run_id"), "score": best_score},
+    }
+
+
+# --------------------------------------------------------------------------- #
+# 启动 / 停止
+# --------------------------------------------------------------------------- #
+def _starts_today(state: dict[str, Any]) -> int:
+    cutoff = time.time() - 86400
+    return len([s for s in (state.get("starts") or []) if float(s.get("ts") or 0) >= cutoff])
+
+
+def _free_gb() -> float:
+    return shutil.disk_usage("/").free / 1024 ** 3
+
+
+def start_new(token: str, runs: list[dict[str, Any]], state: dict[str, Any],
+              dry: bool = False, force: bool = False) -> str:
+    plan = build_plan(runs, state)
+    name = _preset_name("r" if plan["mode"] == "refine" else "e", state)
+    payload = {
+        "preset": name,
+        "method": METHOD,
+        "train_start": TRAIN_START,
+        "train_end": TRAIN_END,
+        "valid_start": VALID_START,
+        "valid_end": None,
+        "iterations": ITERATIONS,
+        "seed": plan["seed"],
+    }
+    if dry:
+        print(json.dumps({"preset": name, "mode": plan["mode"], "note": plan["note"],
+                          "best": plan["best"], "payload": payload},
+                         ensure_ascii=False, indent=1))
+        return "dry"
+
+    if _alive(_latest(runs)) and not force:
+        return "busy"
+    if _free_gb() < MIN_FREE_GB:
+        _log(f"skip start: free={_free_gb():.1f}G < {MIN_FREE_GB}G")
+        return "low_disk"
+    if _starts_today(state) >= MAX_STARTS_PER_DAY and not force:
+        _log("skip start: 24h 内已达启动上限")
+        return "rate_limited"
+
+    _write_preset(name, plan["rule"], plan["note"])
+    try:
+        created = _post("/api/stocks/infer/runs", payload, token)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        _log(f"start FAILED http={exc.code} {detail} preset={name} note={plan['note']}")
+        return f"failed:{exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        _log(f"start FAILED {type(exc).__name__}: {exc} preset={name}")
+        return "failed"
+
+    run_id = str((created.get("item") or {}).get("run_id") or "")
+    state["total_starts"] = int(state.get("total_starts") or 0) + 1
+    state["next_seed"] = int(plan["seed"]) + 7919
+    state["run_id"] = run_id
+    state["done"] = 0
+    state["ts"] = time.time()
+    state.setdefault("starts", []).append({
+        "ts": time.time(), "run_id": run_id, "preset": name,
+        "mode": plan["mode"], "seed": plan["seed"], "note": plan["note"],
+    })
+    state["starts"] = state["starts"][-60:]
+    _save_state(state)
+    _log(f"start OK run={run_id} preset={name} mode={plan['mode']} seed={plan['seed']} | {plan['note']}")
+    print(f"已创建 {run_id}（{plan['mode']} · {name}）{plan['note']}")
+    return "started"
+
+
+def stop_run(token: str, run_id: str) -> bool:
+    try:
+        _post_empty(f"/api/stocks/infer/runs/{run_id}/stop", token)
+        _log(f"stop OK run={run_id}")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        _log(f"stop FAILED run={run_id} {type(exc).__name__}: {exc}")
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# 自动保存 / 清理
+# --------------------------------------------------------------------------- #
+def _best_variant_index(run_id: str) -> Optional[int]:
+    """这一轮「第 1 名」在 results.jsonl 里的序号（/save 接口按序号存）"""
+    base = os.path.join(DATA_DIR, run_id)
+    desc = ""
+    try:
+        with open(os.path.join(base, "finalists.json"), "r", encoding="utf-8") as fh:
+            rows = json.load(fh)
+        if rows:
+            desc = str((rows[0] or {}).get("desc") or "")
+    except (OSError, json.JSONDecodeError):
+        pass
+    best_index: Optional[int] = None
+    best_trial: Optional[float] = None
+    try:
+        with open(os.path.join(base, "results.jsonl"), "r", encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                idx = row.get("index")
+                if desc and row.get("desc") == desc and isinstance(idx, int):
+                    return idx
+                trial = row.get("trial_score")
+                if isinstance(idx, int) and isinstance(trial, (int, float)):
+                    if best_trial is None or trial > best_trial:
+                        best_trial, best_index = trial, idx
+    except OSError:
+        return None
+    return best_index
+
+
+def auto_save(token: str, runs: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """把两段都 ≥58 的最好变体自动存成已保存条件（每轮只存一次）。"""
+    saved = set(state.get("saved") or [])
+    for item in _finished(runs):
+        run_id = str(item.get("run_id"))
+        tr, te = _score(item)
+        if tr is None or te is None or min(tr, te) < SAVE_SCORE:
+            continue
+        if run_id in saved:
+            continue
+        index = _best_variant_index(run_id)
+        if index is None:
+            _log(f"autosave SKIP run={run_id}：找不到最优变体序号")
+            continue
+        name = _preset_name("p", state)
+        try:
+            _post_empty(f"/api/stocks/infer/runs/{run_id}/save?index={index}&name={name}", token)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:200]
+            _log(f"autosave FAILED run={run_id} http={exc.code} {detail}")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            _log(f"autosave FAILED run={run_id} {type(exc).__name__}: {exc}")
+            continue
+        saved.add(run_id)
+        _log(f"autosave OK run={run_id} -> {name} （{tr}/{te}，序号 {index}）")
+    state["saved"] = sorted(saved)
+
+
+def prune(state: dict[str, Any], dry: bool = False) -> dict[str, Any]:
+    """删旧轮次与分析任务，防长期跑把盘吃满。分数够高的轮次永远保留。"""
+    protected = set(state.get("protect") or [])
+    dirs: list[tuple[float, str]] = []
+    if os.path.isdir(DATA_DIR):
+        for name in os.listdir(DATA_DIR):
+            path = os.path.join(DATA_DIR, name)
+            if not os.path.isdir(path) or name.startswith("."):
+                continue
+            try:
+                with open(os.path.join(path, "meta.json"), "r", encoding="utf-8") as fh:
+                    meta = json.load(fh)
+            except (OSError, json.JSONDecodeError):
+                meta = {}
+            scores = meta.get("scores") or {}
+            tr = (scores.get("train") or {}).get("score")
+            te = (scores.get("test") or {}).get("score")
+            if tr is not None and te is not None and min(tr, te) >= SAVE_SCORE:
+                protected.add(name)
+            dirs.append((os.path.getmtime(path), name))
+    dirs.sort(reverse=True)
+
+    removed: list[str] = []
+    kept = 0
+    for i, (_, name) in enumerate(dirs):
+        if i < KEEP_RUNS or name in protected:
+            kept += 1
+            continue
+        removed.append(name)
+        if not dry:
+            shutil.rmtree(os.path.join(DATA_DIR, name), ignore_errors=True)
+
+    # 老的分析任务（报告 + Excel）才是吃盘的主力
+    analysed: list[tuple[float, str]] = []
+    if os.path.isdir(ANALYSIS_DIR):
+        for preset in os.listdir(ANALYSIS_DIR):
+            pdir = os.path.join(ANALYSIS_DIR, preset)
+            if not os.path.isdir(pdir):
+                continue
+            for name in os.listdir(pdir):
+                path = os.path.join(pdir, name)
+                if os.path.isdir(path):
+                    analysed.append((os.path.getmtime(path), path))
+    analysed.sort(reverse=True)
+    cutoff = time.time() - KEEP_ANALYSIS_DAYS * 86400
+    for i, (mtime, path) in enumerate(analysed):
+        if i < KEEP_ANALYSIS_MIN or mtime >= cutoff:
+            continue
+        removed.append(os.path.basename(path))
+        if not dry:
+            shutil.rmtree(path, ignore_errors=True)
+
+    state["protect"] = sorted(protected)[-60:]
+    return {"removed": removed[:20], "removed_count": len(removed),
+            "kept": kept, "free_gb": round(_free_gb(), 1)}
+
+
+# --------------------------------------------------------------------------- #
+# 命令
+# --------------------------------------------------------------------------- #
+def _runs(token: str) -> list[dict[str, Any]]:
+    data = _get("/api/stocks/infer/runs?limit=200", token)
+    return data.get("items") or data.get("runs") or []
+
+
+def cmd_tick(args: argparse.Namespace) -> int:
+    token = _login()
+    runs = _runs(token)
+    state = _load_state()
+    latest = _latest(runs)
+
+    # 1) 卡死兜底：线程还在但两小时没动 → 停掉
+    if _alive(latest):
+        age = _progress_age(latest)
+        if age is not None and age > HARD_STALL_SEC:
+            _log(f"stalled run={latest.get('run_id')} age={int(age)}s → stop")
+            stop_run(token, str(latest.get("run_id")))
+            time.sleep(3)
+            runs = _runs(token)
+
+    # 2) 跑完的轮次自动保存 + 清盘
+    auto_save(token, runs, state)
+    auto_save_pr = prune(state)
+    state["last_tick"] = time.time()
+    state["last_prune"] = auto_save_pr
+    _save_state(state)
+
+    # 3) 开新任务
+    result = start_new(token, runs, state, dry=args.dry)
+    print(f"tick {result} free={_free_gb():.1f}G runs={len(runs)}")
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    token = _login()
+    runs = _runs(token)
+    state = _load_state()
+    return 0 if start_new(token, runs, state, dry=True) == "dry" else 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    state = _load_state()
+    info: dict[str, Any] = {
+        "api": "down", "service": "unknown", "cron": 0, "free_gb": round(_free_gb(), 1),
+        "latest": {}, "starts_today": _starts_today(state),
+        "last_tick_age_s": int(time.time() - float(state.get("last_tick") or 0)),
+    }
+    try:
+        info["service"] = subprocess.run(
+            ["systemctl", "is-active", "panwatch"], capture_output=True, text=True,
+            timeout=10).stdout.strip() or "unknown"
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        cron = subprocess.run(["crontab", "-l"], capture_output=True, text=True, timeout=10).stdout
+        info["cron"] = 1 if "infer_scheduler.py tick" in cron else 0
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        token = _login()
+        info["api"] = "up"
+        runs = _runs(token)
+        latest = _latest(runs) or {}
+        info["latest"] = {
+            "run_id": latest.get("run_id"),
+            "status": latest.get("status"),
+            "alive": bool(latest.get("alive")),
+            "done": int((latest.get("progress") or {}).get("done_iterations")
+                        or latest.get("done_iterations") or 0),
+            "iterations": int(latest.get("iterations") or 0),
+            "phase": (latest.get("progress") or {}).get("phase"),
+            "idle_s": _progress_age(latest),
+            "score_train": latest.get("score_train"),
+            "score_test": latest.get("score_test"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        info["api_error"] = f"{type(exc).__name__}: {exc}"[:200]
+
+    if args.shell:
+        for key in ("service", "api", "cron", "free_gb", "starts_today", "last_tick_age_s"):
+            print(f"{key.upper()}={info[key]}")
+        latest = info.get("latest") or {}
+        print(f"RUN_ID={latest.get('run_id') or ''}")
+        print(f"RUN_STATUS={latest.get('status') or ''}")
+        print(f"RUN_ALIVE={1 if latest.get('alive') else 0}")
+        print(f"RUN_DONE={latest.get('done') or 0}")
+        print(f"RUN_ITERS={latest.get('iterations') or 0}")
+        print(f"RUN_IDLE={int(latest.get('idle_s') or 0)}")
+        print(f"RUN_SCORE_TRAIN={latest.get('score_train')}")
+        print(f"RUN_SCORE_TEST={latest.get('score_test')}")
+    else:
+        print(json.dumps(info, ensure_ascii=False, indent=1))
+    return 0
+
+
+def cmd_prune(args: argparse.Namespace) -> int:
+    state = _load_state()
+    out = prune(state, dry=args.dry)
+    _save_state(state)
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+def cmd_seeds(args: argparse.Namespace) -> int:
+    """把预设计种子写成条件文件（不启动任务），便于在界面里直接选。"""
+    state = _load_state()
+    made = []
+    for name, rule, desc in SEEDS:
+        preset = "s" + name[1:]  # s0 / s1 ...
+        _write_preset(preset, rule, desc)
+        made.append(preset)
+    _save_state(state)
+    print(json.dumps({"seeds": made}, ensure_ascii=False))
+    return 0
+
+
+def cmd_install_cron(args: argparse.Namespace) -> int:
+    py = os.path.join(ROOT, "venv", "bin", "python")
+    script = os.path.join(ROOT, "scripts", "infer_scheduler.py")
+    line = CRON_LINE.format(lock=LOCK_FILE, py=py, script=script, log=LOG_FILE)
+    current = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
+    kept = [ln for ln in current.splitlines() if "infer_scheduler.py" not in ln]
+    kept.append(line)
+    body = "\n".join(kept).strip() + "\n"
+    subprocess.run(["crontab", "-"], input=body, text=True, check=True)
+    print("cron 已安装：\n" + line)
+    return 0
+
+
+def cmd_stop(args: argparse.Namespace) -> int:
+    token = _login()
+    runs = _runs(token)
+    latest = _latest(runs) or {}
+    if _alive(latest):
+        stop_run(token, str(latest.get("run_id")))
+        time.sleep(8)
+        runs = _runs(token)
+    if args.start:
+        state = _load_state()
+        print(f"stop+start: {start_new(token, runs, state)}")
+    else:
+        print("stopped")
+    return 0
+
+
+def cmd_resume(args: argparse.Namespace) -> int:
+    token = _login()
+    latest = _latest(_runs(token))
+    if not latest or str(latest.get("status")) != "paused":
+        print("not_paused")
+        return 0
+    try:
+        _post_empty(f"/api/stocks/infer/runs/{latest.get('run_id')}/resume", token)
+        _log(f"resume OK run={latest.get('run_id')}")
+        print(f"resumed {latest.get('run_id')}")
+    except Exception as exc:  # noqa: BLE001
+        _log(f"resume FAILED {type(exc).__name__}: {exc}")
+        print("resume_failed")
+    return 0
+
+
+def cmd_start(args: argparse.Namespace) -> int:
+    token = _login()
+    runs = _runs(token)
+    state = _load_state()
+    print(f"start: {start_new(token, runs, state, dry=args.dry, force=args.force)}")
+    return 0
+
+
+def cmd_main() -> int:
+    ap = argparse.ArgumentParser(description="条件推理常驻调度器")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    tick = sub.add_parser("tick", help="一次调度（cron 每 5 分钟）")
+    tick.add_argument("--dry", action="store_true")
+    tick.set_defaults(func=cmd_tick)
+
+    plan = sub.add_parser("plan", help="只打印下一次会开什么")
+    plan.set_defaults(func=cmd_plan)
+
+    doctor = sub.add_parser("doctor", help="健康快照")
+    doctor.add_argument("--shell", action="store_true", help="输出 KEY=VALUE（bash 好解析）")
+    doctor.set_defaults(func=cmd_doctor)
+
+    pr = sub.add_parser("prune", help="清旧轮次")
+    pr.add_argument("--dry", action="store_true")
+    pr.set_defaults(func=cmd_prune)
+
+    sd = sub.add_parser("seeds", help="写入预设计种子条件")
+    sd.set_defaults(func=cmd_seeds)
+
+    ic = sub.add_parser("install-cron", help="安装本调度器的 cron（幂等）")
+    ic.set_defaults(func=cmd_install_cron)
+
+    stp = sub.add_parser("stop", help="停掉当前轮（--start 顺便开下一轮）")
+    stp.add_argument("--start", action="store_true")
+    stp.set_defaults(func=cmd_stop)
+
+    rsm = sub.add_parser("resume", help="恢复被暂停的轮次")
+    rsm.set_defaults(func=cmd_resume)
+
+    st = sub.add_parser("start", help="立即开一轮（不管上一轮）")
+    st.add_argument("--dry", action="store_true")
+    st.add_argument("--force", action="store_true")
+    st.set_defaults(func=cmd_start)
+
+    args = ap.parse_args()
+    try:
+        return args.func(args)
+    except urllib.error.URLError as exc:
+        print(f"api_unreachable:{exc.reason}")
+        return 2
+    except Exception as exc:  # noqa: BLE001
+        _log(f"ERROR {type(exc).__name__}: {exc}")
+        print(f"scheduler_error:{type(exc).__name__}: {str(exc)[:120]}")
+        return 3
+
+
+@contextlib.contextmanager
+def _locked() -> Any:
+    """cron 重叠时静默退出（不产生噪音告警）。"""
+    fh = open(LOCK_FILE, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+if __name__ == "__main__":
+    with _locked() as got:
+        if not got:
+            sys.exit(0)
+        sys.exit(cmd_main())

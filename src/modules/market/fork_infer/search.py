@@ -114,7 +114,8 @@ def base_summary(request: ScreenRequest) -> str:
 
     def walk(node: Any) -> None:
         if getattr(node, "type", "") == "condition":
-            parts.append(space.describe_condition(node.name, dict(node.params or {})))
+            parts.append(space.describe_condition(node.name, dict(node.params or {}),
+                                                  int(request.trading_days)))
         else:
             for child in getattr(node, "children", []) or []:
                 walk(child)
@@ -554,8 +555,9 @@ def _loop(run_id: str) -> None:
 
         # ---- 第 0 步：基础条件本身（不计入优化次数，只做基准）
         if not previous:
-            consider(run_variant(space.make_rule(base_rule, []), [], None, "base",
-                                 tree=base_rule, desc=space.describe_tree(base_rule, [])))
+            consider(run_variant(space.make_rule(base_rule, []), [], None, "base", tree=base_rule,
+                                 desc=space.describe_tree(base_rule, [],
+                                                          int(request.trading_days))))
 
         # ---- 主循环：每一次循环 = 一次「调整优化」
         while done < iterations:
@@ -616,8 +618,8 @@ def _loop(run_id: str) -> None:
                     break
                 continue
             seen.add(canonical)
-            row = run_variant(rule, filters, parent, operator,
-                              tree=tree, desc=space.describe_tree(tree, filters))
+            row = run_variant(rule, filters, parent, operator, tree=tree,
+                              desc=space.describe_tree(tree, filters, int(request.trading_days)))
             if row is None:
                 misses += 1
                 if misses >= MAX_MISSES:
