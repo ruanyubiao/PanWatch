@@ -349,19 +349,19 @@ export const SCREEN_TEXTS_ZH = {
   periodLabel: '周期',
   startLabel: '倒数第几个交易日',
   daysLabel: '连续天数',
-  nLabel: 'n（倒数第几个交易日）',
-  nShortLabel: 'n',
+  nLabel: 'N（倒数第几个交易日）',
+  nShortLabel: 'N',
   // ---- 按日定位（2026-10-23 第 6 条：所有条件都能指定倒数第 N 日）
   dayLabel: '倒数第几个交易日',
-  dayShortLabel: '倒数第 n 日',
+  dayShortLabel: '倒数第 N 日',
   spanStartLabel: '起点 N',
-  spanEndLabel: '终点 M',
-  candleSpanTitle: '统计范围（起点 n ～ 终点 f）',
+  spanEndLabel: '终点 F',
+  candleSpanTitle: '统计范围（起点 N ～ 终点 F）',
   dayInvalid: (max: number) => `倒数第几个交易日需为 1 至 ${max} 的整数`,
   spanStartInvalid: (max: number) => `起点 N 需为 1 至 ${max} 的整数`,
-  spanEndInvalid: (n: number, max: number) => `终点 f 需为 ${n} 至 ${max} 的整数（f ≥ n）`,
-  candleEndHint: '终点 M 留空 = 统计窗口的最后一天（默认）',
-  /** 「倒数第 n 日」/「倒数第 m～n 日」——摘要里统一用这两个 */
+  spanEndInvalid: (n: number, max: number) => `终点 F 需为 ${n} 至 ${max} 的整数（F ≥ N）`,
+  candleEndHint: '终点 F 留空 = 统计窗口的最后一天（默认）',
+  /** 「倒数第 N 日」/「倒数第 F～N 日」——摘要里统一用这两个（N 更近、F 更早） */
   slotDay: (n: number) => `倒数第${n}日`,
   slotSpan: (n: number, m: number) => (n === m ? `倒数第${n}日` : `倒数第${m}～${n}日`),
   summaryMaOrderAt: (periods: string, suffix: string) => `均线多头排列(${periods})${suffix}`,
@@ -378,7 +378,7 @@ export const SCREEN_TEXTS_ZH = {
     `${slot} 任意一天${label}：MA${fast} / MA${slow}`,
   summaryCandleSpan: (slot: string, label: string) => `${slot} ${label}`,
   summaryCandleWindow: (label: string) => `${label}（统计窗口内）`,
-  changePctHint: (max: number) => `n = 倒数第几个交易日（1 – ${max}），下限/上限为百分比、开区间`,
+  changePctHint: (max: number) => `N = 倒数第几个交易日（1 – ${max}），下限/上限为百分比、开区间`,
   consecutiveHint: (start: number, days: number) =>
     `自倒数第 ${start} 个交易日起连续 ${days} 个交易日都收阳（收盘价 > 开盘价）`,
   pctMinLabel: '下限 %',
@@ -420,28 +420,28 @@ export const SCREEN_TEXTS_ZH = {
     mode === 'day'
       ? '倒数第 N 个交易日：短期均线在上、长期均线在下（MA5 > MA10 > MA20 > …）'
       : mode === 'all'
-        ? '倒数第 N ～ M 个交易日的**每一天**都满足「短期均线在上、长期均线在下」'
-        : '倒数第 N ～ M 个交易日里**至少有一天**满足「短期均线在上、长期均线在下」',
+        ? '倒数第 F ～ N 个交易日的**每一天**都满足「短期均线在上、长期均线在下」'
+        : '倒数第 F ～ N 个交易日里**至少有一天**满足「短期均线在上、长期均线在下」',
   descMaBear: (mode: 'day' | 'all' | 'any') =>
     mode === 'day'
       ? '倒数第 N 个交易日：短期均线在下、长期均线在上（MA5 < MA10 < MA20 < …）'
       : mode === 'all'
-        ? '倒数第 N ～ M 个交易日的**每一天**都满足「短期均线在下、长期均线在上」'
-        : '倒数第 N ～ M 个交易日里**至少有一天**满足「短期均线在下、长期均线在上」',
+        ? '倒数第 F ～ N 个交易日的**每一天**都满足「短期均线在下、长期均线在上」'
+        : '倒数第 F ～ N 个交易日里**至少有一天**满足「短期均线在下、长期均线在上」',
   descAboveMa: (mode: 'day' | 'all' | 'any') =>
     mode === 'day'
       ? '倒数第 N 个交易日的收盘价（复权）高于指定周期的均线'
       : mode === 'all'
-        ? '倒数第 N ～ M 个交易日的每一天，收盘价（复权）都高于指定周期的均线'
-        : '倒数第 N ～ M 个交易日里，至少有一天的收盘价（复权）高于指定周期的均线',
+        ? '倒数第 F ～ N 个交易日的每一天，收盘价（复权）都高于指定周期的均线'
+        : '倒数第 F ～ N 个交易日里，至少有一天的收盘价（复权）高于指定周期的均线',
   descCrossDaySuffix: '；只看倒数第 N 个交易日当天',
-  descCrossAnySuffix: '；倒数第 N ～ M 个交易日里任意一天发生就算命中',
+  descCrossAnySuffix: '；倒数第 F ～ N 个交易日里任意一天发生就算命中',
   descMoreBullish:
     '在指定的 D[n..m] 窗口内，收阳的天数多于收阴的天数（平盘不计）。' +
-    '终点 M 留空 = 整个统计窗口；N 默认 1（最近一个交易日）',
+    '终点 F 留空 = 整个统计窗口；起点 N 默认 1（最近一个交易日）',
   descMoreBearish:
     '在指定的 D[n..m] 窗口内，收阴的天数多于收阳的天数（平盘不计）。' +
-    '终点 M 留空 = 整个统计窗口；N 默认 1（最近一个交易日）',
+    '终点 F 留空 = 整个统计窗口；起点 N 默认 1（最近一个交易日）',
 }
 
 /** 参数表单的形态（新增量价条件按这个渲染，不再按条件名写分支）。 */
@@ -472,7 +472,7 @@ export interface ConditionDef<K extends ConditionName> {
   category: ConditionCategory
   description: string
   defaults: ConditionParamsMap[K]
-  summary: (p: ConditionParamsMap[K]) => string
+  summary: (p: ConditionParamsMap[K], tradingDays?: number) => string
   requiredBars: (p: ConditionParamsMap[K]) => number
   validate: (p: ConditionParamsMap[K], tradingDays: number) => string[]
   /** 缺省时按条件名走老的专用表单（均线周期 / 连续阳线 / 涨跌幅） */
@@ -540,13 +540,13 @@ export const METRIC_TEXTS_ZH = {
   consecutiveSummary: (span: string, days: number, label: string, unit: string, min: number, max: number) =>
     `${span}连续${days}日${label} ∈ (${min}${unit}, ${max}${unit})`,
   ratioWindowSuffix: (window: number) => `，量比回看 ${window} 日`,
-  hintSingle: (max: number) => `n = 倒数第几个交易日（1 – ${max}），上下限为开区间`,
+  hintSingle: (max: number) => `N = 倒数第几个交易日（1 – ${max}），上下限为开区间`,
   hintRange: (max: number) =>
-    `起点 n 距今天最近、终点 f 更早（n ≤ f，1 – ${max}），跨度不超过 ${max} 个交易日；上下限为开区间`,
+    `起点 N 距今天最近、终点 F 更早（N ≤ F，1 – ${max}），跨度不超过 ${max} 个交易日；上下限为开区间`,
   hintConsecutive: '自倒数第 X 个交易日起连续 Y 个交易日都落在区间内；缺一根即不成立',
   hintVolRatio: '量比 = 当日成交量 ÷ 前若干交易日均量（不含当日），1 倍 = 平量',
-  startLabel: '起点 n',
-  endLabel: '终点 f',
+  startLabel: '起点 N',
+  endLabel: '终点 F',
   minLabel: '下限',
   maxLabel: '上限',
   windowLabel: '回看天数',
@@ -560,7 +560,7 @@ export const METRIC_TEXTS_ZH = {
   summaryCross: (fast: number, slow: number, label: string) => `${label}：MA${fast} / MA${slow}`,
   summaryStock: (text: string) => (text.trim() ? `股票 ∈ { ${text.trim()} }` : '股票（未填写）'),
   nInvalid: (max: number) => `n 需为 1 至 ${max} 之间的整数`,
-  mInvalid: (max: number) => `f 需为 n 至 ${max} 之间的整数（f ≥ n）`,
+  mInvalid: (max: number) => `F 需为 N 至 ${max} 之间的整数（F ≥ N）`,
   spanTooWide: (max: number) => `区间跨度不能超过 ${max} 个交易日`,
   rangeInvalid: (label: string) => `${label}下限必须小于上限`,
   boundsInvalid: (label: string, lo: number, hi: number) => `${label}需在 ${lo} 至 ${hi} 之间`,
@@ -586,8 +586,8 @@ export const METRIC_TEXTS_ZH = {
   unitSuffix: (unit: string) => `单位：${unit}`,
   lookbackHint: (max: number) => `回看 1 – ${max} 个交易日（不含当日）`,
   crossHint: '快线必须小于慢线；金叉 = 快线今天上穿慢线，死叉 = 下穿',
-  nShortLabel: 'n',
-  consecutiveStartLabel: '起点 n（倒数第几个交易日）',
+  nShortLabel: 'N',
+  consecutiveStartLabel: '起点 N（倒数第几个交易日）',
   consecutiveDaysLabel: '连续天数',
   // ---- 总市值（2026-10-22 从基础筛选搬进条件列表）
   labelMarketCap: '总市值',
@@ -673,19 +673,19 @@ const METRIC_SEEDS_ZH: Record<string, MetricSeed> = {
     metric: 'pct',
     shape: 'all',
     label: '涨跌幅 · 范围内每日',
-    description: '倒数第 N ～ M 个交易日的每一天涨跌幅都落在区间内（开区间），任一天不满足即不成立',
+    description: '倒数第 F ～ N 个交易日的每一天涨跌幅都落在区间内（开区间），任一天不满足即不成立',
   },
   change_pct_any: {
     metric: 'pct',
     shape: 'any',
     label: '涨跌幅 · 范围内任意一天',
-    description: '倒数第 N ～ M 个交易日里至少有一天的涨跌幅落在区间内（开区间）',
+    description: '倒数第 F ～ N 个交易日里至少有一天的涨跌幅落在区间内（开区间）',
   },
   change_pct_span: {
     metric: 'pct',
     shape: 'span',
     label: '区间涨跌幅',
-    description: '倒数第 N 日相对倒数第 M 日的涨跌幅落在区间内（开区间）。按后复权价计算：N 日 30 元、M 日 20 元 → +50%',
+    description: '倒数第 N 日相对倒数第 F 日的涨跌幅落在区间内（开区间）。按后复权价计算：N 日 30 元、F 日 20 元 → +50%',
   },
   turnover_single: {
     metric: 'turnover',
@@ -697,19 +697,19 @@ const METRIC_SEEDS_ZH: Record<string, MetricSeed> = {
     metric: 'turnover',
     shape: 'all',
     label: '换手率 · 范围内每日',
-    description: '倒数第 N ～ M 个交易日每天的换手率都落在区间内（开区间）',
+    description: '倒数第 F ～ N 个交易日每天的换手率都落在区间内（开区间）',
   },
   turnover_any: {
     metric: 'turnover',
     shape: 'any',
     label: '换手率 · 范围内任意一天',
-    description: '倒数第 N ～ M 个交易日里至少有一天的换手率落在区间内（开区间）',
+    description: '倒数第 F ～ N 个交易日里至少有一天的换手率落在区间内（开区间）',
   },
   turnover_span: {
     metric: 'turnover',
     shape: 'span',
     label: '区间累计换手率',
-    description: '倒数第 N ～ M 个交易日的换手率之和落在区间内（开区间，可理解为这段时间换了多少遍手）',
+    description: '倒数第 F ～ N 个交易日的换手率之和落在区间内（开区间，可理解为这段时间换了多少遍手）',
   },
   volume_single: {
     metric: 'volume',
@@ -721,19 +721,19 @@ const METRIC_SEEDS_ZH: Record<string, MetricSeed> = {
     metric: 'volume',
     shape: 'all',
     label: '成交量 · 范围内每日',
-    description: '倒数第 N ～ M 个交易日每天的成交量都落在区间内（开区间，单位万手）',
+    description: '倒数第 F ～ N 个交易日每天的成交量都落在区间内（开区间，单位万手）',
   },
   volume_any: {
     metric: 'volume',
     shape: 'any',
     label: '成交量 · 范围内任意一天',
-    description: '倒数第 N ～ M 个交易日里至少有一天的成交量落在区间内（开区间，单位万手）',
+    description: '倒数第 F ～ N 个交易日里至少有一天的成交量落在区间内（开区间，单位万手）',
   },
   volume_span: {
     metric: 'volume',
     shape: 'span',
     label: '区间累计成交量',
-    description: '倒数第 N ～ M 个交易日的成交量合计落在区间内（开区间，单位万手）',
+    description: '倒数第 F ～ N 个交易日的成交量合计落在区间内（开区间，单位万手）',
   },
   amount_single: {
     metric: 'amount',
@@ -745,19 +745,19 @@ const METRIC_SEEDS_ZH: Record<string, MetricSeed> = {
     metric: 'amount',
     shape: 'all',
     label: '成交额 · 范围内每日',
-    description: '倒数第 N ～ M 个交易日每天的成交额都落在区间内（开区间，单位亿元）',
+    description: '倒数第 F ～ N 个交易日每天的成交额都落在区间内（开区间，单位亿元）',
   },
   amount_any: {
     metric: 'amount',
     shape: 'any',
     label: '成交额 · 范围内任意一天',
-    description: '倒数第 N ～ M 个交易日里至少有一天的成交额落在区间内（开区间，单位亿元）',
+    description: '倒数第 F ～ N 个交易日里至少有一天的成交额落在区间内（开区间，单位亿元）',
   },
   amount_span: {
     metric: 'amount',
     shape: 'span',
     label: '区间累计成交额',
-    description: '倒数第 N ～ M 个交易日的成交额合计落在区间内（开区间，单位亿元）',
+    description: '倒数第 F ～ N 个交易日的成交额合计落在区间内（开区间，单位亿元）',
   },
   vol_ratio_single: {
     metric: 'vol_ratio',
@@ -769,25 +769,25 @@ const METRIC_SEEDS_ZH: Record<string, MetricSeed> = {
     metric: 'vol_ratio',
     shape: 'all',
     label: '量比 · 范围内每日',
-    description: '倒数第 N ～ M 个交易日每天的量比都落在区间内（开区间）',
+    description: '倒数第 F ～ N 个交易日每天的量比都落在区间内（开区间）',
   },
   vol_ratio_any: {
     metric: 'vol_ratio',
     shape: 'any',
     label: '量比 · 范围内任意一天',
-    description: '倒数第 N ～ M 个交易日里至少有一天的量比落在区间内（开区间）',
+    description: '倒数第 F ～ N 个交易日里至少有一天的量比落在区间内（开区间）',
   },
   vol_ratio_avg: {
     metric: 'vol_ratio',
     shape: 'span',
     label: '区间平均量比',
-    description: '倒数第 N ～ M 个交易日量比的平均值落在区间内（开区间），用来看「这一段时间整体放量没有」',
+    description: '倒数第 F ～ N 个交易日量比的平均值落在区间内（开区间），用来看「这一段时间整体放量没有」',
   },
   vol_ratio_consecutive: {
     metric: 'vol_ratio',
     shape: 'consecutive',
     label: '连续 N 日量比落在区间',
-    description: '自倒数第 M 个交易日起连续 N 个交易日量比都落在区间内（开区间）。留空下限=连续放量的门槛，留空上限=连续缩量',
+    description: '从起点（倒数第几个交易日）起，连续若干个交易日的量比都落在区间内（开区间）。留空下限=连续放量的门槛，留空上限=连续缩量',
     defaultMin: 0,
     defaultMax: 10,
   },
@@ -795,7 +795,7 @@ const METRIC_SEEDS_ZH: Record<string, MetricSeed> = {
     metric: 'vol_ratio',
     shape: 'consecutive',
     label: '连续缩量（量比 < 上限）',
-    description: '自倒数第 M 个交易日起连续 N 个交易日量比都小于上限（开区间），与「连续放量」是同一个条件的两侧',
+    description: '从起点（倒数第几个交易日）起，连续若干个交易日的量比都小于上限（开区间），与「连续放量」是同一个条件的两侧',
     defaultMin: 0,
     defaultMax: 1,
   },
@@ -809,13 +809,13 @@ const METRIC_SEEDS_ZH: Record<string, MetricSeed> = {
     metric: 'market_cap',
     shape: 'all',
     label: '总市值 · 范围内每日',
-    description: '倒数第 N ～ M 个交易日每天的总市值都落在区间内（开区间，单位亿元）',
+    description: '倒数第 F ～ N 个交易日每天的总市值都落在区间内（开区间，单位亿元）',
   },
   market_cap_any: {
     metric: 'market_cap',
     shape: 'any',
     label: '总市值 · 范围内任意一天',
-    description: '倒数第 N ～ M 个交易日里至少有一天的总市值落在区间内（开区间，单位亿元）',
+    description: '倒数第 F ～ N 个交易日里至少有一天的总市值落在区间内（开区间，单位亿元）',
   },
 }
 
@@ -1120,7 +1120,7 @@ export function daySlot(params: { n?: number }): number {
 }
 
 /**
- * 区间终点 M：``0`` / 空 = 整个统计窗口（'' 哨兵，见 ``CandleRangeParams``）。
+ * 区间终点 F：``0`` / 空 = 整个统计窗口（'' 哨兵，见 ``CandleRangeParams``）。
  * 摘要与校验都走它，保证界面上写的和提交的一致。
  */
 export function dayEnd(params: { m?: number }, tradingDays: number): number {
@@ -1259,11 +1259,17 @@ function candleDef<K extends ConditionName>(name: K, bullish: boolean): Conditio
     category: 'K 线',
     description: bullish ? M.descMoreBullish : M.descMoreBearish,
     defaults: { n: 1, m: 0 } as ConditionParamsMap[K],
-    summary: p => {
+    summary: (p, tradingDays) => {
       const params = p as CandleRangeParams
-      return Number(params.m) > 0
-        ? M.summaryCandleSpan(M.slotSpan(daySlot(params), dayEnd(params, 1)), label)
-        : M.summaryCandleWindow(label)
+      // m = 0 是「窗口最后一天」的哨兵：区间终点就是统计窗口，所以要用 tradingDays
+      // 把区间写全。用户 2026-10-25 第 3 条：范围条件只显示「阳线多于阴线」太简单，
+      // 所有带范围的条件都要按范围写法显示（倒数第 F ～ N 日）。
+      const explicit = Number(params.m) > 0
+      const windowDays = Math.max(0, Math.trunc(tradingDays || 0))
+      if (!explicit && windowDays < 1) return M.summaryCandleWindow(label)
+      const end = explicit ? dayEnd(params, 1) : windowDays
+      if (!Number.isFinite(end) || end < 1) return M.summaryCandleWindow(label)
+      return M.summaryCandleSpan(M.slotSpan(daySlot(params), end), label)
     },
     requiredBars: p => {
       const params = p as CandleRangeParams
@@ -1298,7 +1304,7 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
     category: 'K 线',
     description:
       '两个参数：倒数第几个交易日（默认 1 = 最近一个交易日）＋连续天数（默认 4）。' +
-      '自倒数第 M 个交易日起连续 N 个交易日收盘价都高于开盘价（阳线），' +
+      '从起点（倒数第几个交易日）起，连续若干个交易日的收盘价都高于开盘价（阳线），' +
       '中途有一根收阴、平盘或停牌缺数据就不成立。' +
       '注意：只看开盘价到收盘价，低开高走但全天仍下跌的那根也算阳线 —— ' +
       '要「当天真正上涨」请用另一条「连续上涨（涨幅 > 0）」',
@@ -1327,7 +1333,7 @@ export const CONDITION_DEFS_ZH: ConditionDefMap = {
     category: 'K 线',
     description:
       '两个参数：倒数第几个交易日（默认 1 = 最近一个交易日）＋连续天数（默认 3）。' +
-      '自倒数第 M 个交易日起连续 N 个交易日收盘价都高于前一交易日收盘价（涨幅 > 0），' +
+      '从起点（倒数第几个交易日）起，连续若干个交易日的收盘价都高于前一交易日收盘价（涨幅 > 0），' +
       '中途有一根下跌、平盘或停牌缺数据就不成立。' +
       '与「连续阳线（收盘 > 开盘）」的区别：那条只比开盘价，这条比的是当天涨跌幅',
     defaults: { start: 1, days: 3 },
@@ -1766,11 +1772,11 @@ function validateGroup(
 
 // ------------------------------------------------------------------ 规则预览
 
-export function formatRule(rule: GroupNode): string {
-  return formatGroup(rule, true)
+export function formatRule(rule: GroupNode, tradingDays?: number): string {
+  return formatGroup(rule, true, tradingDays)
 }
 
-function formatGroup(node: GroupNode, isRoot: boolean): string {
+function formatGroup(node: GroupNode, isRoot: boolean, tradingDays?: number): string {
   if (node.children.length === 0) return isRoot ? T.previewEmptyRoot : T.previewEmptyGroup
   // AND 组里多条「股票代码 / 名称」按「或」显示 —— 后端编译期也是这么合并的
   // （一只股票只有一个代码，AND 起来永远为空）。显示与执行必须一致，否则横幅在说谎。
@@ -1781,10 +1787,10 @@ function formatGroup(node: GroupNode, isRoot: boolean): string {
     if (mergeIdentity && isIdentityNode(child)) {
       if (identityDone) continue
       identityDone = true
-      parts.push(`( ${node.children.filter(isIdentityNode).map(c => formatNode(c)).join(' OR ')} )`)
+      parts.push(`( ${node.children.filter(isIdentityNode).map(c => formatNode(c, tradingDays)).join(' OR ')} )`)
       continue
     }
-    parts.push(formatNode(child))
+    parts.push(formatNode(child, tradingDays))
   }
   const joiner = node.operator === 'AND' ? ' AND ' : ' OR '
   const inner = parts.join(joiner)
@@ -1796,10 +1802,10 @@ function isIdentityNode(node: RuleNode): boolean {
   return node.type === 'condition' && IDENTITY_CONDITIONS.has(node.name)
 }
 
-export function formatNode(node: RuleNode): string {
-  if (node.type === 'group') return formatGroup(node, false)
+export function formatNode(node: RuleNode, tradingDays?: number): string {
+  if (node.type === 'group') return formatGroup(node, false, tradingDays)
   const def = CONDITION_DEFS_ZH[node.name]
-  return def.summary(node.params as never)
+  return def.summary(node.params as never, tradingDays)
 }
 
 /** 同一 AND 组里同时有多头与空头排列 → 结果必为空（非阻塞提示）。 */

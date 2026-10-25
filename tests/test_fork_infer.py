@@ -317,24 +317,40 @@ def test_创建任务时交易日存成日期数组而不是个数(monkeypatch):
     assert box["valid_days"] == ["2026-01-05"]
 
 
-def test_同名同参的补充条件被丢掉_不同参保留():
-    """曾经的 bug：基础条件里已有「连续上涨3天」，变异又加了一条一模一样的，
-    排行榜描述变成「… 连续上涨3天 ＋ … ＋ 连续上涨3天」，白占搜索预算。"""
+def test_与基础条件同名的补充条件被丢掉():
+    """用户 2026-10-25 第 4 条：搜索出来的条件里出现过
+
+        「0日内阳线多于阴线 ＋ …… ＋ 6日内阳线多于阴线」
+
+    同一个判据写了两遍。同名（不论参数）一律不再补：A(5日) AND A(10日) 等价于
+    A(10日)，只会让描述变长、白占搜索预算；「0日内」则是把 m=0 这个「窗口末」
+    哨兵当日数打印出来了。
+    """
     base = {"type": "group", "operator": "AND", "children": [
         {"type": "condition", "name": "consecutive_rising", "params": {"start": 1, "days": 3}},
         {"type": "condition", "name": "more_bullish_candles", "params": {"n": 1, "m": 1}},
     ]}
     filters = [
         {"name": "consecutive_rising", "params": {"start": 1, "days": 3}},   # 与基础完全重复 → 丢
-        {"name": "consecutive_rising", "params": {"start": 1, "days": 2}},   # 参数不同 → 留
-        {"name": "more_bullish_candles", "params": {"n": 1, "m": 10}},       # 参数不同 → 留
+        {"name": "consecutive_rising", "params": {"start": 1, "days": 2}},   # 同名不同参 → 也丢
+        {"name": "more_bullish_candles", "params": {"n": 1, "m": 10}},       # 同名不同参 → 也丢
+        {"name": "new_high", "params": {"m": 20, "n": 1}},                   # 新条件 → 留
     ]
     rule = space.make_rule(base, filters)
     tail = rule["children"][1:]
-    assert [(c["name"], c["params"]) for c in tail] == [
-        ("consecutive_rising", {"start": 1, "days": 2}),
-        ("more_bullish_candles", {"n": 1, "m": 10}),
-    ]
+    assert [(c["name"], c["params"]) for c in tail] == [("new_high", {"m": 20, "n": 1})]
+    # 描述里也不能出现两条一样的判据
+    text = space.describe_tree(base, filters)
+    assert text.count("阳线多于阴线") == 1
+
+
+def test_基础条件里的窗口哨兵不会被打印成0日():
+    """m=0 是「统计窗口最后一天」的哨兵，不是「0 日」。"""
+    text = space.describe_condition("more_bullish_candles", {"n": 1, "m": 0})
+    assert text == "整个统计窗口（倒数第1日～窗口末）阳线多于阴线"
+    assert "0日" not in text
+    # 显式给了 F：按「倒数第 F～N 日」写，和条件选股界面同一套写法
+    assert space.describe_condition("more_bullish_candles", {"n": 1, "m": 6}) == "倒数第6～1日阳线多于阴线"
 
 
 def test_保存条件时传的是可序列化字典(monkeypatch):
@@ -358,3 +374,121 @@ def test_保存条件时传的是可序列化字典(monkeypatch):
     assert captured["name"] == "xg_opt1"
     assert isinstance(captured["request"], dict), "必须是 dict，否则 json.dump 会 TypeError"
     assert captured["request"]["rule"]["children"][0]["name"] == "consecutive_bullish"
+
+
+# --------------------------------------------------------------------------- #
+# 2026-10-25：变异空间扩容（用户第 1 条）
+# --------------------------------------------------------------------------- #
+def test_条件池里的每一条都必须能通过后端校验():
+    """模板写错参数会表现为「搜索跑了 1000 次，一半变体被判不合法」。
+
+    上一轮 new_high 的 60/120/250 日回看就踩了这个坑：后端规定回看天数 ≤ 统计窗口，
+    30 天窗口下 60 日新高直接不合法。这里把每个模板 × 30/60/250 三种窗口都过一遍。
+    """
+    from src.modules.market.fork_screen.evaluator import validate_rule
+    from src.modules.market.fork_screen.models import ScreenRequest
+
+    base = {"type": "group", "operator": "AND", "children": [
+        {"type": "condition", "name": "more_bullish_candles", "params": {"n": 1, "m": 0}},
+    ]}
+    problems = []
+    for template in space.FILTER_TEMPLATES:
+        for params in template.grid:
+            rule = space.make_rule(base, [{"name": template.name, "params": dict(params)}])
+            for days in (30, 60, 250):
+                request = ScreenRequest.model_validate({
+                    "trading_days": days, "markets": ["sh", "sz", "cyb", "kcb"],
+                    "include_st": True, "rule": rule,
+                })
+                issues = validate_rule(request)
+                if issues:
+                    problems.append((template.name, params, days, [i.message for i in issues]))
+    assert problems == []
+
+
+def test_基础条件候选池每一条都能通过校验():
+    from src.modules.market.fork_screen.evaluator import validate_rule
+    from src.modules.market.fork_screen.models import ScreenRequest
+
+    problems = []
+    for entry in space.BASE_POOL:
+        rule = {"type": "group", "operator": "AND", "children": [
+            {"type": "condition", "name": entry["name"], "params": dict(entry["params"])},
+        ]}
+        for days in (30, 60, 250):
+            request = ScreenRequest.model_validate({
+                "trading_days": days, "markets": ["sh", "sz", "cyb", "kcb"],
+                "include_st": True, "rule": rule,
+            })
+            issues = validate_rule(request)
+            if issues:
+                problems.append((entry, days, [i.message for i in issues]))
+    assert problems == []
+
+
+def test_百分数参数按半步长调整():
+    """用户第 1 条「参数步长按 0.5」：涨跌幅 8.9 → 8.4 / 9.4，而不是只能跳到 7.9。"""
+    values = set()
+    for seed in range(40):
+        updated = space.jitter_params("change_pct", {"n": 1, "min": 2.0, "max": 8.9},
+                                      random.Random(seed))
+        if updated and "max" in updated and updated["max"] != 8.9:
+            values.add(updated["max"])
+    assert values <= {8.4, 9.4}, values
+    assert 8.4 in values
+
+    # 整数参数仍然只按 1 走，不会出现 3.5 天
+    days = set()
+    for seed in range(30):
+        updated = space.jitter_params("consecutive_bullish", {"start": 1, "days": 4},
+                                      random.Random(seed))
+        if updated:
+            days.add(updated["days"])
+    assert all(isinstance(value, int) and value >= 1 for value in days), days
+
+
+def test_可以替换基础条件且保留树的其余部分():
+    """用户第 1 条「允许替换基础条件」：A AND B 换掉 A 之后仍然是 A' AND B。"""
+    base = {"type": "group", "operator": "AND", "children": [
+        {"type": "condition", "name": "more_bullish_candles", "params": {"n": 1, "m": 0}},
+        {"type": "condition", "name": "close_above_ma", "params": {"period": 20, "n": 1, "m": 1}},
+    ]}
+    tree, name = space.replace_condition(base, random.Random(7))
+    assert name is not None
+    assert len(tree["children"]) == 2
+    changed = [index for index, child in enumerate(tree["children"])
+               if child != base["children"][index]]
+    assert len(changed) == 1, tree  # 只换一个条件节点，另一个原样保留
+    kept = tree["children"][1 - changed[0]]
+    assert kept == base["children"][1 - changed[0]]
+    assert tree["children"][changed[0]]["name"] == name
+    # 原树没有被就地改掉（否则父代会被污染）
+    assert base["children"][0]["name"] == "more_bullish_candles"
+
+
+def test_替换基础条件不会选出与原来完全相同的条件():
+    base = {"type": "group", "operator": "AND", "children": [
+        {"type": "condition", "name": "more_bullish_candles", "params": {"n": 1, "m": 0}},
+    ]}
+    for seed in range(30):
+        tree, name = space.replace_condition(base, random.Random(seed))
+        node = tree["children"][0]
+        assert not (node["name"] == "more_bullish_candles" and node["params"] == {"n": 1, "m": 0})
+
+
+def test_描述跟着变体自己的基础条件走():
+    """允许替换基础条件后，描述必须由变体的树生成，不能沿用固定串。"""
+    tree = {"type": "group", "operator": "AND", "children": [
+        {"type": "condition", "name": "consecutive_bullish", "params": {"start": 1, "days": 3}},
+    ]}
+    text = space.describe_tree(tree, [{"name": "new_high", "params": {"m": 20, "n": 1}}])
+    assert text.startswith("连续阳线3天")
+    assert "创20日新高" in text
+    assert "阳线多于阴线" not in text
+
+
+def test_扩容后的空间明显大于上一轮():
+    """上一轮 19 个模板 / 873 次就穷举完；扩容后至少 25 个模板。"""
+    assert len(space.FILTER_TEMPLATES) >= 25
+    assert len({template.name for template in space.FILTER_TEMPLATES}) == len(space.FILTER_TEMPLATES)
+    assert len(space.BASE_POOL) >= 10

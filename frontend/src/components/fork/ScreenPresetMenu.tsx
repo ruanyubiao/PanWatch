@@ -59,7 +59,7 @@ export function ScreenPresetMenu({
               value={preset.name}
               className="text-[12px]"
               // 悬停看完整规则，免得同名前缀的两个条件分不清
-              title={formatRule(preset.request.rule)}
+              title={formatRule(preset.request.rule, preset.request.trading_days)}
             >
               {preset.name}
             </SelectItem>

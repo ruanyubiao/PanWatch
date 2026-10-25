@@ -44,7 +44,7 @@ export function ScreenResultBanner({
   savedName?: string | null
 }) {
   const seconds = (response.stats.elapsed_ms / 1000).toFixed(1)
-  const line2 = `${summarizeBase(request)} ｜ ${formatRule(request.rule)}`
+  const line2 = `${summarizeBase(request)} ｜ ${formatRule(request.rule, request.trading_days)}`
   // 指定了「窗口截止日」而它不是交易日时，后端会落到之前最近的交易日 ——
   // 把用户填的原值一起显示出来，免得以为填的日期没生效
   const actualAsof = response.asof ?? '—'
