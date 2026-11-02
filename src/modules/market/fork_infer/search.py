@@ -349,6 +349,11 @@ def _spawn(run_id: str) -> None:
             "--description", f"PanWatch 条件推理 {run_id}",
             "-p", "MemoryMax=1500M", "-p", "MemorySwapMax=1G",
             "-p", "CPUQuota=300%", "-p", "Nice=10",
+            # transient unit 拿到的是**干净环境**：不注入凭据就会一启动就报
+            # 「未配置只读行情库」（2026-11-03 踩过，一次白跑一轮）
+            "-p", f"EnvironmentFile={_env_file()}",
+            "--setenv=PYTHONUNBUFFERED=1", "--setenv=MALLOC_ARENA_MAX=2",
+            "--setenv=PYTHONPATH=" + str(store.PROJECT_ROOT),
             "-p", f"StandardOutput=append:{log_path}",
             "-p", f"StandardError=append:{log_path}",
             "--working-directory", str(store.PROJECT_ROOT),
@@ -377,6 +382,11 @@ def _spawn(run_id: str) -> None:
         log.close()
     store.write_pid(run_id, proc.pid)
     logger.info("条件推理工作进程已启动 run=%s pid=%s", run_id, proc.pid)
+
+
+def _env_file() -> str:
+    """行情库凭据的唯一来源（与 panwatch.service 的 EnvironmentFile 同一个文件）。"""
+    return str(os.environ.get("PANWATCH_ENV_FILE") or "/opt/stock/.env")
 
 
 def _systemd_available() -> bool:
