@@ -134,3 +134,50 @@ def test_空跑与无入围的轮次都标失败():
     assert "信号不足" in (search.final_outcome(False, 120, False)[1] or "")
     assert search.final_outcome(False, 120, True) == ("done", None)
     assert search.final_outcome(True, 120, True) == ("stopped", None)
+
+
+# --------------------------------------------------------------------------- #
+# 启动预算：空跑的失败轮不占名额（否则连续几个窄条件会把机器锁成空闲）
+# --------------------------------------------------------------------------- #
+def test_失败的空跑轮不占用24小时启动预算(scheduler):
+    import time as _time
+
+    module, _runs_dir, _analysis_dir = scheduler
+    now = _time.time()
+    state = {"starts": [
+        {"ts": now - 60, "run_id": "r-failed-1"},
+        {"ts": now - 120, "run_id": "r-failed-2"},
+        {"ts": now - 180, "run_id": "r-ok-1"},
+        {"ts": now - 90000, "run_id": "r-old"},      # 超过 24 小时，本来就不计
+    ]}
+    runs = [
+        {"run_id": "r-failed-1", "status": "failed"},
+        {"run_id": "r-failed-2", "status": "failed"},
+        {"run_id": "r-ok-1", "status": "done"},
+        {"run_id": "r-old", "status": "done"},
+    ]
+    # 只有 1 轮真正产出了东西 → 还剩 5 次预算，而不是被判成 3/6
+    assert module._starts_today(state, runs) == 1
+
+
+def test_运行中和已完成的轮次照常占用预算(scheduler):
+    import time as _time
+
+    module, _runs_dir, _analysis_dir = scheduler
+    now = _time.time()
+    state = {"starts": [{"ts": now - 60, "run_id": f"r-{index}"} for index in range(6)]}
+    runs = [{"run_id": f"r-{index}", "status": "done" if index % 2 else "running"}
+            for index in range(6)]
+    assert module._starts_today(state, runs) == 6
+    assert module._starts_today(state, runs) >= module.MAX_STARTS_PER_DAY
+
+
+def test_没有轮次列表时退回旧口径不漏算(scheduler):
+    import time as _time
+
+    module, _runs_dir, _analysis_dir = scheduler
+    now = _time.time()
+    state = {"starts": [{"ts": now - 60, "run_id": "r-1"},
+                        {"ts": now - 30, "run_id": "r-2"}]}
+    # 查不到状态时宁可高估（宁可少开一轮，也不要无限开）
+    assert module._starts_today(state) == 2
