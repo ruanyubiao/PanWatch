@@ -198,3 +198,37 @@ def test_有轮次在跑时不去白打选股体检(scheduler, monkeypatch):
     runs = [{"run_id": "r-1", "status": "running"}]
     assert module.start_new("token", runs, {}, force=False) == "busy"
     assert calls == [], "有轮次在跑时不该再调用 /stocks/screen"
+
+
+def test_卡死的工作进程能被强制收掉(tmp_path, monkeypatch) -> None:
+    """推理拆成独立进程之后（2026-11-03），「停止」不能只写标记文件。
+
+    工作进程卡在数据库查询里时永远不会去看停止标记，只能发信号 ——
+    否则它一直占着单任务槽，表现就是「机器闲着但新任务建不了」。
+    """
+    import subprocess
+    import time
+
+    scheduler = _load_scheduler()
+    monkeypatch.setattr(scheduler, "DATA_DIR", str(tmp_path))
+    run_id = "20261103-000000-test"
+    (tmp_path / run_id).mkdir()
+    child = subprocess.Popen(["sleep", "30"])
+    try:
+        (tmp_path / run_id / "worker.pid").write_text(str(child.pid), encoding="utf-8")
+        assert scheduler._force_kill(run_id, wait_s=5.0) is True
+        for _ in range(20):
+            if child.poll() is not None:
+                break
+            time.sleep(0.1)
+        assert child.poll() is not None
+    finally:
+        if child.poll() is None:
+            child.kill()
+
+
+def test_没有pid文件时强制收掉是空操作(tmp_path, monkeypatch) -> None:
+    scheduler = _load_scheduler()
+    monkeypatch.setattr(scheduler, "DATA_DIR", str(tmp_path))
+    (tmp_path / "run-x").mkdir()
+    assert scheduler._force_kill("run-x") is False
