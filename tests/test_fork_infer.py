@@ -582,3 +582,55 @@ def test_已完成的任务不会被续跑(monkeypatch):
 
     search.resume("20261102-031502-o898")
     assert started["n"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# 抽样天数 120 / 信号门槛 150（用户 2026-11-02：宁可慢一倍也要降空跑率）
+# --------------------------------------------------------------------------- #
+class _StubMetrics:
+    """只实现 score_of 用到的几个方法，用来精确验证门槛而不是靠造行情凑信号数。"""
+
+    def __init__(self, signals: int, days_with_hits: int = 40, excess: float = 6.0) -> None:
+        self._signals = signals
+        self._days_with_hits = days_with_hits
+        self._excess = excess
+        self.horizons = [5, 10, 20, 25, 30]
+
+    def signals(self) -> int:
+        return self._signals
+
+    def days_with_hits(self) -> int:
+        return self._days_with_hits
+
+    def signal_count(self, index: int, metric: str) -> int:
+        return self._signals
+
+    def excess(self, index: int, metric: str) -> float:
+        return self._excess
+
+    def day_excess(self, index: int, metric: str) -> float:
+        return self._excess
+
+    def year_excess(self, index: int, metric: str) -> dict[str, float]:
+        return {}
+
+
+def test_信号门槛降到150后窄条件也能进排行榜():
+    from src.modules.market.fork_infer.models import MIN_SIGNALS
+
+    assert MIN_SIGNALS == 150
+    # 150 笔刚好过线（窄条件在 120 天抽样里通常落在 150~300 之间）
+    assert score_of(_StubMetrics(MIN_SIGNALS), "stat_v3")[0] is not None
+    # 低于门槛仍然不给分：不能为了降空跑率把噪声放进来
+    assert score_of(_StubMetrics(MIN_SIGNALS - 1), "stat_v3")[0] is None
+
+
+def test_有信号的天数门槛随抽样天数一起缩放():
+    from src.modules.market.fork_infer.models import MIN_DAYS_WITH_HITS, SEARCH_DAYS
+
+    assert SEARCH_DAYS == 120
+    assert MIN_DAYS_WITH_HITS == 12
+    # 有信号的天数不能超过抽样天数，否则任何变体都拿不到分（整轮空跑）
+    assert MIN_DAYS_WITH_HITS <= SEARCH_DAYS // 4
+    assert score_of(_StubMetrics(400, days_with_hits=MIN_DAYS_WITH_HITS), "stat_v3")[0] is not None
+    assert score_of(_StubMetrics(400, days_with_hits=MIN_DAYS_WITH_HITS - 1), "stat_v3")[0] is None
