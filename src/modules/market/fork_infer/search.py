@@ -33,6 +33,7 @@ import os
 import random
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 from ..api import fork_market
@@ -41,6 +42,7 @@ from ..fork_analysis import scoring as scoring100
 from ..fork_screen import presets
 from ..fork_screen.evaluator import compile_rule, required_bars_of_group
 from ..fork_screen.models import ScreenRequest
+from . import scope as infer_scope
 from . import space, store
 from .data import load_calendar, load_dataset, load_universe
 from .engine import Engine, score_of
@@ -57,8 +59,10 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-#: 同一进程同时只跑一个推理任务（4 核机器，跑两个只会互相拖慢）
-_RUNNING: dict[str, threading.Thread] = {}
+#: 同一台机器同时只跑一个推理任务（4 核机器，跑两个只会互相拖慢）。
+#: 2026-11-03 起推理跑在**独立进程**里，所以「谁在跑」由 pid 文件说了算 ——
+#: 内存里的字典在 API 进程重启、以及调度器脚本（另一个进程）看来都是空的，
+#: 以前正是因此出现「meta 说在跑、其实线程早没了、新任务又建不了」。
 _LOCK = threading.Lock()
 
 #: 训练段之前多读多少个交易日的行情（给均线 / 创新高预热）
@@ -83,14 +87,40 @@ class InferParamsInvalid(ValueError):
     """参数不合法。"""
 
 
+def _pid_alive(pid: int) -> bool:
+    """pid 还活着，且确实是我们的推理工作进程（防 pid 复用认错人）。"""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return True  # 读不到 /proc（容器/权限），只能信 kill(0)
+    return b"fork_infer.worker" in cmdline
+
+
 def is_running(run_id: str) -> bool:
-    thread = _RUNNING.get(run_id)
-    return bool(thread and thread.is_alive())
+    pid = store.read_pid(run_id)
+    return bool(pid and _pid_alive(pid))
 
 
 def any_running() -> Optional[str]:
-    for run_id, thread in list(_RUNNING.items()):
-        if thread.is_alive():
+    """有推理任务在工作进程里跑着就返回它的 id。
+
+    只看状态是不够的：meta 里可能写着 running 而工作进程已经死了，
+    那正是「新的任务不能创建」的老症状。所以要求「状态在跑」且「pid 活着」。
+    """
+    for meta in store.list_runs(limit=60):
+        run_id = str(meta.get("run_id") or "")
+        if not run_id:
+            continue
+        status = str(meta.get("status") or "")
+        if status not in (store.STATUS_RUNNING, store.STATUS_PENDING, store.STATUS_PAUSED):
+            continue
+        if is_running(run_id):
             return run_id
     return None
 
@@ -280,14 +310,36 @@ def create(payload: InferCreate) -> dict[str, Any]:
 
 
 def start(run_id: str) -> None:
+    """起（或续跑）**独立进程**。已完成的变体按 results.jsonl 跳过，所以续跑是幂等的。
+
+    以前是往 API 进程里塞一个线程：一次 `systemctl restart` 就把跑了几小时的推理
+    废掉，而且线程占的内存跟网页挤在一起（用户 2026-11-03 第 1 条要求拆出去）。
+    """
     with _LOCK:
         if is_running(run_id):
             return
         store.clear_stop(run_id)
-        thread = threading.Thread(target=_loop, args=(run_id,),
-                                  name=f"infer-{run_id}", daemon=True)
-        _RUNNING[run_id] = thread
-        thread.start()
+        _spawn(run_id)
+
+
+def _spawn(run_id: str) -> None:
+    """拉起工作进程：独立会话（父进程退出不带走它）、输出落到任务目录。"""
+    import subprocess
+    import sys
+
+    log = store.log_path(run_id).open("a", encoding="utf-8")
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "MALLOC_ARENA_MAX": "2"}
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "src.modules.market.fork_infer.worker", run_id],
+            cwd=str(store.PROJECT_ROOT),
+            stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+            start_new_session=True, env=env,
+        )
+    finally:
+        log.close()
+    store.write_pid(run_id, proc.pid)
+    logger.info("条件推理工作进程已启动 run=%s pid=%s", run_id, proc.pid)
 
 
 def pause(run_id: str) -> dict[str, Any]:
@@ -667,9 +719,11 @@ def _loop(run_id: str) -> None:
                     break
                 try:
                     train_metrics = engine.evaluate(row["rule"], train_all,
-                                                    should_stop=control.stop_requested)
+                                                    should_stop=control.stop_requested,
+                                                    collect_stocks=True)
                     valid_metrics = engine.evaluate(row["rule"], valid_all,
-                                                    should_stop=control.stop_requested)
+                                                    should_stop=control.stop_requested,
+                                                    collect_stocks=True)
                 except InterruptedError:
                     break
                 train_score, train_horizon = score_of(train_metrics, method_id)
@@ -678,7 +732,11 @@ def _loop(run_id: str) -> None:
                 train_grade = _score_100(train_metrics)
                 valid_grade = _score_100(valid_metrics, reference=train_grade)
                 combined = scoring100.combined(train_grade, valid_grade)
+                # 有效范围：通用（整条 ≥60）还是个股（某只股票 ≥80），
+                # 用户 2026-11-03 第 3/4/5 条
+                scope_info = infer_scope.judge(train_metrics, valid_metrics, train_grade, valid_grade)
                 passed = bool(combined.get("verdict") == "pass")
+                kept = bool(scope_info["scopes"])
                 finals.append({
                     "rank": rank,
                     "desc": row["desc"],
@@ -701,6 +759,14 @@ def _loop(run_id: str) -> None:
                     "valid_grade": valid_grade,
                     "combined": combined,
                     "passed": passed,
+                    # 有效范围 + 个股名单（第 2/4/5 条）
+                    "kept": kept,
+                    "scope": scope_info["scopes"],
+                    "scope_label": scope_info["scope_label"],
+                    "stock_best_score": scope_info["stock_best_score"],
+                    "stock_qualified": scope_info["stock_qualified"],
+                    "stock_universe": scope_info["stock_universe"],
+                    "stock_list": scope_info["stock_list"],
                     "train_rows": train_metrics.table(),
                     "valid_rows": valid_metrics.table(),
                 })
@@ -723,6 +789,11 @@ def _loop(run_id: str) -> None:
                          for key in ("score", "grade", "best_window", "excess_pp", "lower_pp", "events", "days")},
                 "verdict": best_final.get("combined"),
                 "desc": best_final.get("desc"),
+                # 有效范围（用户 2026-11-03 第 2/3/4 条）：通用 / 个股 / 通用+个股
+                "scope": best_final.get("scope") or [],
+                "scope_label": best_final.get("scope_label") or "—",
+                "stock_best_score": best_final.get("stock_best_score"),
+                "stock_qualified": best_final.get("stock_qualified") or 0,
             }
         # 跑满一轮却一个入围变体都没有 = 所有变体信号不足（条件过窄），
         # 这种轮次不该显示「已完成、无评分」—— 历史里必须能一眼看出白跑了一轮。

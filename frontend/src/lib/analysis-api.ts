@@ -25,6 +25,10 @@ export interface AnalysisRunMeta {
   score_test?: number | null
   score_grade?: string | null
   score_verdict?: { verdict?: string; score?: number | null; text?: string }
+  /** 有效范围（只有条件推理任务有）：通用 / 个股 / 通用+个股 */
+  scope_label?: string
+  /** 个股最高分（≥80 说明这条条件对某几只股票特别有效） */
+  stock_best_score?: number | null
   /** 两段时间（推理段 / 测试段） */
   segments?: { kind: string; label: string; start: string; end: string; end_display?: string }[]
   test_start_date?: string | null
@@ -56,7 +60,8 @@ export interface AnalysisRunMeta {
   sample_size: number
   trading_days: number
   days_total: number
-  days_done: number
+  /** 条件推理任务没有「天」的概念，接口给 null，界面必须当 0 处理 */
+  days_done: number | null
   hits: number
   control: number
   failures: number

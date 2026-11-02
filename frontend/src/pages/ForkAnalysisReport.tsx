@@ -106,7 +106,7 @@ export default function ForkAnalysisReportPage() {
               meta.method_name ?? '',
               meta.start_date,
               meta.end_date,
-              meta.days_done,
+              meta.days_done ?? 0,
             )}
           </span>
         )}
