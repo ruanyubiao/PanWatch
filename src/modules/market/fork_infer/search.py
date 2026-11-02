@@ -722,13 +722,17 @@ def _loop(run_id: str) -> None:
                 "verdict": best_final.get("combined"),
                 "desc": best_final.get("desc"),
             }
+        # 跑满一轮却一个入围变体都没有 = 所有变体信号不足（条件过窄），
+        # 这种轮次不该显示「已完成、无评分」—— 历史里必须能一眼看出白跑了一轮。
+        empty_round = (not stopped and done > 0 and not finals)
         store.patch_meta(
             run_id,
             # 一次都没评估出来 = 基础条件过窄（抽样窗口里所有变体都无信号），
             # 不能标成 done —— 那只会在历史里显示「已完成、无评分」，看不出是空跑。
             status=(store.STATUS_STOPPED if stopped
-                    else store.STATUS_FAILED if done == 0 else store.STATUS_DONE),
-            error=(None if done or stopped else "基础条件在该窗口没有任何信号：搜索空间为空"),
+                    else store.STATUS_FAILED if (done == 0 or empty_round) else store.STATUS_DONE),
+            error=("基础条件在该窗口没有任何信号：搜索空间为空" if done == 0 and not stopped
+                   else "所有变体有效信号不足，本轮无评分（基础条件过窄）" if empty_round else None),
             done_iterations=done,
             successes=done,
             failures=failed,
