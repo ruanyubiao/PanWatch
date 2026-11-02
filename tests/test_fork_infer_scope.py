@@ -170,10 +170,11 @@ def test_没有pid文件时即使状态写着running也不占槽(tmp_path, monke
     assert search.any_running() != "run-b"
 
 
-def test_工作进程启动会写pid文件(tmp_path, monkeypatch) -> None:
+def test_工作进程启动会写pid文件_没有systemd时用普通进程(tmp_path, monkeypatch) -> None:
     from src.modules.market.fork_infer import search
 
     monkeypatch.setattr(infer_store, "RUNS_DIR", tmp_path)
+    monkeypatch.setenv("PANWATCH_INFER_SYSTEMD", "0")
     spawned: list[list[str]] = []
 
     class _Fake:
@@ -189,3 +190,33 @@ def test_工作进程启动会写pid文件(tmp_path, monkeypatch) -> None:
     assert spawned and spawned[0][-1] == "run-c"
     assert "fork_infer.worker" in " ".join(spawned[0])
     assert infer_store.read_pid("run-c") == os.getpid()
+
+
+def test_有systemd时跑成独立单元_带内存上限(tmp_path, monkeypatch) -> None:
+    """2026-11-03 实测：普通子进程仍在 panwatch.service 的 cgroup 里，
+    一次 systemctl restart 就把跑了 9 小时的搜索带走。改用 transient unit，
+    重启服务不再打断推理，内存上限也由 cgroup 兜住。"""
+    from src.modules.market.fork_infer import search
+
+    monkeypatch.setattr(infer_store, "RUNS_DIR", tmp_path)
+    monkeypatch.setattr(search, "_systemd_available", lambda: True)
+    calls: list[list[str]] = []
+
+    class _Done:
+        returncode = 0
+        stderr = ""
+
+    def _fake_run(cmd, **kwargs):  # noqa: ANN001
+        calls.append(list(cmd))
+        # systemd 单元起来后，工作进程会写 pid；这里模拟它
+        infer_store.write_pid("run-d", os.getpid())
+        return _Done()
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    search.start("run-d")
+    cmd = calls[-1]
+    assert "systemd-run" in cmd
+    assert "panwatch-infer-run-d" in cmd
+    assert any("MemoryMax=1500M" in item for item in cmd)
+    assert cmd[-1] == "run-d"
