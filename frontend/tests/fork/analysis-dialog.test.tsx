@@ -67,6 +67,7 @@ vi.mock('@/lib/infer-api', () => ({
   stopInfer: vi.fn(),
   saveInferVariant: vi.fn(),
   getInferResults: vi.fn(async () => ({ run_id: 'x', evaluated: 0, ranked: 0, rows: [], finalists: [] })),
+  deleteInferRun: mocks.remove,
   formatInferDuration: (seconds: number | null) => (seconds == null ? '—' : `${Math.round(seconds)} 秒`),
   INFER_POLL_MS: 2000,
 }))
@@ -439,7 +440,7 @@ describe('AnalysisDialog', () => {
     expect(mocks.create.mock.calls[0][0].validate_days).toBe(12)
   })
 
-  it('点历史任务开的是任务详情窗口，不是数据分析界面', async () => {
+  it('历史 tab 里点分析任务开的是任务详情窗口，不是数据分析界面', async () => {
     mocks.history.mockResolvedValue([
       runMeta({ status: 'done', running: false, days_done: 1650, hits: 1800, excel_ready: true,
         kind: 'analysis', score_train: 66.2, score_test: 61.8 }),
@@ -453,8 +454,13 @@ describe('AnalysisDialog', () => {
     mocks.report.mockResolvedValue(report())
     renderDialog()
     const user = userEvent.setup()
-    const item = await screen.findByRole('button', { name: '打开任务详情' })
-    await user.click(item)
+    await user.click(await screen.findByRole('tab', { name: '历史任务' }))
+    const row = await waitFor(() => {
+      const node = document.querySelector('[data-fork-history-row="analysis"]')
+      expect(node).toBeTruthy()
+      return node as HTMLElement
+    })
+    await user.click(row)
     await waitFor(() => expect(document.querySelector('[data-fork-analysis-task-detail]')).toBeTruthy())
     expect(document.body.textContent).toContain('条件详情')
     // 详情窗口只给报告与 Excel，不给「新建任务」
@@ -462,13 +468,54 @@ describe('AnalysisDialog', () => {
     expect(screen.getByRole('button', { name: /查看完整报告/ })).toBeTruthy()
   })
 
-  it('「查看全部」打开完整任务列表', async () => {
-    mocks.listRuns.mockResolvedValue([runMeta({ status: 'done', running: false })])
+  it('历史 tab 直接列出全部任务（不再是简版 + 查看全部两层）', async () => {
+    mocks.history.mockResolvedValue(
+      Array.from({ length: 12 }, (_, index) => runMeta({
+        run_id: `2026102${index % 9}-1000${index}-abcd`,
+        status: 'done',
+        running: false,
+        kind: 'analysis',
+      })),
+    )
     renderDialog()
     const user = userEvent.setup()
-    await user.click(await screen.findByRole('button', { name: '查看全部' }))
-    await waitFor(() => expect(document.querySelector('[data-fork-analysis-run-list]')).toBeTruthy())
-    expect(document.body.textContent).toContain('全部历史任务')
+    await user.click(await screen.findByRole('tab', { name: '历史任务' }))
+    await waitFor(() => expect(document.querySelectorAll('[data-fork-history-row]').length).toBe(12))
+    expect(screen.queryByRole('button', { name: '查看全部' })).toBeNull()
+    expect(mocks.history).toHaveBeenCalledWith(500)
+  })
+
+  it('推理任务在历史 tab 里点开进推理面板，不丢给分析详情接口', async () => {
+    mocks.history.mockResolvedValue([
+      runMeta({ run_id: '20261102-031502-o898', status: 'done', running: false, kind: 'infer',
+        preset: 'r11020315', score_train: 53.1, score_test: 57.0 }),
+    ])
+    mocks.inferGet.mockResolvedValue({
+      run_id: '20261102-031502-o898',
+      created_at: '2026-11-02T03:15:02+08:00',
+      status: 'done',
+      preset: 'r11020315',
+      iterations: 1000,
+      done_iterations: 0,
+      alive: false,
+      train_start: '2024-01-02',
+      train_end: '2025-12-31',
+      valid_start: '2026-01-05',
+      valid_end: '2026-09-02',
+    })
+    renderDialog()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('tab', { name: '历史任务' }))
+    const row = await waitFor(() => {
+      const node = document.querySelector('[data-fork-history-row="infer"]')
+      expect(node).toBeTruthy()
+      return node as HTMLElement
+    })
+    await user.click(row)
+    await waitFor(() => expect(document.querySelector('[data-fork-infer-panel]')).toBeTruthy())
+    expect(mocks.inferGet).toHaveBeenCalledWith('20261102-031502-o898')
+    // 关键：不能去问分析详情（那会报「分析任务 xxx 不存在」）
+    expect(mocks.detail).not.toHaveBeenCalled()
   })
 
   it('打开时若有任务在跑，直接进那个任务的进度页', async () => {
@@ -555,23 +602,26 @@ describe('AnalysisDialog', () => {
     expect(document.body.textContent).toContain('已完成 0 / 100 次')
   })
 
-  it('历史记录同时显示两类任务，并带两个评分', async () => {
+  it('历史 tab 同时显示两类任务，并分别给两个评分', async () => {
     mocks.history.mockResolvedValue([
       runMeta({ status: 'done', running: false, kind: 'analysis', score_train: 66.2, score_test: 61.8 }),
       runMeta({ run_id: '20261024-120000-abcd', status: 'done', running: false, kind: 'infer',
         score_train: 78.4, score_test: 70.1, created_at: '2026-10-24T12:00:00+08:00' }),
     ])
     renderDialog()
-    await screen.findByText('创建数据分析任务')
-    expect(document.body.textContent).toContain('历史记录')
-    await waitFor(() => expect(document.querySelectorAll('[data-fork-history-item]').length).toBe(2))
-    expect(document.body.textContent).toContain('分析')
-    expect(document.body.textContent).toContain('条件推理')
-    const scores = Array.from(document.querySelectorAll('[data-fork-history-score]')).map(
-      node => node.textContent,
-    )
-    expect(scores.some(text => text?.includes('78.4'))).toBe(true)
-    expect(scores.some(text => text?.includes('66.2'))).toBe(true)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('tab', { name: '历史任务' }))
+    await waitFor(() => expect(document.querySelectorAll('[data-fork-history-row]').length).toBe(2))
+    const body = document.body.textContent ?? ''
+    expect(body).toContain('分析')
+    expect(body).toContain('条件推理')
+    // 两列分开显示：推理分 / 测试分
+    const train = Array.from(document.querySelectorAll('[data-fork-history-train]')).map(n => n.textContent)
+    const test = Array.from(document.querySelectorAll('[data-fork-history-test]')).map(n => n.textContent)
+    expect(train).toContain('78.4')
+    expect(test).toContain('70.1')
+    expect(train).toContain('66.2')
+    expect(test).toContain('61.8')
   })
 
   it('方法 2 跑完：用统一信封渲染（结论卡 + 表 + 产物），没有 Excel 按钮', async () => {

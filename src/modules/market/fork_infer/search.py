@@ -714,7 +714,11 @@ def _loop(run_id: str) -> None:
             }
         store.patch_meta(
             run_id,
-            status=store.STATUS_STOPPED if stopped else store.STATUS_DONE,
+            # 一次都没评估出来 = 基础条件过窄（抽样窗口里所有变体都无信号），
+            # 不能标成 done —— 那只会在历史里显示「已完成、无评分」，看不出是空跑。
+            status=(store.STATUS_STOPPED if stopped
+                    else store.STATUS_FAILED if done == 0 else store.STATUS_DONE),
+            error=(None if done or stopped else "基础条件在该窗口没有任何信号：搜索空间为空"),
             done_iterations=done,
             successes=done,
             failures=failed,
@@ -765,6 +769,25 @@ def results(run_id: str, limit: int = 50) -> dict[str, Any]:
     }
 
 
+def _score_suffix(meta: dict[str, Any]) -> str:
+    """两个评分 ×10 取整数部分，拼成名字后缀（用户 2026-11-02 第 1 条）。
+
+    99.9 / 77.8 → ``-999-778``。分数缺失（没跑完 / 空搜索）时不给后缀，
+    免得名字里出现 ``-None``。整数部分用 ``int()`` 向下取整：81.9 → 819。
+    """
+    scores = meta.get("scores") or {}
+    parts: list[str] = []
+    for key in ("train", "test"):
+        value = (scores.get(key) or {}).get("score")
+        if value is None:
+            return ""
+        try:
+            parts.append(str(int(float(value) * 10)))
+        except (TypeError, ValueError):
+            return ""
+    return "-" + "-".join(parts)
+
+
 def save_condition(run_id: str, index: int, name: Optional[str] = None) -> dict[str, Any]:
     """把一个变体保存成「已保存条件」，之后可以直接拿去条件选股 / 数据分析。"""
     meta = store.load_meta(run_id)
@@ -787,6 +810,17 @@ def save_condition(run_id: str, index: int, name: Optional[str] = None) -> dict[
         "include_st": bool(base.get("include_st", False)),
         "rule": rule,
     })
-    final_name = name or f"{meta.get('preset', 'xg')}_{index}"
-    # presets.save() 直接 json.dump，必须传可序列化的 dict（传 pydantic 模型会 TypeError → 500）
-    return presets.save(final_name, request.model_dump(mode="json"), overwrite=False)
+    # 名字里带上两段评分（用户 2026-11-02 第 1 条）：xxx-999-778。
+    # 同名再存（同一分数被存第二次）时加序号 —— presets.save 不允许静默覆盖，
+    # 而用户看到「已存在同名条件」也不知道该改什么。
+    stem = str(name) if name else f"{meta.get('preset', 'xg')}-{index}"
+    final_name = f"{stem}{_score_suffix(meta)}"
+    payload = request.model_dump(mode="json")
+    for attempt in range(1, 10):
+        try:
+            return presets.save(final_name, payload, overwrite=False)
+        except presets.PresetExists:
+            final_name = f"{stem}{_score_suffix(meta)}-{attempt}"
+            continue
+    raise presets.PresetExists(f"同名条件太多，换一个名字再存（最后一次尝试：{final_name}）")
+
