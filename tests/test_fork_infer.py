@@ -548,3 +548,37 @@ def test_用户指定的名字优先于自动编号(monkeypatch):
     name = _save_with(monkeypatch, {"train": {"score": 88.0}, "test": {"score": 70.0}},
                       name="my_good")
     assert name == "my_good-880-700"
+
+
+# --------------------------------------------------------------------------- #
+# 2026-11-02：部署/重启后能续跑（以前只认 paused，一次重启废掉几百次评估）
+# --------------------------------------------------------------------------- #
+def test_进程重启后的中断任务可以续跑(monkeypatch):
+    from src.modules.market.fork_infer import search, store
+
+    started = {"n": 0}
+    monkeypatch.setattr(store, "load_meta", lambda run_id: {
+        "run_id": run_id, "status": "interrupted", "done_iterations": 385, "iterations": 1000,
+    })
+    monkeypatch.setattr(store, "clear_pause", lambda run_id: None)
+    monkeypatch.setattr(search, "is_running", lambda run_id: False)
+    monkeypatch.setattr(store, "patch_meta", lambda run_id, **fields: {"status": fields.get("status")})
+    monkeypatch.setattr(search, "start", lambda run_id: started.update(n=started["n"] + 1))
+
+    search.resume("20261102-082002-8aii")
+    assert started["n"] == 1, "中断的任务必须能重新起线程，否则重启就白跑"
+
+
+def test_已完成的任务不会被续跑(monkeypatch):
+    from src.modules.market.fork_infer import search, store
+
+    started = {"n": 0}
+    monkeypatch.setattr(store, "load_meta", lambda run_id: {
+        "run_id": run_id, "status": "done", "finished_at": "2026-11-02T03:17:51+08:00",
+    })
+    monkeypatch.setattr(store, "clear_pause", lambda run_id: None)
+    monkeypatch.setattr(search, "is_running", lambda run_id: False)
+    monkeypatch.setattr(search, "start", lambda run_id: started.update(n=started["n"] + 1))
+
+    search.resume("20261102-031502-o898")
+    assert started["n"] == 0

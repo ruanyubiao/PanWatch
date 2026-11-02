@@ -296,11 +296,21 @@ def pause(run_id: str) -> dict[str, Any]:
 def resume(run_id: str) -> dict[str, Any]:
     store.clear_pause(run_id)
     meta = store.load_meta(run_id)
-    if meta.get("status") != store.STATUS_PAUSED:
+    status = str(meta.get("status") or "")
+    alive = is_running(run_id)
+    if alive:
+        # 线程还在：暂停中的恢复成运行，其它状态原样返回
+        if status == store.STATUS_PAUSED:
+            return store.patch_meta(run_id, status=store.STATUS_RUNNING)
         return meta
-    if is_running(run_id):
-        return store.patch_meta(run_id, status=store.STATUS_RUNNING)
-    # 线程已经不在了（进程重启过）：起一个新的，从「已完成次数之后」继续
+    # 线程不在：只有 paused / interrupted / 僵死的 running、pending 才值得续跑
+    # （以前只认 paused，一次部署就把 385/1000 的进度废掉）
+    if status not in (store.STATUS_PAUSED, store.STATUS_RUNNING, store.STATUS_PENDING,
+                      "interrupted"):
+        return meta
+    if str(meta.get("finished_at") or ""):
+        return meta
+    # 从「已完成次数之后」继续
     store.patch_meta(run_id, status=store.STATUS_PENDING)
     start(run_id)
     return store.load_meta(run_id)
