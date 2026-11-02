@@ -76,8 +76,8 @@ def test_P1_合法名字原样保留并去掉两端空格(raw, expected):
     [
         ("", "空"),
         ("   ", "空白"),
-        ("abcdefghijk", "11 个字符"),
-        ("连续四日阳线条件啊呀好", "11 个中文字符也算超长"),
+        ("a" * 33, "33 个字符（上限 32）"),
+        ("低" * 33, "33 个中文字符也算超长"),
         ("a/b", "路径分隔符"),
         ("a\\b", "反斜杠"),
         ("a:b", "冒号"),
@@ -176,9 +176,11 @@ def test_A21_名字非法是400_同名未确认是409():
     assert fork_screen.save_screen_preset(body(overwrite=True))["item"]["name"] == "四连阳"
 
 
-def test_A22_名字超过10个字符在pydantic层就被拦():
+def test_A22_名字超过32个字符在pydantic层就被拦():
+    """上限 32：要放得下「基础名-推理分-测试分」（如 xg_opt1-999-778）。"""
     with pytest.raises(ValidationError):
-        body(name="abcdefghijk")
+        body(name="a" * 33)
+    assert body(name="xg_opt1-999-778").name == "xg_opt1-999-778"
     with pytest.raises(ValidationError):
         body(name="")
 

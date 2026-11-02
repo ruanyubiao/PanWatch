@@ -69,16 +69,18 @@ HARD_STALL_SEC = 2 * 3600
 MAX_STARTS_PER_DAY = 6
 #: 磁盘下限
 MIN_FREE_GB = 3.0
-#: 保留最近多少轮推理（其余删掉，防止长期跑把盘吃满）
+#: 保留最近多少轮推理（其余只裁 results.jsonl，历史记录不删 —— 见 prune）
 KEEP_RUNS = 20
+#: 基础条件体检用的统计窗口（与默认选股窗口一致）
+SCREEN_DAYS = 250
 #: 分析任务目录保留天数 / 最少份数
 KEEP_ANALYSIS_DAYS = 21
 KEEP_ANALYSIS_MIN = 5
 
-CRON_LINE = (
-    "*/5 * * * * /usr/bin/flock -n {lock} {py} {script} tick "
-    ">> {log} 2>&1"
-)
+#: 注意：**不要**在外面再包一层 flock —— 脚本自己用 /tmp/infer_scheduler.lock 做单实例锁，
+#: 外面再锁一次会让 cron 先拿到锁、脚本内部的 flock -n 必然失败，于是每次都静默 exit 0，
+#: 表现为「cron 装了但任务永远不启动」（2026-10-25 踩过）。
+CRON_LINE = "*/5 * * * * {py} {script} tick >> {log} 2>&1"
 
 
 # --------------------------------------------------------------------------- #
@@ -254,6 +256,8 @@ SEEDS: tuple[tuple[str, dict[str, Any], str], ...] = (
      "极度冷门（换手 <1%、成交额 0.5~2 亿）"),
 )
 
+#: 基础条件最多叠多少条（再多就改成拆条件）
+MAX_BASE_LEAVES = 8
 #: refine 时给「已有条件」补的那一条（轮换）。只挑经济含义明确、且不与常见条件冲突的。
 HINTS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("close_above_ma", {"period": 20, "n": 1, "m": 1}),
@@ -354,6 +358,15 @@ def _refine_rule(best: dict[str, Any], state: dict[str, Any]) -> tuple[dict[str,
         return seed_rule, f"退回种子 {seed_name}（{seed_desc}）"
 
     have = {c.get("name") for c in _flatten(rule)}
+    # 已经叠了 8 条以上就别再加了：refine 一路加条件会把基础条件压到「选不出股票」，
+    # 2026-11-02 的空跑轮次（0 次评估）就是这么来的。这时改成「拆一条」，让搜索空间重新打开。
+    leaves = _flatten(rule)
+    if len(leaves) >= MAX_BASE_LEAVES and isinstance(rule.get("children"), list):
+        kept_children = rule["children"][:-1]
+        if kept_children:
+            opened = {**rule, "children": kept_children}
+            removed_name = str((leaves[-1] or {}).get("name") or "")
+            return opened, f"拆开 {run_id} 的第 1 名：去掉 {removed_name}（条件已过窄）"
     idx = int(state.get("hint_index") or 0)
     picked: Optional[tuple[str, dict[str, Any]]] = None
     for step in range(len(HINTS)):
@@ -415,9 +428,47 @@ def _free_gb() -> float:
     return shutil.disk_usage("/").free / 1024 ** 3
 
 
+def _base_signal_count(token: str, rule: dict[str, Any]) -> Optional[int]:
+    """这个基础条件今天能选出多少只股票（0 = 条件过窄，跑下去只会空转）。
+
+    2026-11-02 的 0 评估空跑（r11020315）就是基础条件被 refine 叠到没有信号，
+    搜索 2 分 49 秒后 done=0、没评分。开任务前花 3 秒验一次，比白占 5 小时便宜。
+    """
+    payload = {"trading_days": SCREEN_DAYS, "markets": ["sh", "sz", "cyb", "kcb"],
+               "include_st": False, "rule": rule}
+    try:
+        data = _post("/api/stocks/screen", payload, token)
+    except Exception as exc:  # noqa: BLE001 - 验不了就放行，由任务自己报错
+        _log(f"base check skipped {type(exc).__name__}: {exc}")
+        return None
+    try:
+        return int(data.get("total") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def start_new(token: str, runs: list[dict[str, Any]], state: dict[str, Any],
               dry: bool = False, force: bool = False) -> str:
     plan = build_plan(runs, state)
+    # 开任务前先体检基础条件：0 只股票 = 抽样窗口里所有变体都会失败（空跑）。
+    # 退回预设种子，最多换 3 次；都不行就这轮跳过，等下一个 tick。
+    if not dry:
+        count = _base_signal_count(token, plan["rule"])
+        swaps = 0
+        while count == 0 and swaps < 3:
+            idx = int(state.get("seed_index") or 0) % len(SEEDS)
+            seed_name, seed_rule, seed_desc = SEEDS[idx]
+            state["seed_index"] = (idx + 1) % len(SEEDS)
+            plan = {"mode": "explore", "rule": seed_rule,
+                    "note": f"种子 {seed_name}：{seed_desc}（原基础条件无信号，已退回）",
+                    "seed": plan.get("seed"), "best": None}
+            count = _base_signal_count(token, seed_rule)
+            swaps += 1
+        if count == 0:
+            _log("skip start: 基础条件与种子都选不出股票")
+            return "base_empty"
+        if swaps:
+            _log(f"base check: 换种子 {swaps} 次后可用（{count} 只）")
     name = _preset_name("r" if plan["mode"] == "refine" else "e", state)
     payload = {
         "preset": name,
@@ -547,7 +598,17 @@ def auto_save(token: str, runs: list[dict[str, Any]], state: dict[str, Any]) -> 
 
 
 def prune(state: dict[str, Any], dry: bool = False) -> dict[str, Any]:
-    """删旧轮次与分析任务，防长期跑把盘吃满。分数够高的轮次永远保留。"""
+    """清磁盘但**不删历史记录**（用户 2026-11-02 第 2 条）。
+
+    之前是「只留最近 20 轮、其余整目录删掉」，后果是历史记录跟着消失 ——
+    用户只能看到最近一两天的任务。现在分两层：
+
+    * ``meta.json`` / ``finalists.json``（几 KB）**永久保留**，历史记录永远在；
+    * 只有体量大的 ``results.jsonl`` 会被清掉：最近 ``KEEP_RUNS`` 轮保留全量，
+      更早的只留前 200 行（看榜单够用），再老的整个文件删掉。
+
+    分析任务同理：老任务删 ``signals.db`` / ``明细.xlsx`` / ``artifacts``，留 ``meta.json``。
+    """
     protected = set(state.get("protect") or [])
     dirs: list[tuple[float, str]] = []
     if os.path.isdir(DATA_DIR):
@@ -568,17 +629,26 @@ def prune(state: dict[str, Any], dry: bool = False) -> dict[str, Any]:
             dirs.append((os.path.getmtime(path), name))
     dirs.sort(reverse=True)
 
-    removed: list[str] = []
-    kept = 0
+    trimmed: list[str] = []
     for i, (_, name) in enumerate(dirs):
         if i < KEEP_RUNS or name in protected:
-            kept += 1
             continue
-        removed.append(name)
-        if not dry:
-            shutil.rmtree(os.path.join(DATA_DIR, name), ignore_errors=True)
+        # 老轮次：只裁 results.jsonl，meta / finalists 留着（历史记录要用）
+        path = os.path.join(DATA_DIR, name, "results.jsonl")
+        if not os.path.exists(path):
+            continue
+        trimmed.append(name)
+        if dry:
+            continue
+        try:
+            if i < KEEP_RUNS * 3:
+                keep_lines(path, RESULTS_KEEP_LINES)
+            else:
+                os.remove(path)
+        except OSError:
+            pass
 
-    # 老的分析任务（报告 + Excel）才是吃盘的主力
+    # 老的分析任务：删重产物（signals.db / Excel / artifacts），meta.json 留着
     analysed: list[tuple[float, str]] = []
     if os.path.isdir(ANALYSIS_DIR):
         for preset in os.listdir(ANALYSIS_DIR):
@@ -594,13 +664,53 @@ def prune(state: dict[str, Any], dry: bool = False) -> dict[str, Any]:
     for i, (mtime, path) in enumerate(analysed):
         if i < KEEP_ANALYSIS_MIN or mtime >= cutoff:
             continue
-        removed.append(os.path.basename(path))
+        trimmed.append(os.path.basename(path))
         if not dry:
-            shutil.rmtree(path, ignore_errors=True)
+            prune_analysis_dir(path)
 
     state["protect"] = sorted(protected)[-60:]
-    return {"removed": removed[:20], "removed_count": len(removed),
-            "kept": kept, "free_gb": round(_free_gb(), 1)}
+    return {"trimmed": trimmed[:20], "trimmed_count": len(trimmed),
+            "runs": len(dirs), "free_gb": round(_free_gb(), 1)}
+
+
+def keep_lines(path: str, limit: int) -> None:
+    """只保留 jsonl 的前 ``limit`` 行（原子替换，避免半截文件）。"""
+    with open(path, "r", encoding="utf-8") as fh:
+        head = [next(fh, "") for _ in range(limit)]
+    text = "".join(line for line in head if line)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+#: 老轮次保留多少行 results.jsonl（够看榜单，又不至于占盘）
+RESULTS_KEEP_LINES = 200
+
+
+def prune_analysis_dir(path: str) -> None:
+    """分析任务目录：删重产物、留 meta.json（历史记录靠它）。"""
+    for name in os.listdir(path):
+        if name == "meta.json":
+            continue
+        target = os.path.join(path, name)
+        try:
+            if os.path.isdir(target):
+                shutil.rmtree(target, ignore_errors=True)
+            else:
+                os.remove(target)
+        except OSError:
+            continue
+    # 标记一下，任务详情里能据此提示「明细已清理」，而不是报「不存在」
+    meta_path = os.path.join(path, "meta.json")
+    try:
+        with open(meta_path, "r", encoding="utf-8") as fh:
+            meta = json.load(fh)
+        meta["artifacts_pruned"] = True
+        with open(meta_path, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, ensure_ascii=False, indent=1)
+    except (OSError, json.JSONDecodeError):
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -725,7 +835,7 @@ def cmd_seeds(args: argparse.Namespace) -> int:
 def cmd_install_cron(args: argparse.Namespace) -> int:
     py = os.path.join(ROOT, "venv", "bin", "python")
     script = os.path.join(ROOT, "scripts", "infer_scheduler.py")
-    line = CRON_LINE.format(lock=LOCK_FILE, py=py, script=script, log=LOG_FILE)
+    line = CRON_LINE.format(py=py, script=script, log=LOG_FILE)
     current = subprocess.run(["crontab", "-l"], capture_output=True, text=True).stdout
     kept = [ln for ln in current.splitlines() if "infer_scheduler.py" not in ln]
     kept.append(line)
