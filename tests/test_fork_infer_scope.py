@@ -221,4 +221,6 @@ def test_有systemd时跑成独立单元_带内存上限(tmp_path, monkeypatch) 
     assert any("MemoryMax=1500M" in item for item in cmd)
     # transient unit 是干净环境：不给 EnvironmentFile 就会一启动就报「未配置只读行情库」
     assert any(item.startswith("EnvironmentFile=") for item in cmd)
+    # sudo 起的 transient unit 默认跑成 root，会把任务目录写成 root 属主
+    assert "User=ubuntu" in cmd
     assert cmd[-1] == "run-d"
