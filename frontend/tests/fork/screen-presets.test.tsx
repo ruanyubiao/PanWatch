@@ -12,7 +12,7 @@ import type { ScreenRequest } from '@/lib/screen-rule'
  * 已保存条件（用户反馈 2026-10-20 第 1 / 2 / 5 条）。
  *
  * 钉住的是用户点得到的那几条：
- *   名字 = 文件名，所以 10 个字符上限、`/` 这类字符要**当场**拦住；
+ *   名字 = 文件名，所以 32 个字符上限、`/` 这类字符要**当场**拦住；
  *   保存弹窗的输入框自己限长，但列表和确认按钮也得跟着灰；
  *   一个条件都没有时，下拉与编辑**都不能操作**；
  *   只有「从已保存条件进来」的弹窗才在「取消」前面多一个「删除」。
@@ -74,8 +74,10 @@ describe('保存条件：名字规则', () => {
 
   it('N2 空、超长、含文件名非法字符、以点开头结尾都被拒', () => {
     expect(presetNameError('   ')).toBe(SCREEN_PRESET_TEXTS_ZH.nameRequired)
-    expect(presetNameError('abcdefghijk')).toBe(SCREEN_PRESET_TEXTS_ZH.nameTooLong)
-    expect(presetNameError('低市值四连阳条件啊呀好')).toBe(SCREEN_PRESET_TEXTS_ZH.nameTooLong)
+    // 32 个字符上限：33 个超长，32 个刚好
+    expect(presetNameError('a'.repeat(33))).toBe(SCREEN_PRESET_TEXTS_ZH.nameTooLong)
+    expect(presetNameError('低'.repeat(33))).toBe(SCREEN_PRESET_TEXTS_ZH.nameTooLong)
+    expect(presetNameError('a'.repeat(32))).toBe(null)
     for (const bad of ['a/b', 'a\\b', 'a:b', 'a*b', 'a?b', 'a|b', 'a"b', 'a<b']) {
       expect(presetNameError(bad)).toBe(SCREEN_PRESET_TEXTS_ZH.nameForbidden)
     }
@@ -100,13 +102,13 @@ describe('保存条件弹窗', () => {
     document.querySelector<HTMLInputElement>('[data-fork-preset-name]') as HTMLInputElement
   const confirmButton = () => screen.getByRole('button', { name: '确定' }) as HTMLButtonElement
 
-  it('N3 输入框自己限长 10，字数提示跟着走', async () => {
+  it('N3 输入框自己限长 32（带两个评分也放得下），字数提示跟着走', async () => {
     renderSave()
-    expect(nameInput().maxLength).toBe(10)
-    expect(screen.getByText('0/10')).toBeTruthy()
+    expect(nameInput().maxLength).toBe(32)
+    expect(screen.getByText('0/32')).toBeTruthy()
 
     await userEvent.type(nameInput(), '四连阳')
-    expect(screen.getByText('3/10')).toBeTruthy()
+    expect(screen.getByText('3/32')).toBeTruthy()
   })
 
   it('N4 非法字符当场报错，确认按钮灰掉', async () => {
