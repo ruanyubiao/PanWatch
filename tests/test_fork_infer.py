@@ -492,3 +492,59 @@ def test_扩容后的空间明显大于上一轮():
     assert len(space.FILTER_TEMPLATES) >= 25
     assert len({template.name for template in space.FILTER_TEMPLATES}) == len(space.FILTER_TEMPLATES)
     assert len(space.BASE_POOL) >= 10
+
+
+# --------------------------------------------------------------------------- #
+# 2026-11-02：保存条件名字带两个评分（用户第 1 条）
+# --------------------------------------------------------------------------- #
+def _save_with(monkeypatch, scores, name=None, exists_times=0):
+    from src.modules.market.fork_infer import search, store
+    from src.modules.market.fork_screen import presets
+
+    captured = {}
+    calls = {"n": 0}
+
+    monkeypatch.setattr(store, "load_meta", lambda run_id: {
+        "preset": "xg1",
+        "scores": scores,
+        "base_request": {"trading_days": 30, "markets": ["sh"], "include_st": False},
+    })
+    monkeypatch.setattr(store, "read_finalists", lambda run_id: [{"rank": 1, "rule": BASE_RULE}])
+    monkeypatch.setattr(store, "read_results", lambda run_id: [])
+
+    def fake_save(name_, request, overwrite=False):
+        calls["n"] += 1
+        if calls["n"] <= exists_times:
+            raise presets.PresetExists("已存在")
+        captured["name"] = name_
+        return {"name": name_}
+
+    monkeypatch.setattr(presets, "save", fake_save)
+    search.save_condition("20260101-000000-test", 1, name)
+    return captured["name"]
+
+
+def test_保存条件名字带两个评分乘十的整数部分(monkeypatch):
+    """99.9 / 77.8 → ``-999-778``（用户第 1 条）。"""
+    name = _save_with(monkeypatch, {"train": {"score": 99.9}, "test": {"score": 77.8}})
+    assert name == "xg1-1-999-778"
+
+
+def test_没有评分时不加后缀(monkeypatch):
+    """空跑 / 没跑完的任务没有评分，名字里不能出现 -None。"""
+    name = _save_with(monkeypatch, {})
+    assert name == "xg1-1"
+    assert "None" not in name
+
+
+def test_同名时自动加序号(monkeypatch):
+    """同一分数被存第二次：不能静默覆盖，也不该直接报错让用户不知所措。"""
+    name = _save_with(monkeypatch, {"train": {"score": 60.0}, "test": {"score": 61.0}},
+                      exists_times=1)
+    assert name == "xg1-1-600-610-1"
+
+
+def test_用户指定的名字优先于自动编号(monkeypatch):
+    name = _save_with(monkeypatch, {"train": {"score": 88.0}, "test": {"score": 70.0}},
+                      name="my_good")
+    assert name == "my_good-880-700"

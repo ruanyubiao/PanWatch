@@ -12,8 +12,9 @@
 import { fetchAPI } from '@panwatch/api'
 import type { ScreenRequest } from '@/lib/screen-rule'
 
-/** 名字长度上限（字符）。与后端 ``presets.NAME_MAX_LEN`` 保持一致。 */
-export const PRESET_NAME_MAX = 10
+/** 名字长度上限（字符）。与后端 ``presets.NAME_MAX_LEN`` 保持一致。
+ *  2026-11-02 从 10 放到 32：推理保存的条件要带两个评分（``xg-999-778`` 就 10 个字）。 */
+export const PRESET_NAME_MAX = 32
 
 /** 文件名里不允许出现的字符（与后端 ``_FORBIDDEN_CHARS`` 一致）。 */
 const FORBIDDEN_CHARS = /[\\/:*?"<>|\u0000-\u001f]/
@@ -26,7 +27,7 @@ export const SCREEN_PRESET_TEXTS_ZH = {
   saveTitle: '保存条件',
   saveDescription: '保存后可在「已保存条件」下拉里选出来复用或编辑。名字同时是服务器上的文件名。',
   nameLabel: '条件名称',
-  namePlaceholder: '最多 10 个字符',
+  namePlaceholder: '最多 32 个字符',
   nameCounter: (used: number) => `${used}/${PRESET_NAME_MAX}`,
   nameRequired: '请输入条件名称',
   nameTooLong: `名称最多 ${PRESET_NAME_MAX} 个字符`,

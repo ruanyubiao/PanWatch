@@ -898,3 +898,34 @@ def test_归因在对照组缺横截面时拒绝下结论(db):
                 listed_days=900, breadth=0.5, x10=-0.02)
     data = attribution.fit(db, 10, "x", 0.0)
     assert data.get("note") == "cross_section_missing"
+
+
+# --------------------------------------------------------------------------- #
+# 2026-11-02：历史记录混排（用户第 2 / 3 条）
+# --------------------------------------------------------------------------- #
+def test_历史记录里分析任务带_kind_且推理任务也带(monkeypatch):
+    """两条链路都要有 kind：前端靠它分发详情接口。
+
+    之前的 bug：分析任务没有 kind（前端把 undefined 当分析没问题），但推理任务点开时
+    被丢进分析详情接口，报「分析任务 xxx 不存在」。
+    """
+    from src.modules.market.fork_infer import search as infer_search
+    from src.modules.market.fork_infer import store as infer_store
+
+    monkeypatch.setattr(store, "list_runs", lambda preset=None: [{
+        "run_id": "20261020-101010-aaaa", "preset": "xg1", "status": "done",
+        "created_at": "2026-10-20T10:10:10+08:00", "days_done": 10, "days_total": 20,
+        "hits": 100,
+    }])
+    monkeypatch.setattr(infer_search, "reconcile", lambda: None)
+    monkeypatch.setattr(infer_search, "is_running", lambda run_id: False)
+    monkeypatch.setattr(infer_store, "list_runs", lambda limit: [{
+        "run_id": "20261102-031502-o898", "preset": "r11020315", "status": "done",
+        "created_at": "2026-11-02T03:15:02+08:00", "iterations": 1000, "done_iterations": 0,
+        "train_days": [], "valid_days": [],
+    }])
+
+    out = fork_analysis.analysis_history(limit=10)["items"]
+    kinds = {item["run_id"]: item["kind"] for item in out}
+    assert kinds["20261020-101010-aaaa"] == "analysis"
+    assert kinds["20261102-031502-o898"] == "infer"
