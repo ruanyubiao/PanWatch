@@ -219,4 +219,6 @@ def test_有systemd时跑成独立单元_带内存上限(tmp_path, monkeypatch) 
     assert "systemd-run" in cmd
     assert "panwatch-infer-run-d" in cmd
     assert any("MemoryMax=1500M" in item for item in cmd)
+    # transient unit 是干净环境：不给 EnvironmentFile 就会一启动就报「未配置只读行情库」
+    assert any(item.startswith("EnvironmentFile=") for item in cmd)
     assert cmd[-1] == "run-d"
