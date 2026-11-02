@@ -181,6 +181,10 @@ def analysis_history(limit: int = Query(default=100, ge=1, le=500)) -> dict[str,
         # kind 必须显式写死：前端靠它决定点开哪个详情（缺了会被当成 infer 之外的
         # 未知类型，2026-11-02 之前就是因此把推理任务丢给分析详情接口 → 404）
         view["kind"] = "analysis"
+        # 天数一律给数（推理任务没有这个概念，给 None，界面当 0 处理）：
+        # 缺这个键会让前端显示「已完成 undefined / N 个交易日」
+        view["days_done"] = int(meta.get("days_done") or 0)
+        view["days_total"] = int(meta.get("days_total") or 0)
         items.append(view)
     try:
         infer_search.reconcile()
@@ -203,6 +207,10 @@ def analysis_history(limit: int = Query(default=100, ge=1, le=500)) -> dict[str,
                 "score_grade": (scores.get("train") or {}).get("grade"),
                 "score_verdict": scores.get("verdict") or {},
                 "hits": int(meta.get("hits") or 0),
+                "days_done": None,
+                # 有效范围（用户 2026-11-03 第 2/3/4 条）：通用 / 个股 / 通用+个股
+                "scope_label": scores.get("scope_label") or "—",
+                "stock_best_score": scores.get("stock_best_score"),
                 "days_total": int(meta.get("train_day_count") or 0)
                               + int(meta.get("valid_day_count") or 0)
                               or len(meta.get("train_days") or []) + len(meta.get("valid_days") or []),

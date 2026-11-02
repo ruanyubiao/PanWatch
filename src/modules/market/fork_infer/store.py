@@ -183,6 +183,34 @@ def stop_requested(run_id: str) -> bool:
     return _flag(run_id, "stop").exists()
 
 
+# ---------------------------------------------------------------- 独立进程
+def pid_path(run_id: str) -> Path:
+    """工作进程的 pid 文件（用户 2026-11-03 第 1 条：推理拆成独立进程）。"""
+    return run_dir(run_id) / "worker.pid"
+
+
+def log_path(run_id: str) -> Path:
+    """工作进程的 stdout/stderr（崩了要看 traceback，不能丢进 /dev/null）。"""
+    return run_dir(run_id) / "worker.log"
+
+
+def write_pid(run_id: str, pid: int) -> None:
+    pid_path(run_id).write_text(str(int(pid)), encoding="utf-8")
+
+
+def read_pid(run_id: str) -> Optional[int]:
+    try:
+        return int(pid_path(run_id).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def clear_pid(run_id: str) -> None:
+    path = pid_path(run_id)
+    if path.exists():
+        path.unlink()
+
+
 def clear_stop(run_id: str) -> None:
     path = _flag(run_id, "stop")
     if path.exists():

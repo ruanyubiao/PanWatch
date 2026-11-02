@@ -70,6 +70,9 @@ export interface InferRunMeta {
   score_test?: number | null
   score_grade?: string | null
   score_verdict?: { verdict?: string; text?: string; score?: number | null }
+  /** 历史列表用：有效范围与个股最高分 */
+  scope_label?: string
+  stock_best_score?: number | null
   scores?: InferScores | null
   best_desc?: string | null
   successes?: number
@@ -92,11 +95,34 @@ export interface InferGrade {
   components?: Record<string, number | null>
 }
 
+/** 有效范围（用户 2026-11-03 第 2/3/4 条）：通用 / 个股 / 通用+个股 */
+export type InferScope = 'general' | 'stock'
+
+/** 一只股票在某条条件下的成绩（个股名单用，id + 名字） */
+export interface InferStockScore {
+  code: string
+  name: string
+  train_score?: number | null
+  test_score?: number | null
+  best_score?: number | null
+  train_signals?: number | null
+  test_signals?: number | null
+  window?: number | null
+  train_win_rate?: number | null
+  test_win_rate?: number | null
+  train_excess_pp?: number | null
+  test_excess_pp?: number | null
+}
+
 export interface InferScores {
   train?: InferGrade
   test?: InferGrade
   verdict?: { verdict?: string; score?: number | null; text?: string }
   desc?: string
+  scope?: InferScope[]
+  scope_label?: string
+  stock_best_score?: number | null
+  stock_qualified?: number
 }
 
 export interface InferHorizonRow {
@@ -156,6 +182,14 @@ export interface InferFinalist {
   train_grade?: InferGrade
   valid_grade?: InferGrade
   combined?: { verdict?: string; score?: number | null; text?: string }
+  /** 有效范围 + 个股名单（用户 2026-11-03 第 2/4/5 条） */
+  kept?: boolean
+  scope?: InferScope[]
+  scope_label?: string
+  stock_best_score?: number | null
+  stock_qualified?: number
+  stock_universe?: number
+  stock_list?: InferStockScore[]
 }
 
 export interface InferResults {
