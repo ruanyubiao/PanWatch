@@ -177,7 +177,11 @@ def analysis_history(limit: int = Query(default=100, ge=1, le=500)) -> dict[str,
 
     items: list[dict[str, Any]] = []
     for meta in store.list_runs(None):
-        items.append(_meta_view(meta.get("preset") or "", meta))
+        view = _meta_view(meta.get("preset") or "", meta)
+        # kind 必须显式写死：前端靠它决定点开哪个详情（缺了会被当成 infer 之外的
+        # 未知类型，2026-11-02 之前就是因此把推理任务丢给分析详情接口 → 404）
+        view["kind"] = "analysis"
+        items.append(view)
     try:
         infer_search.reconcile()
         for meta in infer_store.list_runs(limit):

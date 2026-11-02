@@ -20,7 +20,7 @@ import {
 } from '@panwatch/base-ui/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@panwatch/base-ui/components/ui/select'
 import { Switch } from '@panwatch/base-ui/components/ui/switch'
-import { toLocalDateTimeInput } from '@panwatch/base-ui/datetime'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@panwatch/base-ui/components/ui/tabs'
 import { SCREEN_MARKETS, type ScreenMarket } from '@/lib/screen-rule'
 import type { ScreenPreset } from '@/lib/screen-presets'
 import {
@@ -41,7 +41,7 @@ import {
   type AnalysisRunMeta,
   type AnalysisResultEnvelope,
 } from '@/lib/analysis-api'
-import { AnalysisRunListDialog } from './analysis/AnalysisRunList'
+import { AnalysisHistoryTab } from './analysis/AnalysisHistoryTab'
 import { AnalysisMethodResult } from './analysis/AnalysisMethodResult'
 import { AnalysisStockTable } from './analysis/AnalysisStockTable'
 import { AnalysisSummaryBody } from './analysis/AnalysisSummary'
@@ -123,6 +123,8 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   excel: '下载 Excel',
   excelPending: 'Excel 生成中',
   newTask: '新建任务',
+  tabCreate: '创建任务',
+  tabHistory: '历史任务',
   historyTitle: '历史记录',
   kindAnalysis: '分析',
   kindInfer: '条件推理',
@@ -137,6 +139,7 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   historyEmpty: '这个条件还没有跑过',
   historyItem: (created: string, days: number, hits: number) => `${created} · ${days} 天 · ${hits} 条`,
   openTask: '打开任务详情',
+  openFailed: (message: string) => `打开任务失败：${message}`,
   statusPending: '排队中',
   statusRunning: '进行中',
   statusInterrupted: '已中断',
@@ -187,11 +190,6 @@ const MARKET_LABELS: Record<ScreenMarket, string> = {
   sz: ANALYSIS_DIALOG_TEXTS_ZH.marketSz,
   cyb: ANALYSIS_DIALOG_TEXTS_ZH.marketCyb,
   kcb: ANALYSIS_DIALOG_TEXTS_ZH.marketKcb,
-}
-
-function formatCreatedAt(instant: string): string {
-  // 用共享的本地时间转换（不能用 slice + replace 直接裁 ISO：会丢掉时区偏移）
-  return toLocalDateTimeInput(instant).slice(0, 16).replace('T', ' ')
 }
 
 /** 从统一信封里取两个评分（后端 data_quality.scores） */
@@ -266,8 +264,6 @@ export function AnalysisDialog({
   // 推演次数的输入框文本（和验证天数一样：清空时不要立刻夹回 1，否则打字会变成 1xxx）
   const [iterText, setIterText] = useState(String(DEFAULT_ITERATIONS))
   const [previewError, setPreviewError] = useState<string | null>(null)
-  // 历史记录：分析与条件推理混排（第 6 条）
-  const [history, setHistory] = useState<AnalysisRunMeta[]>([])
   const [run, setRun] = useState<AnalysisRunMeta | null>(null)
   const [report, setReport] = useState<AnalysisReport | null>(null)
   // 方法 2（以及以后的新方法）走统一信封
@@ -277,16 +273,20 @@ export function AnalysisDialog({
   const [stopping, setStopping] = useState(false)
   // 历史任务点开的是「任务详情」窗口；「查看全部」是完整列表
   const [detailRunId, setDetailRunId] = useState<string | null>(null)
+  // 两个 tab：创建任务 / 历史任务（用户 2026-11-02 第 4 条）
+  const [tab, setTab] = useState<'create' | 'history'>('create')
   // 条件推理（从本弹窗创建，取代主界面原来的「条件推理」按钮）
   const [inferRun, setInferRun] = useState<InferRunMeta | null>(null)
   const [inferFinalists, setInferFinalists] = useState<InferFinalist[]>([])
   const [inferSaved, setInferSaved] = useState<Record<number, string>>({})
   const [inferBusy, setInferBusy] = useState(false)
-  const [listOpen, setListOpen] = useState(false)
+  // 历史 tab 的刷新键：任务跑完 / 删除后让它重新拉一次
+  const [historyReload, setHistoryReload] = useState(0)
   const timer = useRef<number | null>(null)
 
   const reset = useCallback(() => {
     setMode('create')
+    setTab('create')
     setRun(null)
     setReport(null)
     setStandard(null)
@@ -323,13 +323,14 @@ export function AnalysisDialog({
     let cancelled = false
     void (async () => {
       try {
+        // 分析任务 + 推理任务都要看：任一在跑就直接进它的进度页
         const [list, merged] = await Promise.all([
           listAnalysisRuns(),
           listAnalysisHistory(50).catch(() => [] as AnalysisRunMeta[]),
         ])
         if (cancelled) return
-        setHistory(merged)
-        const active = list.find(item => item.status === 'running' || item.status === 'pending')
+        const active = merged.find(item => item.status === 'running' || item.status === 'pending')
+          ?? list.find(item => item.status === 'running' || item.status === 'pending')
         if (active) {
           setRun(active)
           setMode('run')
@@ -406,7 +407,7 @@ export function AnalysisDialog({
           const next = await getAnalysisRun(run.run_id)
           setRun(current => ({ ...(current ?? next), ...next }))
           if (next.status !== 'running' && next.status !== 'pending') {
-            void listAnalysisHistory(50).then(setHistory).catch(() => undefined)
+            setHistoryReload(current => current + 1)
           }
         } catch {
           /* 轮询失败不打扰用户：下一轮再试 */
@@ -620,6 +621,30 @@ export function AnalysisDialog({
     }
   }
 
+  // 历史行 → 对应详情。**必须按 kind 分发**：推理任务有自己的接口，
+  // 丢给分析详情会报「分析任务 xxx 不存在」（2026-11-02 第 3 条）。
+  const openHistoryRun = useCallback(
+    (item: AnalysisRunMeta) => {
+      if (item.kind === 'infer') {
+        void getInferRun(item.run_id)
+          .then(next => {
+            setInferRun(next)
+            setMode('infer')
+            setTab('create')
+            if (!['pending', 'running', 'paused'].includes(next.status)) {
+              void getInferResults(next.run_id)
+                .then(data => setInferFinalists(data.finalists ?? []))
+                .catch(() => undefined)
+            }
+          })
+          .catch(exc => setError(T.openFailed(exc instanceof Error ? exc.message : String(exc))))
+        return
+      }
+      setDetailRunId(item.run_id)
+    },
+    [T],
+  )
+
   const toggleMarket = (key: ScreenMarket) => {
     setForm(current => {
       if (current.marketAll) {
@@ -643,9 +668,6 @@ export function AnalysisDialog({
     return Math.min(100, Math.round((done / total) * 100))
   }, [progress, run])
 
-  // 历史记录不再按条件过滤：用户要看「两种任务混在一起」的最近记录（第 6 条）
-  const recentHistory = useMemo(() => history.slice(0, 10), [history])
-
   const inputClass = 'h-7 w-[80px] rounded-md border border-input bg-background px-2 text-[12px]'
 
   return (
@@ -659,7 +681,14 @@ export function AnalysisDialog({
           <DialogDescription>{T.description}</DialogDescription>
         </DialogHeader>
 
-        <div className="max-h-[72vh] overflow-y-auto scrollbar pr-1">
+        <Tabs value={tab} onValueChange={value => setTab(value === 'history' ? 'history' : 'create')}>
+          <TabsList className="mb-1">
+            <TabsTrigger value="create" data-fork-analysis-tab="create">{T.tabCreate}</TabsTrigger>
+            <TabsTrigger value="history" data-fork-analysis-tab="history">{T.tabHistory}</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="create">
+        <div className="max-h-[68vh] overflow-y-auto scrollbar pr-1">
           {error && <p className="mb-2 rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px]">{error}</p>}
 
           {mode === 'create' && (
@@ -942,72 +971,6 @@ export function AnalysisDialog({
                 </Button>
               </div>
 
-              {/* 历史任务：标题加粗放大到和「创建数据分析任务」同级，和创建按钮留出间距 */}
-              <section className="mt-4">
-                <div className="mb-1.5 flex items-center gap-2">
-                  <p className="text-[12px] font-medium">{T.historyTitle}</p>
-                  <button
-                    type="button"
-                    className="text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                    onClick={() => setListOpen(true)}
-                    data-fork-analysis-view-all
-                  >
-                    {T.historyViewAll}
-                  </button>
-                </div>
-                {recentHistory.length === 0 ? (
-                  <p className="text-[10px] text-muted-foreground">{T.historyEmpty}</p>
-                ) : (
-                  <ul className="space-y-0.5">
-                    {recentHistory.map(item => (
-                      <li key={item.run_id}>
-                        <button
-                          type="button"
-                          className="flex w-full items-center justify-between gap-2 rounded border border-transparent px-1.5 py-1 text-[11px] hover:border-border/60 hover:bg-accent/20"
-                          aria-label={T.openTask}
-                          onClick={() => {
-                            if (item.kind === 'infer') {
-                              // 推理任务有自己的进度/结果面板，不能走分析的任务详情接口
-                              void getInferRun(item.run_id)
-                                .then(next => {
-                                  setInferRun(next)
-                                  setMode('infer')
-                                  if (!['pending', 'running', 'paused'].includes(next.status)) {
-                                    void getInferResults(next.run_id)
-                                      .then(data => setInferFinalists(data.finalists ?? []))
-                                      .catch(() => undefined)
-                                  }
-                                })
-                                .catch(() => setDetailRunId(item.run_id))
-                              return
-                            }
-                            setDetailRunId(item.run_id)
-                          }}
-                          data-fork-history-item={item.kind ?? 'analysis'}
-                        >
-                          <span className="flex min-w-0 items-center gap-1.5">
-                            <span className="rounded border border-border/60 px-1 text-[10px] text-muted-foreground">
-                              {item.kind === 'infer' ? T.kindInfer : T.kindAnalysis}
-                            </span>
-                            <span className="truncate">
-                              {item.preset} · {formatCreatedAt(item.created_at)}
-                            </span>
-                          </span>
-                          <span className="flex shrink-0 items-center gap-2">
-                            <span className="tabular-nums" data-fork-history-score>
-                              {T.scoreShort(
-                                item.score_train ?? null,
-                                item.score_test ?? null,
-                              )}
-                            </span>
-                            <span className="text-muted-foreground">{statusLabel(item.status)}</span>
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
             </div>
           )}
 
@@ -1178,20 +1141,18 @@ export function AnalysisDialog({
             </div>
           )}
         </div>
+          </TabsContent>
+
+          <TabsContent value="history">
+            <AnalysisHistoryTab onOpen={openHistoryRun} reloadKey={historyReload} />
+          </TabsContent>
+        </Tabs>
       </DialogContent>
 
       <AnalysisTaskDetailDialog
         runId={detailRunId}
         open={detailRunId !== null}
         onOpenChange={next => !next && setDetailRunId(null)}
-      />
-      <AnalysisRunListDialog
-        open={listOpen}
-        onOpenChange={setListOpen}
-        onOpenRun={item => {
-          setListOpen(false)
-          setDetailRunId(item.run_id)
-        }}
       />
     </Dialog>
   )

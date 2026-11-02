@@ -33,7 +33,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[4]
 PRESET_DIR = PROJECT_ROOT / "data" / "screen_presets"
 
 #: 名字长度上限（字符）。
-NAME_MAX_LEN = 10
+#: 名字上限（字符）。2026-11-02 从 10 放开到 32：推理保存的条件要在名字里带两个评分
+#: （``xg-999-778`` 就是 10 个字符），原来的 10 位放不下「基础名 + 评分」。
+NAME_MAX_LEN = 32
 
 #: 文件名里不允许出现的字符（路径分隔符、Windows 保留字符、控制字符）。
 _FORBIDDEN_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')

@@ -128,7 +128,8 @@ def infer_results(run_id: str, limit: int = Query(default=30, ge=1, le=500)) -> 
 
 @router.post("/infer/runs/{run_id}/save")
 def save_infer_variant(run_id: str, index: int = Query(ge=1),
-                      name: Optional[str] = Query(default=None, max_length=10)) -> dict[str, Any]:
+                      name: Optional[str] = Query(default=None,
+                                                  max_length=presets.NAME_MAX_LEN)) -> dict[str, Any]:
     """把一个变体保存成「已保存条件」。"""
     _meta(run_id)
     try:
