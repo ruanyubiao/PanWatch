@@ -181,3 +181,20 @@ def test_没有轮次列表时退回旧口径不漏算(scheduler):
                         {"ts": now - 30, "run_id": "r-2"}]}
     # 查不到状态时宁可高估（宁可少开一轮，也不要无限开）
     assert module._starts_today(state) == 2
+
+
+def test_有轮次在跑时不去白打选股体检(scheduler, monkeypatch):
+    """start_new 必须先判「要不要开」，再花时间体检基础条件。
+
+    顺序颠倒时，每 5 分钟的 tick 都会打一次 W=250 的选股（有推理线程时实测 61 秒），
+    日志里连续刷 "base check skipped TimeoutError"，等于体检失效。
+    """
+    module, _runs_dir, _analysis_dir = scheduler
+    calls: list[tuple] = []
+    monkeypatch.setattr(module, "_alive", lambda item: True)
+    monkeypatch.setattr(module, "_latest", lambda runs: runs[0] if runs else None)
+    monkeypatch.setattr(module, "_post", lambda *a, **k: calls.append((a, k)) or {})
+
+    runs = [{"run_id": "r-1", "status": "running"}]
+    assert module.start_new("token", runs, {}, force=False) == "busy"
+    assert calls == [], "有轮次在跑时不该再调用 /stocks/screen"

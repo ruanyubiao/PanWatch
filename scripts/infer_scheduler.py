@@ -453,7 +453,9 @@ def _base_signal_count(token: str, rule: dict[str, Any]) -> Optional[int]:
     payload = {"trading_days": SCREEN_DAYS, "markets": ["sh", "sz", "cyb", "kcb"],
                "include_st": False, "rule": rule}
     try:
-        data = _post("/api/stocks/screen", payload, token)
+        # W=250 的选股本身就要 8 秒；有推理轮在跑时实测 61 秒（同一进程里抢 GIL + 内存压紧），
+        # 所以超时给 180 秒。60 秒会让体检长期「skipped」，等于没有体检。
+        data = _post("/api/stocks/screen", payload, token, timeout=180)
     except Exception as exc:  # noqa: BLE001 - 验不了就放行，由任务自己报错
         _log(f"base check skipped {type(exc).__name__}: {exc}")
         return None
@@ -466,6 +468,18 @@ def _base_signal_count(token: str, rule: dict[str, Any]) -> Optional[int]:
 def start_new(token: str, runs: list[dict[str, Any]], state: dict[str, Any],
               dry: bool = False, force: bool = False) -> str:
     plan = build_plan(runs, state)
+    # 先判「这一轮到底要不要开」，再花 60 秒去体检基础条件。
+    # 顺序颠倒的后果（2026-11-02 实测）：有轮次在跑时每 5 分钟白打一次 W=250 的选股
+    # （有推理线程时 61 秒 > 60 秒超时），日志里连续刷 "base check skipped TimeoutError"。
+    if not dry and not force:
+        if _alive(_latest(runs)):
+            return "busy"
+        if _free_gb() < MIN_FREE_GB:
+            _log(f"skip start: free={_free_gb():.1f}G < {MIN_FREE_GB}G")
+            return "low_disk"
+        if _starts_today(state, runs) >= MAX_STARTS_PER_DAY:
+            _log("skip start: 24h 内已达启动上限")
+            return "rate_limited"
     # 开任务前先体检基础条件：0 只股票 = 抽样窗口里所有变体都会失败（空跑）。
     # 退回预设种子，最多换 3 次；都不行就这轮跳过，等下一个 tick。
     if not dry:
