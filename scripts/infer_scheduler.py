@@ -33,6 +33,7 @@ import fcntl
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -553,14 +554,74 @@ def start_new(token: str, runs: list[dict[str, Any]], state: dict[str, Any],
     return "started"
 
 
-def stop_run(token: str, run_id: str) -> bool:
+def _worker_pid(run_id: str) -> Optional[int]:
+    try:
+        with open(os.path.join(DATA_DIR, run_id, "worker.pid"), "r", encoding="utf-8") as fh:
+            return int(fh.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _force_kill(run_id: str, wait_s: float = 8.0) -> bool:
+    """推理跑在独立进程里（2026-11-03），所以「停止」不能只写个标记文件。
+
+    主循环每跑完一个变体才看一次停止标记（几十秒），正常情况下这就够了；
+    但如果工作进程卡在数据库查询里，它永远不会去看标记 —— 那时只能发信号。
+    先 TERM（工作进程会把它转成「停止」标记再退出），等 ``wait_s`` 秒还在就 KILL。
+    """
+    pid = _worker_pid(run_id)
+    if not pid:
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return False
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        time.sleep(0.5)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return True
+    try:
+        os.kill(pid, signal.SIGKILL)
+        _log(f"worker KILL run={run_id} pid={pid}（TERM 后 {wait_s}s 没有退出）")
+    except OSError:
+        pass
+    return True
+
+
+def _alive_pid(run_id: str) -> bool:
+    pid = _worker_pid(run_id)
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def stop_run(token: str, run_id: str, grace_s: float = 45.0) -> bool:
+    """停止一轮：先请它自己收工（写标记），等 ``grace_s`` 秒还在就强制收掉。
+
+    为什么要等而不是直接 kill：正常路径下工作进程会在当前变体跑完后自己退出，
+    状态、结果、Excel 都能写完整。只有卡死（例如数据库查询不返回）才需要信号，
+    而那种情况下它永远占着单任务槽 —— 用户看到的现象就是「机器闲着但建不了新任务」。
+    """
     try:
         _post_empty(f"/api/stocks/infer/runs/{run_id}/stop", token)
         _log(f"stop OK run={run_id}")
-        return True
     except Exception as exc:  # noqa: BLE001
         _log(f"stop FAILED run={run_id} {type(exc).__name__}: {exc}")
-        return False
+        return _force_kill(run_id)
+    deadline = time.time() + grace_s
+    while time.time() < deadline:
+        if not _alive_pid(run_id):
+            return True
+        time.sleep(1.0)
+    _log(f"worker 超过 {int(grace_s)}s 没退出，强制收掉 run={run_id}")
+    return _force_kill(run_id)
 
 
 # --------------------------------------------------------------------------- #
