@@ -526,6 +526,49 @@ describe('AnalysisDialog', () => {
     expect(screen.getByRole('button', { name: '停止' })).toBeTruthy()
   })
 
+  it('历史记录显示有效范围（通用 / 个股）', async () => {
+    mocks.listRuns.mockResolvedValue([])
+    mocks.history.mockResolvedValue([
+      runMeta({ run_id: 'r-general', status: 'done', running: false, kind: 'infer',
+        score_train: 66.2, score_test: 64.0, scope_label: '通用' }),
+      runMeta({ run_id: 'r-stock', status: 'done', running: false, kind: 'infer',
+        score_train: 55.0, score_test: 52.0, scope_label: '个股', stock_best_score: 88.4 }),
+    ])
+    renderDialog()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('tab', { name: '历史任务' }))
+    await waitFor(() => expect(document.querySelectorAll('[data-fork-history-scope]').length).toBe(2))
+    expect(screen.getByText('有效范围')).toBeTruthy()
+    expect(document.querySelector('[data-fork-history-scope="通用"]')).toBeTruthy()
+    expect(document.querySelector('[data-fork-history-scope="个股"]')).toBeTruthy()
+  })
+
+  it('运行中的推理任务：进推理面板，不显示「已完成 undefined / N 个交易日」', async () => {
+    mocks.listRuns.mockResolvedValue([])
+    mocks.history.mockResolvedValue([
+      runMeta({ run_id: '20261102-134622-ti3b', status: 'running', running: true, kind: 'infer',
+        preset: 'r11021346', days_total: 652, days_done: null, score_train: null, score_test: null }),
+    ])
+    mocks.inferGet.mockResolvedValue({
+      run_id: '20261102-134622-ti3b',
+      created_at: '2026-11-02T13:46:22+08:00',
+      status: 'running',
+      preset: 'r11021346',
+      iterations: 1000,
+      done_iterations: 86,
+      alive: true,
+      train_start: '2024-01-02',
+      train_end: '2025-12-31',
+      valid_start: '2026-01-05',
+      valid_end: '2026-09-09',
+      progress: { phase: 'searching', done_iterations: 86, iterations: 1000 },
+    })
+    renderDialog()
+    await waitFor(() => expect(document.querySelector('[data-fork-infer-panel]')).toBeTruthy())
+    expect(document.body.textContent).not.toContain('undefined')
+    expect(document.body.textContent).not.toContain('个交易日')
+  })
+
   it('选股条件还在、统计方法下拉已删除（只剩一套方法）', async () => {
     renderDialog()
     await screen.findByText('创建数据分析任务')

@@ -183,6 +183,9 @@ class VariantMetrics:
     records: list[DayRecord] = field(default_factory=list)
     days: int = 0
     seconds: float = 0.0
+    #: 逐股明细（只有最终验算才开，见 ``Engine.evaluate(collect_stocks=True)``）。
+    #: ``{symbol: {"code", "name", "win": [...], "n": [...], "base": [...], "days": int}}``
+    by_stock: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # -- 汇总 ----------------------------------------------------------------
     def signals(self) -> int:
@@ -476,8 +479,14 @@ class Engine:
         return issues
 
     def evaluate(self, rule: dict[str, Any], day_indices: Sequence[int],
-                 should_stop: Optional[Any] = None) -> VariantMetrics:
-        """在这批交易日上跑一个变体。"""
+                 should_stop: Optional[Any] = None,
+                 collect_stocks: bool = False) -> VariantMetrics:
+        """在这批交易日上跑一个变体。
+
+        ``collect_stocks=True`` 时额外按股票聚合（最终验算才用：判断这个条件
+        是不是「只对某些个股有效」，用户 2026-11-03 第 4/5 条）。搜索阶段不开，
+        否则一天几千只股票 × 1000 次变体的字典开销会把搜索拖慢一半。
+        """
         import time
 
         request = self.request_for(rule)
@@ -488,6 +497,7 @@ class Engine:
         horizons = self.horizons
         size = len(self.dataset.calendar)
         metrics = VariantMetrics(horizons=list(horizons))
+        by_stock: dict[str, dict[str, Any]] = {}
         started = time.perf_counter()
 
         for day_index in day_indices:
@@ -518,6 +528,16 @@ class Engine:
                 if result is None:
                     continue
                 hits += 1
+                entry = None
+                if collect_stocks:
+                    entry = by_stock.get(stock.symbol)
+                    if entry is None:
+                        entry = by_stock[stock.symbol] = {
+                            "code": stock.code, "name": stock.name,
+                            "win": [0] * len(horizons), "n": [0] * len(horizons),
+                            "base": [0.0] * len(horizons), "days": 0,
+                        }
+                    entry["days"] += 1
                 for index in range(len(horizons)):
                     close_value = result.close[index]
                     if close_value is not None:
@@ -529,6 +549,15 @@ class Engine:
                         exec_n[index] += 1
                         if exec_value > COST:
                             exec_win[index] += 1
+                            ok = True
+                        else:
+                            ok = False
+                        if entry is not None:
+                            entry["n"][index] += 1
+                            entry["win"][index] += 1 if ok else 0
+                            base_value = base_exec[index]
+                            if base_value is not None:
+                                entry["base"][index] += float(base_value)
                     touch_value = result.touch[index]
                     if touch_value is not None:
                         touch_n[index] += 1
@@ -543,6 +572,7 @@ class Engine:
                 base_close=base_close, base_exec=base_exec, base_touch=base_touch,
             ))
         metrics.days = len(day_indices)
+        metrics.by_stock = by_stock
         metrics.seconds = time.perf_counter() - started
         return metrics
 
