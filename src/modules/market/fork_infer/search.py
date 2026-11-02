@@ -347,6 +347,9 @@ def _spawn(run_id: str) -> None:
         cmd = [
             "sudo", "-n", "systemd-run", "--unit", unit, "--collect",
             "--description", f"PanWatch 条件推理 {run_id}",
+            # sudo 起的 transient unit 默认以 root 跑 —— 那样写出 meta.json /
+            # results.jsonl 全是 root 属主，之后 API（ubuntu）就再也写不进去了
+            "-p", f"User={_run_user()}", "-p", f"Group={_run_group()}",
             "-p", "MemoryMax=1500M", "-p", "MemorySwapMax=1G",
             "-p", "CPUQuota=300%", "-p", "Nice=10",
             # transient unit 拿到的是**干净环境**：不注入凭据就会一启动就报
@@ -382,6 +385,18 @@ def _spawn(run_id: str) -> None:
         log.close()
     store.write_pid(run_id, proc.pid)
     logger.info("条件推理工作进程已启动 run=%s pid=%s", run_id, proc.pid)
+
+
+def _run_user() -> str:
+    """工作进程跑成谁：与服务进程同一个用户（默认 ubuntu）。
+
+    用 root 跑会把任务目录写成 root 属主，之后接口读写全部 PermissionError。
+    """
+    return str(os.environ.get("PANWATCH_INFER_USER") or "ubuntu")
+
+
+def _run_group() -> str:
+    return str(os.environ.get("PANWATCH_INFER_GROUP") or _run_user())
 
 
 def _env_file() -> str:
