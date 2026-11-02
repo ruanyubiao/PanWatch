@@ -736,17 +736,50 @@ def cmd_tick(args: argparse.Namespace) -> int:
             time.sleep(3)
             runs = _runs(token)
 
-    # 2) 跑完的轮次自动保存 + 清盘
+    # 2) 进程重启过（部署 / OOM）留下的中断任务：先续跑，别从零开新一轮。
+    #    只在「已经跑出东西」且同一轮没连续续跑失败过 2 次时尝试，防止崩循环。
+    resumed = _resume_interrupted(token, runs, state)
+    if resumed:
+        runs = _runs(token)
+
+    # 3) 跑完的轮次自动保存 + 清盘
     auto_save(token, runs, state)
     auto_save_pr = prune(state)
     state["last_tick"] = time.time()
     state["last_prune"] = auto_save_pr
     _save_state(state)
 
-    # 3) 开新任务
+    # 4) 开新任务
     result = start_new(token, runs, state, dry=args.dry)
     print(f"tick {result} free={_free_gb():.1f}G runs={len(runs)}")
     return 0
+
+
+def _resume_interrupted(token: str, runs: list[dict[str, Any]],
+                        state: dict[str, Any]) -> bool:
+    """把最近一个中断的任务续跑起来（返回是否真的发起了续跑）。"""
+    if not runs:
+        return False
+    latest = runs[0]
+    if str(latest.get("status")) != "interrupted":
+        return False
+    done = int(latest.get("done_iterations") or 0)
+    if done <= 0:
+        return False
+    attempts = dict(state.get("resume_attempts") or {})
+    run_id = str(latest.get("run_id") or "")
+    if int(attempts.get(run_id) or 0) >= 2:
+        return False
+    attempts[run_id] = int(attempts.get(run_id) or 0) + 1
+    state["resume_attempts"] = attempts
+    try:
+        _post(f"/api/stocks/infer/runs/{run_id}/resume", {}, token)
+        _log(f"resume interrupted run={run_id} done={done} attempt={attempts[run_id]}")
+        print(f"已续跑中断任务 {run_id}（从 {done} 次继续）")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        _log(f"resume FAILED run={run_id} {type(exc).__name__}: {exc}")
+        return False
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
