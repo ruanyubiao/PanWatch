@@ -175,6 +175,7 @@ def test_工作进程启动会写pid文件_没有systemd时用普通进程(tmp_p
 
     monkeypatch.setattr(infer_store, "RUNS_DIR", tmp_path)
     monkeypatch.setenv("PANWATCH_INFER_SYSTEMD", "0")
+    monkeypatch.setattr(search, "_unit_active", lambda run_id: False)
     spawned: list[list[str]] = []
 
     class _Fake:
@@ -200,6 +201,7 @@ def test_有systemd时跑成独立单元_带内存上限(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(infer_store, "RUNS_DIR", tmp_path)
     monkeypatch.setattr(search, "_systemd_available", lambda: True)
+    monkeypatch.setattr(search, "_unit_active", lambda run_id: False)
     calls: list[list[str]] = []
 
     class _Done:
@@ -224,3 +226,39 @@ def test_有systemd时跑成独立单元_带内存上限(tmp_path, monkeypatch) 
     # sudo 起的 transient unit 默认跑成 root，会把任务目录写成 root 属主
     assert "User=ubuntu" in cmd
     assert cmd[-1] == "run-d"
+
+
+def test_单元还活着就算在跑_哪怕pid文件还没写(tmp_path, monkeypatch) -> None:
+    """单元刚起来的一两秒 pid 还没写，只看 pid 会误判任务已死 → 再开一轮抢同一个目录。"""
+    from src.modules.market.fork_infer import search
+
+    monkeypatch.setattr(infer_store, "RUNS_DIR", tmp_path)
+    monkeypatch.setattr(search, "_unit_active", lambda run_id: True)
+    infer_store.clear_pid("run-e")
+    assert search.is_running("run-e") is True
+
+
+def test_刚起的任务不会被误判为中断(tmp_path, monkeypatch) -> None:
+    from src.modules.market.fork_infer import search
+
+    monkeypatch.setattr(infer_store, "RUNS_DIR", tmp_path)
+    monkeypatch.setattr(search, "is_running", lambda run_id: False)
+    infer_store.save_meta("run-f", {"run_id": "run-f", "status": "running",
+                                    "created_at": "2026-11-03T00:00:00+08:00"})
+    search.reconcile()
+    assert infer_store.load_meta("run-f")["status"] == "running"
+
+
+def test_老任务没有pid也没有单元才算中断(tmp_path, monkeypatch) -> None:
+    import os as _os
+    import time as _time
+
+    from src.modules.market.fork_infer import search
+
+    monkeypatch.setattr(infer_store, "RUNS_DIR", tmp_path)
+    monkeypatch.setattr(search, "is_running", lambda run_id: False)
+    infer_store.save_meta("run-g", {"run_id": "run-g", "status": "running"})
+    old = _time.time() - 3600
+    _os.utime(infer_store.meta_path("run-g"), (old, old))
+    search.reconcile()
+    assert infer_store.load_meta("run-g")["status"] == "interrupted"
