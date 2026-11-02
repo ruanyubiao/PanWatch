@@ -323,16 +323,53 @@ def start(run_id: str) -> None:
 
 
 def _spawn(run_id: str) -> None:
-    """拉起工作进程：独立会话（父进程退出不带走它）、输出落到任务目录。"""
+    """拉起工作进程。
+
+    优先用 systemd 跑成**独立的 transient service**（``systemd-run --unit``）：
+    它有自己的 cgroup，``systemctl restart panwatch`` 不会带走它 —— 2026-11-03 实测
+    用普通 ``subprocess.Popen`` 时，worker 虽然开了新会话，但仍留在 panwatch.service
+    的 cgroup 里，一次重启就被 systemd 连锅端掉，9 小时的搜索白跑。
+    顺带还能用 cgroup 直接限内存（``MemoryMax``），比 ``RLIMIT_AS`` 靠谱
+    （Python 的虚拟内存远大于真实占用，地址空间限太紧会误杀）。
+
+    没有 systemd / 没有免密 sudo 时退回普通 Popen：仍能跑，但重启服务会打断，
+    由调度器在几分钟内续跑（断点续跑是幂等的）。
+    """
     import subprocess
     import sys
 
-    log = store.log_path(run_id).open("a", encoding="utf-8")
+    log_path = store.log_path(run_id)
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "MALLOC_ARENA_MAX": "2"}
+    argv = [sys.executable, "-m", "src.modules.market.fork_infer.worker", run_id]
+    unit = f"panwatch-infer-{run_id}"
+
+    if _systemd_available():
+        cmd = [
+            "sudo", "-n", "systemd-run", "--unit", unit, "--collect",
+            "--description", f"PanWatch 条件推理 {run_id}",
+            "-p", "MemoryMax=1500M", "-p", "MemorySwapMax=1G",
+            "-p", "CPUQuota=300%", "-p", "Nice=10",
+            "-p", f"StandardOutput=append:{log_path}",
+            "-p", f"StandardError=append:{log_path}",
+            "--working-directory", str(store.PROJECT_ROOT),
+            *argv,
+        ]
+        done = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        if done.returncode == 0:
+            # 等工作进程自己把 pid 写下来（它启动后第一件事就是写），
+            # 否则紧接着的 any_running() 会以为没人跑，可能再起一轮
+            for _ in range(40):
+                if store.read_pid(run_id):
+                    break
+                time.sleep(0.25)
+            logger.info("条件推理工作进程已启动（systemd 单元 %s）", unit)
+            return
+        logger.warning("systemd-run 启动失败，退回普通进程：%s", (done.stderr or "").strip()[:300])
+
+    log = log_path.open("a", encoding="utf-8")
     try:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "src.modules.market.fork_infer.worker", run_id],
-            cwd=str(store.PROJECT_ROOT),
+            argv, cwd=str(store.PROJECT_ROOT),
             stdout=log, stderr=log, stdin=subprocess.DEVNULL,
             start_new_session=True, env=env,
         )
@@ -340,6 +377,17 @@ def _spawn(run_id: str) -> None:
         log.close()
     store.write_pid(run_id, proc.pid)
     logger.info("条件推理工作进程已启动 run=%s pid=%s", run_id, proc.pid)
+
+
+def _systemd_available() -> bool:
+    """能不能用 systemd-run 起 transient 单元（需要 systemd + 免密 sudo）。"""
+    if str(os.environ.get("PANWATCH_INFER_SYSTEMD", "1")).lower() in ("0", "false", "no"):
+        return False
+    try:
+        done = __import__("subprocess").run(["sudo", "-n", "true"], capture_output=True, timeout=10)
+    except (OSError, Exception):  # noqa: BLE001 - 没有 sudo/systemd 就用普通进程
+        return False
+    return done.returncode == 0
 
 
 def pause(run_id: str) -> dict[str, Any]:
