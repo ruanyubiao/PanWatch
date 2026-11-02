@@ -724,15 +724,11 @@ def _loop(run_id: str) -> None:
             }
         # 跑满一轮却一个入围变体都没有 = 所有变体信号不足（条件过窄），
         # 这种轮次不该显示「已完成、无评分」—— 历史里必须能一眼看出白跑了一轮。
-        empty_round = (not stopped and done > 0 and not finals)
+        final_status, final_error = final_outcome(stopped, done, bool(finals))
         store.patch_meta(
             run_id,
-            # 一次都没评估出来 = 基础条件过窄（抽样窗口里所有变体都无信号），
-            # 不能标成 done —— 那只会在历史里显示「已完成、无评分」，看不出是空跑。
-            status=(store.STATUS_STOPPED if stopped
-                    else store.STATUS_FAILED if (done == 0 or empty_round) else store.STATUS_DONE),
-            error=("基础条件在该窗口没有任何信号：搜索空间为空" if done == 0 and not stopped
-                   else "所有变体有效信号不足，本轮无评分（基础条件过窄）" if empty_round else None),
+            status=final_status,
+            error=final_error,
             done_iterations=done,
             successes=done,
             failures=failed,
@@ -770,6 +766,26 @@ def _loop(run_id: str) -> None:
 # --------------------------------------------------------------------------- #
 # 读结果 / 保存条件
 # --------------------------------------------------------------------------- #
+def final_outcome(stopped: bool, done: int, has_finalists: bool) -> tuple[str, Optional[str]]:
+    """一轮结束后该落什么状态。
+
+    * 用户停止            → stopped
+    * 一次都没评估出来     → failed（基础条件筛选不出股票，搜索空间为空）
+    * 跑满一轮但无入围变体 → failed（所有变体有效信号不足，这轮没有评分）
+    * 其余                → done
+
+    为什么空跑必须标 failed：历史里如果显示「已完成」却没有评分，用户看不出
+    这一轮其实是白跑的（2026-11-02 之前十几轮都这样）。
+    """
+    if stopped:
+        return store.STATUS_STOPPED, None
+    if done == 0:
+        return store.STATUS_FAILED, "基础条件在该窗口没有任何信号：搜索空间为空"
+    if not has_finalists:
+        return store.STATUS_FAILED, "所有变体有效信号不足，本轮无评分（基础条件过窄）"
+    return store.STATUS_DONE, None
+
+
 def results(run_id: str, limit: int = 50) -> dict[str, Any]:
     rows = store.read_results(run_id)
     ranked = [row for row in rows if row.get("score") is not None]
