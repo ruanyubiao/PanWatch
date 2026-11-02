@@ -121,10 +121,16 @@ def test_高分轮次受保护不被裁剪(scheduler):
     assert len((good / "results.jsonl").read_text(encoding="utf-8").splitlines()) == 500
 
 
-def test_空跑的基础条件会被标记失败而不是已完成():
-    """0 次评估 = 基础条件没有信号：历史里必须显示「失败」，否则看不出是空跑。"""
+def test_空跑与无入围的轮次都标失败():
+    """0 次评估 / 有评估但没入围 = 这轮没有评分：历史里必须显示「失败」。
+
+    以前一律标 done，历史里显示「已完成、评分 —」，看不出是白跑。
+    """
     from src.modules.market.fork_infer import search
 
-    source = Path(search.__file__).read_text(encoding="utf-8")
-    assert "基础条件在该窗口没有任何信号" in source
-    assert "STATUS_FAILED if done == 0" in source
+    assert search.final_outcome(False, 0, False)[0] == "failed"
+    assert "没有任何信号" in (search.final_outcome(False, 0, False)[1] or "")
+    assert search.final_outcome(False, 120, False)[0] == "failed"
+    assert "信号不足" in (search.final_outcome(False, 120, False)[1] or "")
+    assert search.final_outcome(False, 120, True) == ("done", None)
+    assert search.final_outcome(True, 120, True) == ("stopped", None)
