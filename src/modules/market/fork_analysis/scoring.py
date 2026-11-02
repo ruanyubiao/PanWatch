@@ -61,6 +61,15 @@ MIN_EFFECTIVE = 30
 MIN_SIGNALS_PER_DAY = 0.5
 STRESS_COST = 0.004
 
+#: 个股档（用户 2026-11-03 第 4 条）：一个条件可能只对某几只股票有效。
+#: 个股样本天然少（一只股票几年也就几十次信号），所以门槛另算：
+#: 8 次信号才能评分，15 次以下最高 75 分，25 次以下最高 88 分 ——
+#: 5 战 5 胜不该拿到 100 分，但 20 次里赢 17 次确实可能是真信号。
+STOCK_MIN_EVENTS = 8
+STOCK_MIN_EFFECTIVE = 2
+STOCK_CAP_8 = 75.0
+STOCK_CAP_25 = 88.0
+
 #: 评级
 GRADES: tuple[tuple[float, str, str], ...] = (
     (85.0, "A", "优秀：超额大且稳，可以进实盘观察"),
@@ -86,7 +95,14 @@ def _clip(value: float, low: float, high: float) -> float:
 
 
 def lower_bound(row: dict[str, Any], z: float = 1.96) -> Optional[float]:
-    """一个周期的超额置信下界（pp）。没有 t 值时按 1/3 折减，宁可保守。"""
+    """一个周期的超额置信下界（pp）。没有 t 值时按 1/3 折减，宁可保守。
+
+    显式给了 ``lower_pp`` 就直接用它：个股评分用 Wilson 下界（n 常常不到 20，
+    正态近似会把「8 次里赢 7 次」算成一个过窄的区间）。
+    """
+    explicit = row.get("lower_pp")
+    if explicit is not None:
+        return float(explicit)
     excess = row.get("excess_pp")
     if excess is None:
         return None
@@ -123,6 +139,7 @@ def score_segment(
     layer_excess: Sequence[Optional[float]] = (),
     stress_excess: Optional[float] = None,
     reference: Optional[dict[str, Any]] = None,
+    profile: str = "condition",
 ) -> dict[str, Any]:
     """给一个时间段打分。
 
@@ -140,6 +157,10 @@ def score_segment(
         成本抬到 0.4% 后、最优周期的超额（pp）。缺省表示没算。
     reference
         另一段（推理段）的评分结果；给测试段打分时传进来算衰减惩罚。
+    profile
+        ``condition``（默认，整条条件）或 ``stock``（单只股票）。
+        个股的样本规模小两个数量级，用条件的门槛会把所有个股都压到 55 分以下，
+        所以两道门槛另算（见 ``STOCK_MIN_EVENTS`` / ``STOCK_CAP_*``）。
     """
     if not windows:
         return {
@@ -204,16 +225,33 @@ def score_segment(
 
     # ---- 硬门槛
     cap = 100.0
-    if events < MIN_EVENTS:
-        cap = min(cap, PASS_SCORE - 5)
-        caps.append(f"有效样本 {events} 笔 < {MIN_EVENTS}")
-    n_eff = best.get("n_eff")
-    if n_eff is not None and n_eff < MIN_EFFECTIVE:
-        cap = min(cap, PASS_SCORE - 5)
-        caps.append(f"独立样本 {n_eff} < {MIN_EFFECTIVE}（重叠窗口太多）")
-    if days and events / max(1, days) < MIN_SIGNALS_PER_DAY:
-        cap = min(cap, PASS_SCORE - 5)
-        caps.append("平均每天不足 0.5 个信号，实际挑不出来")
+    if profile == "stock":
+        # 个股档：门槛按个股样本规模另算，且不要求「每天至少 0.5 个信号」
+        # （一只股票一年命中的十几天根本凑不出这个数）。
+        if events < STOCK_MIN_EVENTS:
+            cap = min(cap, STOCK_CAP_8)
+            caps.append(f"个股有效样本 {events} 笔 < {STOCK_MIN_EVENTS}，不足以评分")
+        elif events < 15:
+            cap = min(cap, STOCK_CAP_8)
+            caps.append(f"个股有效样本 {events} 笔 < 15，最高 {STOCK_CAP_8:.0f} 分")
+        elif events < 25:
+            cap = min(cap, STOCK_CAP_25)
+            caps.append(f"个股有效样本 {events} 笔 < 25，最高 {STOCK_CAP_25:.0f} 分")
+        n_eff = best.get("n_eff")
+        if n_eff is not None and n_eff < STOCK_MIN_EFFECTIVE:
+            cap = min(cap, STOCK_CAP_8)
+            caps.append(f"个股独立样本 {n_eff} < {STOCK_MIN_EFFECTIVE}")
+    else:
+        if events < MIN_EVENTS:
+            cap = min(cap, PASS_SCORE - 5)
+            caps.append(f"有效样本 {events} 笔 < {MIN_EVENTS}")
+        n_eff = best.get("n_eff")
+        if n_eff is not None and n_eff < MIN_EFFECTIVE:
+            cap = min(cap, PASS_SCORE - 5)
+            caps.append(f"独立样本 {n_eff} < {MIN_EFFECTIVE}（重叠窗口太多）")
+        if days and events / max(1, days) < MIN_SIGNALS_PER_DAY:
+            cap = min(cap, PASS_SCORE - 5)
+            caps.append("平均每天不足 0.5 个信号，实际挑不出来")
     if stress_excess is not None and stress_excess < 0:
         cap = min(cap, PASS_SCORE - 5)
         caps.append("成本升到 0.4% 后超额转负")

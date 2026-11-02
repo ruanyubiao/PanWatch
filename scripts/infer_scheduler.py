@@ -599,12 +599,27 @@ def _best_variant_index(run_id: str) -> Optional[int]:
 
 
 def auto_save(token: str, runs: list[dict[str, Any]], state: dict[str, Any]) -> None:
-    """把两段都 ≥58 的最好变体自动存成已保存条件（每轮只存一次）。"""
+    """自动保存够格的条件（每轮只存一次）。
+
+    用户 2026-11-03 第 3/4 条定的两条保留线：
+
+    * **通用**：推理分或验证分至少一个 ≥ 60（``PASS_SCORE``）——
+      以前要求「两段都 ≥58」，把「训练好看、测试也不错」的轮次全漏掉了。
+    * **个股**：某只股票在任一数据段拿到 ≥80 分 —— 这种条件整条可能不及格，
+      但对特定个股很准，正是用户说的「就算只对某一些票有效也可以」。
+
+    两条满足任意一条就存；存的是这一轮排名第 1 的变体。
+    """
     saved = set(state.get("saved") or [])
     for item in _finished(runs):
         run_id = str(item.get("run_id"))
         tr, te = _score(item)
-        if tr is None or te is None or min(tr, te) < SAVE_SCORE:
+        scores = [value for value in (tr, te) if value is not None]
+        best = max(scores) if scores else None
+        general = best is not None and best >= PASS_SCORE
+        stock_best = item.get("stock_best_score")
+        stock = stock_best is not None and float(stock_best) >= 80.0
+        if not (general or stock):
             continue
         if run_id in saved:
             continue
@@ -623,7 +638,8 @@ def auto_save(token: str, runs: list[dict[str, Any]], state: dict[str, Any]) -> 
             _log(f"autosave FAILED run={run_id} {type(exc).__name__}: {exc}")
             continue
         saved.add(run_id)
-        _log(f"autosave OK run={run_id} -> {name} （{tr}/{te}，序号 {index}）")
+        scope = "通用" if general else "个股"
+        _log(f"autosave OK run={run_id} -> {name} （{tr}/{te}，{scope}，序号 {index}）")
     state["saved"] = sorted(saved)
 
 

@@ -176,7 +176,7 @@ export function AnalysisTaskDetailDialog({
                     {T.statusPrefix}：{T.statuses[detail.run.status] ?? detail.run.status}
                   </span>
                   <span className="text-[10px] text-muted-foreground">
-                    {T.rangeLine(detail.run.start_date, detail.run.end_date, detail.run.days_done)}
+                    {T.rangeLine(detail.run.start_date, detail.run.end_date, detail.run.days_done ?? 0)}
                   </span>
                   <span className="text-[10px] text-muted-foreground">
                     {T.validateLine(detail.run.validate_days ?? 30)}

@@ -37,6 +37,21 @@ export const ANALYSIS_INFER_TEXTS_ZH = {
   horizon: '最优持有期',
   excess: '超额',
   events: '信号数',
+  scopeCol: '有效范围',
+  scopeHint: '通用：整条达标（≥60）；个股：某只股票个别达标（≥80）',
+  stockTitle: '个股名单（这条条件对这些个股特别有效）',
+  stockHint: (count: number, total: number) =>
+    `共 ${count} 只个股达到个股门槛（≥80 分），下表列出分数最高的 ${Math.min(count, 20)} 只 / 参与评估 ${total} 只。个股是线索，不是确证：一个条件 × 几千只股票总会有几只碰巧很准。`,
+  stockEmpty: '没有个股达到 80 分（这条条件是靠整体表现，不是靠某几只股票）',
+  stock: {
+    code: '代码',
+    name: '名称',
+    trainScore: '推理分',
+    testScore: '测试分',
+    window: '最佳持有',
+    winRate: '胜率',
+    signals: '信号',
+  },
   save: '保存条件',
   saved: (name: string) => `已保存为「${name}」`,
   saveFailed: (message: string) => `保存失败：${message}`,
@@ -89,6 +104,11 @@ export function AnalysisInferPanel({
   const exhausted = progress.exhausted ?? run.exhausted ?? false
   const finalizing = active && progress.phase === 'verifying'
   const scores = run.scores ?? null
+
+  // 个股名单（用户 2026-11-03 第 5 条）：取入围里分数最高的那条展示
+  const stockHost = (finalists ?? [])
+    .filter(item => (item.stock_list?.length ?? 0) > 0)
+    .sort((a, b) => (b.combined?.score ?? b.stock_best_score ?? 0) - (a.combined?.score ?? a.stock_best_score ?? 0))[0] ?? null
 
   return (
     <div className="space-y-2" data-fork-infer-panel={run.status}>
@@ -179,6 +199,7 @@ export function AnalysisInferPanel({
                 <tr>
                   <th className="px-1 py-0.5 text-left">#</th>
                   <th className="px-1 py-0.5 text-left">{T.cond}</th>
+                  <th className="px-1 py-0.5 text-left">{T.scopeCol}</th>
                   <th className="px-1 py-0.5 text-right">{T.trainCol}</th>
                   <th className="px-1 py-0.5 text-right">{T.testCol}</th>
                   <th className="px-1 py-0.5 text-right">{T.horizon}</th>
@@ -201,6 +222,9 @@ export function AnalysisInferPanel({
                             {SCORE_VERDICTS_ZH[verdict] ?? verdict}
                           </span>
                         )}
+                      </td>
+                      <td className="px-1 py-1 whitespace-nowrap text-[10px]" data-fork-infer-scope={item.scope_label ?? '—'}>
+                        {item.scope_label ?? '—'}
                       </td>
                       <td className="px-1 py-1 text-right">{fmt(item.train_grade?.score)}</td>
                       <td className="px-1 py-1 text-right">{fmt(item.valid_grade?.score)}</td>
@@ -233,6 +257,63 @@ export function AnalysisInferPanel({
           </div>
         </div>
       )}
+      {stockHost && (
+        <div className="rounded-lg border border-border/60 p-2" data-fork-infer-stocks>
+          <p className="mb-1 text-[11px] font-medium">
+            {T.stockTitle}
+            <span className="ml-1 text-[10px] text-muted-foreground">
+              #{stockHost.rank} · {stockHost.scope_label ?? '—'}
+            </span>
+          </p>
+          <p className="mb-1 text-[10px] text-muted-foreground">
+            {T.stockHint(stockHost.stock_qualified ?? 0, stockHost.stock_universe ?? 0)}
+          </p>
+          {(stockHost.stock_list?.length ?? 0) === 0 ? (
+            <p className="text-[10px] text-muted-foreground">{T.stockEmpty}</p>
+          ) : (
+            <div className="max-h-[220px] overflow-y-auto scrollbar">
+              <table className="w-full text-[11px]">
+                <thead className="text-[10px] text-muted-foreground">
+                  <tr>
+                    <th className="px-1 py-0.5 text-left">{T.stock.code}</th>
+                    <th className="px-1 py-0.5 text-left">{T.stock.name}</th>
+                    <th className="px-1 py-0.5 text-right">{T.stock.trainScore}</th>
+                    <th className="px-1 py-0.5 text-right">{T.stock.testScore}</th>
+                    <th className="px-1 py-0.5 text-right">{T.stock.window}</th>
+                    <th className="px-1 py-0.5 text-right">{T.stock.winRate}</th>
+                    <th className="px-1 py-0.5 text-right">{T.stock.signals}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(stockHost.stock_list ?? []).slice(0, 20).map(stock => {
+                    const strong = (stock.best_score ?? 0) >= 80
+                    return (
+                      <tr key={stock.code} className="border-t border-border/40">
+                        <td className="px-1 py-1 tabular-nums">{stock.code}</td>
+                        <td className="px-1 py-1">{stock.name || '—'}</td>
+                        <td className={`px-1 py-1 text-right tabular-nums ${strong ? 'font-medium text-emerald-600' : ''}`}>
+                          {fmt(stock.train_score)}
+                        </td>
+                        <td className={`px-1 py-1 text-right tabular-nums ${strong ? 'font-medium text-emerald-600' : ''}`}>
+                          {fmt(stock.test_score)}
+                        </td>
+                        <td className="px-1 py-1 text-right">{stock.window ?? '—'}</td>
+                        <td className="px-1 py-1 text-right tabular-nums">
+                          {stock.train_win_rate == null ? '—' : `${stock.train_win_rate}%`}
+                        </td>
+                        <td className="px-1 py-1 text-right tabular-nums">
+                          {stock.train_signals ?? '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {(!finalists || finalists.length === 0) && !active && run.status !== 'pending' && (
         <p className="text-[10px] text-muted-foreground">{T.noFinalist}</p>
       )}

@@ -42,6 +42,7 @@ export const ANALYSIS_HISTORY_TAB_TEXTS_ZH = {
     range: '区间',
     train: '推理分',
     test: '测试分',
+    scope: '有效范围',
     status: '状态',
     hits: '命中',
     created: '创建时间',
@@ -171,6 +172,7 @@ export function AnalysisHistoryTab({
                 <th className="px-2 py-1 text-left font-medium">{T.columns.range}</th>
                 <th className="px-2 py-1 text-right font-medium">{T.columns.train}</th>
                 <th className="px-2 py-1 text-right font-medium">{T.columns.test}</th>
+                <th className="px-2 py-1 text-left font-medium">{T.columns.scope}</th>
                 <th className="px-2 py-1 text-left font-medium">{T.columns.status}</th>
                 <th className="px-2 py-1 text-right font-medium">{T.columns.hits}</th>
                 <th className="px-2 py-1 text-left font-medium">{T.columns.created}</th>
@@ -205,6 +207,13 @@ export function AnalysisHistoryTab({
                   </td>
                   <td className="px-2 py-1 text-right tabular-nums" data-fork-history-test>
                     {scoreText(run.score_test)}
+                  </td>
+                  <td className="px-2 py-1 whitespace-nowrap text-[10px] text-muted-foreground"
+                      data-fork-history-scope={run.scope_label ?? '—'}>
+                    {run.scope_label ?? '—'}
+                    {run.stock_best_score != null && run.stock_best_score >= 80 ? (
+                      <span className="ml-1 text-emerald-600">{`个股 ${Math.round(run.stock_best_score)}`}</span>
+                    ) : null}
                   </td>
                   <td className="px-2 py-1">
                     <span className={run.status === 'failed' ? 'text-destructive' : ''}>

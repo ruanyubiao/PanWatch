@@ -332,8 +332,25 @@ export function AnalysisDialog({
         const active = merged.find(item => item.status === 'running' || item.status === 'pending')
           ?? list.find(item => item.status === 'running' || item.status === 'pending')
         if (active) {
-          setRun(active)
-          setMode('run')
+          // 推理任务没有「天」，days_done 是空的：直接进推理面板，
+          // 否则界面会显示「已完成 undefined / N 个交易日」
+          // （用户 2026-11-03 第 6 条报的就是这个）。
+          if (active.kind === 'infer') {
+            try {
+              const next = await getInferRun(active.run_id)
+              if (cancelled) return
+              setInferRun(next)
+              setMode('infer')
+            } catch {
+              if (!cancelled) {
+                setRun(active)
+                setMode('run')
+              }
+            }
+          } else {
+            setRun(active)
+            setMode('run')
+          }
         }
       } catch (exc) {
         if (!cancelled) setError(T.loadFailed(exc instanceof Error ? exc.message : String(exc)))
@@ -1018,7 +1035,10 @@ export function AnalysisDialog({
                       <div className="h-full bg-primary transition-all" style={{ width: `${percent}%` }} />
                     </div>
                     <p className="text-[11px]">
-                      {T.progressTitle(progress?.days_done ?? run.days_done, progress?.days_total ?? run.days_total)}
+                      {T.progressTitle(
+                        progress?.days_done ?? run.days_done ?? 0,
+                        progress?.days_total ?? run.days_total ?? 0,
+                      )}
                     </p>
                     <p className="text-[10px] text-muted-foreground">
                       {T.progressHits(progress?.hits ?? run.hits)}
@@ -1056,9 +1076,11 @@ export function AnalysisDialog({
                   </p>
                 )}
 
-                {run.status === 'stopped' && <p className="text-[11px]">{T.stoppedNote(run.days_done)}</p>}
+                {run.status === 'stopped' && (
+                  <p className="text-[11px]">{T.stoppedNote(run.days_done ?? 0)}</p>
+                )}
                 {run.status === 'done' && (
-                  <p className="text-[11px]">{T.doneNote(run.days_done, run.hits)}</p>
+                  <p className="text-[11px]">{T.doneNote(run.days_done ?? 0, run.hits ?? 0)}</p>
                 )}
 
                 {run.recent_days && run.recent_days.length > 0 && (
