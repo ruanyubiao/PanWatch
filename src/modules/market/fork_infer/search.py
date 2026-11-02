@@ -102,9 +102,32 @@ def _pid_alive(pid: int) -> bool:
     return b"fork_infer.worker" in cmdline
 
 
+def _unit_name(run_id: str) -> str:
+    return f"panwatch-infer-{run_id}"
+
+
+def _unit_active(run_id: str) -> bool:
+    """systemd transient 单元还活着吗（进程刚起、还没写 pid 时靠这个）。"""
+    import subprocess
+
+    try:
+        done = subprocess.run(["systemctl", "is-active", "--quiet", _unit_name(run_id)],
+                              capture_output=True, timeout=8)
+    except (OSError, Exception):  # noqa: BLE001
+        return False
+    return done.returncode == 0
+
+
 def is_running(run_id: str) -> bool:
+    """在跑 = 工作进程活着，或者它的 systemd 单元是 active。
+
+    只看 pid 文件会误判：单元刚起来的那一两秒 pid 还没写，调度器会以为任务死了，
+    把状态改成 interrupted，然后再开一轮 —— 结果同一轮有两个工作进程抢同一个目录。
+    """
     pid = store.read_pid(run_id)
-    return bool(pid and _pid_alive(pid))
+    if pid and _pid_alive(pid):
+        return True
+    return _unit_active(run_id)
 
 
 def any_running() -> Optional[str]:
@@ -241,6 +264,14 @@ def reconcile() -> None:
         run_id = str(meta.get("run_id") or "")
         if not run_id or is_running(run_id):
             continue
+        # 刚起的那一两分钟别急着判死：工作进程要先把整个行情库读进内存
+        # （2026-11-03：单元刚起、pid 还没写时被 reconcile 误判成 interrupted）
+        try:
+            age = time.time() - store.meta_path(run_id).stat().st_mtime
+        except OSError:
+            age = 0.0
+        if age < 180.0:
+            continue
         try:
             store.patch_meta(run_id, status="interrupted",
                              progress={**(meta.get("progress") or {}), "phase": "interrupted"})
@@ -341,7 +372,7 @@ def _spawn(run_id: str) -> None:
     log_path = store.log_path(run_id)
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "MALLOC_ARENA_MAX": "2"}
     argv = [sys.executable, "-m", "src.modules.market.fork_infer.worker", run_id]
-    unit = f"panwatch-infer-{run_id}"
+    unit = _unit_name(run_id)
 
     if _systemd_available():
         cmd = [
