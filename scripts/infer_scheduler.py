@@ -419,9 +419,25 @@ def build_plan(runs: list[dict[str, Any]], state: dict[str, Any]) -> dict[str, A
 # --------------------------------------------------------------------------- #
 # 启动 / 停止
 # --------------------------------------------------------------------------- #
-def _starts_today(state: dict[str, Any]) -> int:
+def _starts_today(state: dict[str, Any], runs: Optional[list[dict[str, Any]]] = None) -> int:
+    """24 小时内已经启动了多少轮。
+
+    **空跑的失败轮不计入预算**（2026-11-02）：基础条件过窄的轮次几秒钟就
+    ``failed``，但它们照样吃掉 6 个名额，结果 13:40 之后整台机器空转，
+    与「不能让服务器闲着」直接冲突。失败轮只消耗分钟级时间，不该占预算。
+    """
     cutoff = time.time() - 86400
-    return len([s for s in (state.get("starts") or []) if float(s.get("ts") or 0) >= cutoff])
+    status_of = {str(item.get("run_id")): str(item.get("status") or "")
+                 for item in (runs or [])}
+    count = 0
+    for item in (state.get("starts") or []):
+        if float(item.get("ts") or 0) < cutoff:
+            continue
+        run_id = str(item.get("run_id") or "")
+        if run_id and status_of.get(run_id) == "failed":
+            continue
+        count += 1
+    return count
 
 
 def _free_gb() -> float:
@@ -491,7 +507,7 @@ def start_new(token: str, runs: list[dict[str, Any]], state: dict[str, Any],
     if _free_gb() < MIN_FREE_GB:
         _log(f"skip start: free={_free_gb():.1f}G < {MIN_FREE_GB}G")
         return "low_disk"
-    if _starts_today(state) >= MAX_STARTS_PER_DAY and not force:
+    if _starts_today(state, runs) >= MAX_STARTS_PER_DAY and not force:
         _log("skip start: 24h 内已达启动上限")
         return "rate_limited"
 
@@ -811,6 +827,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         token = _login()
         info["api"] = "up"
         runs = _runs(token)
+        # 失败的空跑轮不计入预算（与 start_new 用同一口径，doctor 才不会报虚高的数）
+        info["starts_today"] = _starts_today(state, runs)
         latest = _latest(runs) or {}
         info["latest"] = {
             "run_id": latest.get("run_id"),
