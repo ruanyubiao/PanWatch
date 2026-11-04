@@ -49,9 +49,14 @@ export const SCREEN_PRESET_TEXTS_ZH = {
   menuPlaceholder: '已保存条件',
   menuEmpty: '暂无已保存条件',
   menuLabel: '已保存条件',
-  edit: '编辑',
-  editPreset: '编辑已保存条件',
-  editDisabled: '还没有已保存的条件',
+  /**
+   * 条件选股弹窗标题下的「选股条件」选择器（用户 2026-11-04：原来挂在分析页
+   * 工具条上的下拉搬进弹窗，编辑按钮去掉 —— 选一个就把内容填进来，本身就是编辑）。
+   */
+  pickerLabel: '选股条件',
+  pickerPlaceholder: '新增条件（未选择）',
+  pickerHint: '选一个已保存的条件会替换下面的内容；点 × 清空，回到新增条件',
+  pickerClear: '清除选择，回到新增条件',
   editingPreset: (name: string) => `正在编辑已保存条件「${name}」：改完点「开始选股」查看结果。`,
   summary: (name: string) => `「${name}」`,
   loadFailed: (message: string) => `读取已保存条件失败：${message}`,
