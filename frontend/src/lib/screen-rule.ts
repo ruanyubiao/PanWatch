@@ -322,6 +322,9 @@ export const SCREEN_TEXTS_ZH = {
   useTimeTitle: '选择时间',
   useConditionTitle: '选择条件',
   useHint: '选中一个已保存条件即可执行搜索；也可以先在「新建条件」里编好，切回来直接搜。',
+  // 「新建条件」里也要能选一条已有条件来改（用户 2026-11-05：每个 tab 独立一套控件）
+  buildConditionTitle: '选择已有条件',
+  buildConditionHint: '选中一条即可在下面修改，保存会覆盖原条件；不选就是新建。',
   buildHint: '在这里新建或修改条件，保存后可在「条件选股」里选中并执行搜索。',
   currentCondition: (name: string | null) => (name ? `当前条件：${name}` : '当前条件：尚未保存的草稿'),
   issueSummary: (n: number) => `有 ${n} 处需要修正：`,

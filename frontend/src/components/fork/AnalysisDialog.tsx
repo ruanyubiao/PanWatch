@@ -653,25 +653,37 @@ export function AnalysisDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[968px]" data-fork-analysis-dialog>
-        <DialogHeader>
+      {/*
+        固定高度（用户 2026-11-05 第 4 条）：两个 tab 的内容高度差很多，
+        原来弹窗跟着内容伸缩，切 tab 时会跳一下、还会重新居中。
+        这里把高度钉死，滚动交给各 tab 自己。
+      */}
+      <DialogContent className="flex h-[80vh] max-w-[968px] flex-col overflow-hidden" data-fork-analysis-dialog>
+        <DialogHeader className="mb-3 shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <BarChart3 className="h-4 w-4" />
             {T.title}
           </DialogTitle>
-          <DialogDescription>{T.description}</DialogDescription>
+          {/* 说明搬到「历史任务」tab 里（用户 2026-11-05 第 3 条）：它讲的是「回测历史、给评分」，
+              属于历史列表的语境；顶部这句话对「创建任务」tab 是重复信息。
+              这里只留屏幕阅读器文本，aria-describedby 不断。 */}
+          <DialogDescription className="sr-only">{T.description}</DialogDescription>
         </DialogHeader>
 
-        <Tabs value={tab} onValueChange={value => setTab(value === 'history' ? 'history' : 'create')}>
-          <TabsList className="mb-1">
+        <Tabs
+          value={tab}
+          onValueChange={value => setTab(value === 'history' ? 'history' : 'create')}
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <TabsList className="mb-1 shrink-0">
             <TabsTrigger value="create" data-fork-analysis-tab="create">{T.tabCreate}</TabsTrigger>
             <TabsTrigger value="history" data-fork-analysis-tab="history">{T.tabHistory}</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="create">
+          <TabsContent value="create" className="flex min-h-0 flex-1 flex-col">
         {/* 视觉顺序 = 上面的任务面板 → 下面的新建表单（用户 2026-11-04）。
             表单在 DOM 里靠前，用 order 提到下面，避免搬动近 190 行 JSX 引入无谓风险。 */}
-        <div className="flex max-h-[68vh] flex-col gap-3 overflow-y-auto scrollbar pr-1">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto scrollbar pr-1">
           {error && <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px]">{error}</p>}
 
           {/* 新建任务表单常驻展开：任务在跑也照样能再起一个（用户 2026-11-04） */}
@@ -1025,7 +1037,12 @@ export function AnalysisDialog({
         </div>
           </TabsContent>
 
-          <TabsContent value="history">
+          <TabsContent value="history" className="flex min-h-0 flex-1 flex-col">
+            {/* 说明搬到这个 tab（用户 2026-11-05 第 3 条）：讲的是「回测历史、给评分」，
+                放在历史列表顶上才说得通。 */}
+            <p className="mb-2 shrink-0 text-[11px] text-muted-foreground" data-fork-analysis-hint="history">
+              {T.description}
+            </p>
             <AnalysisHistoryTab onOpen={openHistoryRun} reloadKey={historyReload} />
           </TabsContent>
         </Tabs>
