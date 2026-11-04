@@ -675,7 +675,7 @@ export function AnalysisDialog({
           {error && <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px]">{error}</p>}
 
           {/* 新建任务表单常驻展开：任务在跑也照样能再起一个（用户 2026-11-04） */}
-          <div className="order-2 space-y-3" data-fork-analysis-create>
+          <div className="order-2 shrink-0 space-y-3" data-fork-analysis-create>
               <div className="rounded-lg border border-border/60 bg-accent/10 p-3">
                 <p className="mb-2 text-[12px] font-medium">{T.createTitle}</p>
                 <p className="mb-2 text-[10px] text-muted-foreground">{T.createHint}</p>
@@ -863,7 +863,7 @@ export function AnalysisDialog({
           </div>
 
           {mode === 'infer' && inferRun && (
-            <div className="order-1 space-y-3" data-fork-analysis-infer>
+            <div className="order-1 shrink-0 space-y-3" data-fork-analysis-infer>
               <AnalysisInferPanel
                 run={inferRun}
                 finalists={inferFinalists}
@@ -878,7 +878,7 @@ export function AnalysisDialog({
           )}
 
           {mode === 'run' && run && (
-            <div className="order-1 space-y-3" data-fork-analysis-run={run.status}>
+            <div className="order-1 shrink-0 space-y-3" data-fork-analysis-run={run.status}>
               <div className="rounded-lg border border-border/60 bg-accent/10 p-3">
                 <div className="mb-1 flex items-center justify-between text-[11px]">
                   <span className="font-medium">
