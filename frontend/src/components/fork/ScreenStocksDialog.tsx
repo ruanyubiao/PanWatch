@@ -532,6 +532,93 @@ export function ScreenStocksDialog({
     </div>
   )
 
+  /**
+   * 「选择条件」下拉：两个 tab 各渲染一份（用户 2026-11-05：每个 tab 独立一套控件）。
+   *
+   * 两份共用同一份草稿 —— 弹窗里只有一份草稿，所以两边显示的选中项是同一个；
+   * 「独立」指控件独立、每个 tab 里都能选，而不是两份互相看不见的草稿
+   * （否则在 A tab 选了条件、B tab 的预览就会和下拉对不上）。
+   * 选中即把草稿换成那条条件；× 清空回到新增；保存后父组件刷新 presets，两边一起更新。
+   */
+  const presetPickerBlock = (variant: 'use' | 'build') => (
+    <div className="rounded-lg border border-border/60 p-3" data-fork-screen-preset-picker={variant}>
+      <div className="mb-2 text-[12px] font-medium text-foreground">
+        {variant === 'build' ? T.buildConditionTitle : T.useConditionTitle}
+      </div>
+      <div className="group/preset relative w-[240px]">
+        <Select
+          // 换选中项就重挂一次：Radix 的 value 从 undefined 变字符串时会被判成
+          // 「受控/非受控切换」，同一实例上会打警告。
+          key={presetName ?? 'none'}
+          value={presetName ?? undefined}
+          disabled={presets.length === 0}
+          onValueChange={next => onSelectPreset?.(next)}
+        >
+          <SelectTrigger
+            className="h-7 w-[240px] text-[12px]"
+            data-fork-preset-select={variant}
+            aria-label={SCREEN_PRESET_TEXTS_ZH.pickerLabel}
+            title={
+              presets.length === 0
+                ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
+                : SCREEN_PRESET_TEXTS_ZH.pickerLabel
+            }
+          >
+            <SelectValue
+              placeholder={
+                presets.length === 0
+                  ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
+                  : SCREEN_PRESET_TEXTS_ZH.pickerPlaceholder
+              }
+            />
+          </SelectTrigger>
+          <SelectContent className="min-w-[260px]">
+            {presets.map(preset => (
+              <SelectItem
+                key={preset.name}
+                value={preset.name}
+                className="text-[12px]"
+                // 悬停看完整规则，免得同名前缀的两个条件分不清
+                title={formatRule(preset.request.rule, preset.request.trading_days)}
+              >
+                {preset.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {/*
+          × 与下拉箭头完全重合（right-4 + h-4/w-4 == 箭头那个 16px 盒子），
+          不透明底色把箭头盖住，视觉上就是「鼠标移上去箭头变 ×」。
+          - onPointerDown 必须拦：否则 Radix 会当成「点了触发器」直接展开下拉
+          - tabIndex=-1：键盘用户走下拉列表，不给这个隐藏按钮留 Tab 停靠点
+        */}
+        {presetName && (
+          <button
+            type="button"
+            data-fork-preset-clear
+            tabIndex={-1}
+            aria-label={SCREEN_PRESET_TEXTS_ZH.pickerClear}
+            title={SCREEN_PRESET_TEXTS_ZH.pickerClear}
+            className="pointer-events-none absolute right-4 top-1/2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded bg-card text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/preset:pointer-events-auto group-hover/preset:opacity-100"
+            onPointerDown={event => {
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+            onClick={event => {
+              event.stopPropagation()
+              onSelectPreset?.(null)
+            }}
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </div>
+      <div className="mt-1 text-[11px] text-muted-foreground">
+        {variant === 'build' ? T.buildConditionHint : T.useHint}
+      </div>
+    </div>
+  )
+
   return (
     <Dialog open={open} onOpenChange={next => (next ? onOpenChange(true) : handleCancel())}>
       <DialogContent
@@ -554,9 +641,12 @@ export function ScreenStocksDialog({
       >
         <DialogHeader>
           <DialogTitle>{T.title}</DialogTitle>
-          <DialogDescription>
-            {presetName ? SCREEN_PRESET_TEXTS_ZH.editingPreset(presetName) : T.description}
-          </DialogDescription>
+          {/*
+            提示不再放弹窗顶部，而是各自落在 tab 里（用户 2026-11-05 第 1 条）：
+            两个 tab 要说的话不同 —— 顶部那一条在「新建条件」上会被读成「这里是在筛选」。
+            这里只留屏幕阅读器文本，Radix 的 aria-describedby 继续指向它。
+          */}
+          <DialogDescription className="sr-only">{T.description}</DialogDescription>
         </DialogHeader>
 
         <Tabs value={tab} onValueChange={value => setTab(value === 'build' ? 'build' : 'use')}>
@@ -571,6 +661,11 @@ export function ScreenStocksDialog({
 
           {/* 条件选股：选时间 → 选条件 → 预览 → 执行搜索 */}
           <TabsContent value="use" className="mt-2">
+            {/* 顶部提示搬进 tab（用户 2026-11-05 第 1 条）：正在编辑某条已保存条件时
+                换成那一句 —— 「改完点开始选股」只在这个 tab 说得通。 */}
+            <div className="mb-2 text-[11px] text-muted-foreground" data-fork-screen-hint="use">
+              {presetName ? SCREEN_PRESET_TEXTS_ZH.editingPreset(presetName) : T.description}
+            </div>
 
         <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
           {/* 窗口截止日：独立区域，放在基础筛选之前（用户 2026-11-04 第 1 条）。
@@ -614,79 +709,7 @@ export function ScreenStocksDialog({
             </div>
           </div>
 
-              {/* 选择条件：选中即把草稿换成那条条件（相当于编辑），× 清空回到新增 */}
-              <div className="rounded-lg border border-border/60 p-3" data-fork-screen-preset-picker>
-                <div className="mb-2 text-[12px] font-medium text-foreground">{T.useConditionTitle}</div>
-                <div className="group/preset relative w-[240px]">
-                  <Select
-                    // 换选中项就重挂一次：Radix 的 value 从 undefined 变字符串时会被判成
-                    // 「受控/非受控切换」，同一实例上会打警告。
-                    key={presetName ?? 'none'}
-                    value={presetName ?? undefined}
-                    disabled={presets.length === 0}
-                    onValueChange={next => onSelectPreset?.(next)}
-                  >
-                    <SelectTrigger
-                      className="h-7 w-[240px] text-[12px]"
-                      data-fork-preset-select
-                      aria-label={SCREEN_PRESET_TEXTS_ZH.pickerLabel}
-                      title={
-                        presets.length === 0
-                          ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
-                          : SCREEN_PRESET_TEXTS_ZH.pickerLabel
-                      }
-                    >
-                      <SelectValue
-                        placeholder={
-                          presets.length === 0
-                            ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
-                            : SCREEN_PRESET_TEXTS_ZH.pickerPlaceholder
-                        }
-                      />
-                    </SelectTrigger>
-                    <SelectContent className="min-w-[260px]">
-                      {presets.map(preset => (
-                        <SelectItem
-                          key={preset.name}
-                          value={preset.name}
-                          className="text-[12px]"
-                          // 悬停看完整规则，免得同名前缀的两个条件分不清
-                          title={formatRule(preset.request.rule, preset.request.trading_days)}
-                        >
-                          {preset.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {/*
-                    × 与下拉箭头完全重合（right-4 + h-4/w-4 == 箭头那个 16px 盒子），
-                    不透明底色把箭头盖住，视觉上就是「鼠标移上去箭头变 ×」。
-                    - onPointerDown 必须拦：否则 Radix 会当成「点了触发器」直接展开下拉
-                    - tabIndex=-1：键盘用户走下拉列表，不给这个隐藏按钮留 Tab 停靠点
-                  */}
-                  {presetName && (
-                    <button
-                      type="button"
-                      data-fork-preset-clear
-                      tabIndex={-1}
-                      aria-label={SCREEN_PRESET_TEXTS_ZH.pickerClear}
-                      title={SCREEN_PRESET_TEXTS_ZH.pickerClear}
-                      className="pointer-events-none absolute right-4 top-1/2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded bg-card text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/preset:pointer-events-auto group-hover/preset:opacity-100"
-                      onPointerDown={event => {
-                        event.preventDefault()
-                        event.stopPropagation()
-                      }}
-                      onClick={event => {
-                        event.stopPropagation()
-                        onSelectPreset?.(null)
-                      }}
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-                <div className="mt-1 text-[11px] text-muted-foreground">{T.useHint}</div>
-              </div>
+              {presetPickerBlock('use')}
 
               {/* 预览上方点名「现在要搜的是哪一条」：选中的已保存条件，或刚在另一个 tab 编的草稿 */}
               <div className="text-[11px] text-muted-foreground" data-fork-screen-current-preset>
@@ -699,7 +722,14 @@ export function ScreenStocksDialog({
           {/* 新建条件：基础筛选 + 条件树 + 预览 + 保存/删除 */}
           <TabsContent value="build" className="mt-2">
             <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
-              <div className="text-[11px] text-muted-foreground">{T.buildHint}</div>
+              {/* 提示区（用户 2026-11-05 第 1 条）：这个 tab 讲的是「怎么建 / 怎么改」，
+                  正在编辑某条已保存条件时再补一句改完怎么验证。 */}
+              <div className="text-[11px] text-muted-foreground" data-fork-screen-hint="build">
+                {T.buildHint}
+                {presetName ? <div className="mt-0.5">{SCREEN_PRESET_TEXTS_ZH.editingPreset(presetName)}</div> : null}
+              </div>
+
+              {presetPickerBlock('build')}
 
           {/* 基础筛选：先在 MySQL 里过滤，和条件树是「且」。统计窗口 / 市场在这里，
               但预览里会作为条件显示（用户 2026-11-04 第 2 条）。 */}
