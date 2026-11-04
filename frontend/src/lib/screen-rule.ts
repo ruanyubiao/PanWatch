@@ -311,6 +311,19 @@ export const SCREEN_TEXTS_ZH = {
   cancel: '取消',
   submit: '开始选股',
   submitting: '选股中…',
+  /**
+   * 弹窗两个 tab（用户 2026-11-05）：第一个是「用」，第二个是「建」。
+   *
+   * 窗口截止日只属于「用」那一侧 —— 它是执行搜索时的时间点，不是条件本身；
+   * 条件树、基础筛选（统计窗口 / 市场）、保存删除都在「建」那一侧。
+   */
+  tabUse: '条件选股',
+  tabBuild: '新建条件',
+  useTimeTitle: '选择时间',
+  useConditionTitle: '选择条件',
+  useHint: '选中一个已保存条件即可执行搜索；也可以先在「新建条件」里编好，切回来直接搜。',
+  buildHint: '在这里新建或修改条件，保存后可在「条件选股」里选中并执行搜索。',
+  currentCondition: (name: string | null) => (name ? `当前条件：${name}` : '当前条件：尚未保存的草稿'),
   issueSummary: (n: number) => `有 ${n} 处需要修正：`,
   failed: (message: string) => `选股失败：${message}。当前列表未改变。`,
   success: (total: number) => `已筛出 ${total} 只股票`,
