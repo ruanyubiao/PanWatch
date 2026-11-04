@@ -42,6 +42,7 @@ export const ANALYSIS_HISTORY_TAB_TEXTS_ZH = {
     range: '区间',
     train: '推理分',
     test: '测试分',
+    score: '评分',
     scope: '有效范围',
     status: '状态',
     hits: '命中',
@@ -170,8 +171,7 @@ export function AnalysisHistoryTab({
                 <th className="px-2 py-1 text-left font-medium">{T.columns.kind}</th>
                 <th className="px-2 py-1 text-left font-medium">{T.columns.preset}</th>
                 <th className="px-2 py-1 text-left font-medium">{T.columns.range}</th>
-                <th className="px-2 py-1 text-right font-medium">{T.columns.train}</th>
-                <th className="px-2 py-1 text-right font-medium">{T.columns.test}</th>
+                <th className="px-2 py-1 text-right font-medium">{T.columns.score}</th>
                 <th className="px-2 py-1 text-left font-medium">{T.columns.scope}</th>
                 <th className="px-2 py-1 text-left font-medium">{T.columns.status}</th>
                 <th className="px-2 py-1 text-right font-medium">{T.columns.hits}</th>
@@ -202,11 +202,11 @@ export function AnalysisHistoryTab({
                     {rangeText(run)}
                     {run.validate_days ? T.validateSuffix(run.validate_days) : ''}
                   </td>
-                  <td className="px-2 py-1 text-right tabular-nums" data-fork-history-train>
-                    {scoreText(run.score_train)}
-                  </td>
-                  <td className="px-2 py-1 text-right tabular-nums" data-fork-history-test>
-                    {scoreText(run.score_test)}
+                  {/* 分析任务只有一段 → 一个分；条件推理仍有两段 → 显示「搜索 / 验算」 */}
+                  <td className="px-2 py-1 text-right tabular-nums" data-fork-history-score>
+                    {run.kind === 'infer' && run.score_test != null
+                      ? `${scoreText(run.score_train)} / ${scoreText(run.score_test)}`
+                      : scoreText(run.score_train)}
                   </td>
                   <td className="px-2 py-1 whitespace-nowrap text-[10px] text-muted-foreground"
                       data-fork-history-scope={run.scope_label ?? '—'}>
