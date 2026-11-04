@@ -70,7 +70,6 @@ import { BatchAddStocksDialog } from '@/components/fork/BatchAddStocksDialog'
 import { AnalysisDialog, ANALYSIS_DIALOG_TEXTS_ZH } from '@/components/fork/AnalysisDialog'
 import { ScreenStocksDialog } from '@/components/fork/ScreenStocksDialog'
 import { ScreenResultBanner } from '@/components/fork/ScreenResultBanner'
-import { ScreenPresetMenu } from '@/components/fork/ScreenPresetMenu'
 import { SaveConditionDialog } from '@/components/fork/SaveConditionDialog'
 import { screenStocks } from '@/lib/screen-api'
 import {
@@ -494,7 +493,8 @@ export default function StocksPage() {
        screenPresetName 弹窗是从哪个已保存条件打开的（有值时弹窗多一个「删除」）
        saveOpen         保存条件弹窗 */
   const [presets, setPresets] = useState<ScreenPreset[]>([])
-  const [presetName, setPresetName] = useState<string | null>(null)
+  /* 下拉里的选中项已搬到条件选股弹窗内部（用户 2026-11-04 第 1 条），
+     页面只保留 screenPresetName：弹窗当前正在编辑哪个已保存条件。 */
   const [screenPresetName, setScreenPresetName] = useState<string | null>(null)
   const [saveOpen, setSaveOpen] = useState(false)
   /* 要保存的那份请求：弹窗底部「保存」交出的是**当前草稿**（第 5 条），
@@ -954,8 +954,6 @@ export default function StocksPage() {
     try {
       const items = await listPresets()
       setPresets(items)
-      // 删掉/改名之后，下拉里那个已经不存在的选中项要清掉
-      setPresetName(current => (current && items.some(item => item.name === current) ? current : null))
     } catch (exc) {
       const message = exc instanceof Error ? exc.message : String(exc)
       toast(SCREEN_PRESET_TEXTS_ZH.loadFailed(message), 'error')
@@ -989,6 +987,29 @@ export default function StocksPage() {
   )
 
   /**
+   * 弹窗标题下的「选股条件」下拉（用户 2026-11-04 第 1 条）。
+   *
+   * 选中 = 把那个条件的完整请求换进 `initialRequest`，弹窗的 useEffect 依赖它，
+   * 于是下面整块内容被替换成这个条件 —— 这就是原来的「编辑」，不需要第二个按钮。
+   * 传 null = 清空选择，草稿回到「新增条件」的默认状态（也不再加「新建」按钮，
+   * 清空本身就是新建）。
+   */
+  const handlePickScreenPreset = useCallback(
+    (name: string | null) => {
+      if (!name) {
+        setScreenInitial(null)
+        setScreenPresetName(null)
+        return
+      }
+      const preset = presets.find(item => item.name === name)
+      if (!preset) return
+      setScreenInitial({ ...preset.request, rule: fillDefaultParams(preset.request.rule) })
+      setScreenPresetName(preset.name)
+    },
+    [presets],
+  )
+
+  /**
    * 保存条件（名字就是服务器上的文件名）。
    *
    * - 名字没被占用：直接写；
@@ -1017,7 +1038,6 @@ export default function StocksPage() {
         await deletePreset(oldName).catch(() => undefined)
       }
       await reloadPresets()
-      setPresetName(name)
       // 弹窗还开着时把它切成「已保存」状态：删除可用、下次保存预填这个名字
       setScreenPresetName(name)
       toast(SCREEN_PRESET_TEXTS_ZH.saved(name), 'success')
@@ -2145,13 +2165,8 @@ export default function StocksPage() {
         <Filter className="h-3.5 w-3.5" />
         {screenResult ? SCREEN_TEXTS_ZH.buttonActive : SCREEN_TEXTS_ZH.button}
       </Button>
-      {/* 已保存条件下拉 + 编辑：一个条件都没有时两个控件都不可操作 */}
-      <ScreenPresetMenu
-        presets={presets}
-        value={presetName}
-        onChange={setPresetName}
-        onEdit={name => openScreenDialog(name)}
-      />
+      {/* 已保存条件的下拉已搬进条件选股弹窗（用户 2026-11-04 第 1 条），
+          旁边的「编辑」按钮一并去掉 —— 选中即编辑。 */}      
     </div>
   )
 
@@ -2317,6 +2332,8 @@ export default function StocksPage() {
         initialRequest={screenInitial}
         asof={marketAsof}
         presetName={screenPresetName}
+        presets={presets}
+        onSelectPreset={handlePickScreenPreset}
         onDeletePreset={name => void handleDeletePreset(name)}
         onSavePreset={(request, name) => void handleSaveFromDialog(request, name)}
         onResult={(response, request) => setScreenResult({ request, response })}
