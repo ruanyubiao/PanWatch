@@ -180,7 +180,7 @@ describe('条件选股弹窗：标题下的「选股条件」下拉（2026-11-04
     expect(document.querySelector('[data-fork-preset-clear]')).toBeNull()
   })
 
-  it('N8 选一条把名字交出去；已选中时出现叉叉，点它交回 null', async () => {
+  it('N8 选一条把名字交出去；已选中时叉叉在触发框里（不是列表多一行），点它交回 null', async () => {
     const onSelectPreset = vi.fn()
     renderPicker({ presets: [preset('四连阳'), preset('低市值')], onSelectPreset })
 
@@ -195,8 +195,13 @@ describe('条件选股弹窗：标题下的「选股条件」下拉（2026-11-04
     renderPicker({ presets: [preset('四连阳')], presetName: '四连阳', onSelectPreset })
     const clear = document.querySelector('[data-fork-preset-clear]') as HTMLButtonElement
     expect(clear).toBeTruthy()
+    // 叉叉挂在触发框那一块里，且没展开下拉就已经在文档中（用户 2026-11-05：hover 才显形）
+    expect(clear.closest('[data-fork-screen-preset-picker]')).toBeTruthy()
+    expect(screen.queryByRole('listbox')).toBeNull()
     await userEvent.click(clear)
     expect(onSelectPreset).toHaveBeenCalledWith(null)
+    // 点叉叉只清空，不该顺手把下拉打开
+    expect(screen.queryByRole('listbox')).toBeNull()
   })
 
   it('N8b 换了 initialRequest 就换掉下面整块内容；清空回到新增条件', () => {
