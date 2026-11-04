@@ -17,6 +17,7 @@ import {
   DialogTitle,
 } from '@panwatch/base-ui/components/ui/dialog'
 import { useConfirm } from '@panwatch/base-ui/components/ui/confirm-dialog'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@panwatch/base-ui/components/ui/tabs'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
 import {
   MAX_TRADING_DAYS,
@@ -78,6 +79,17 @@ import { SCREEN_PRESET_TEXTS_ZH, type ScreenPreset } from '@/lib/screen-presets'
  */
 
 const T = SCREEN_TEXTS_ZH
+
+/**
+ * 弹窗的两个 tab（用户 2026-11-05）。
+ *
+ * `use`  = 选时间 + 选条件 + 执行搜索（原来整个弹窗的「执行」用途）；
+ * `build` = 基础筛选 + 条件树 + 保存（原来整个弹窗的「编辑」用途）。
+ *
+ * 窗口截止日只属于 `use`：它是执行搜索的时间点，不是条件的一部分 ——
+ * 条件里已经含统计窗口，换截止日不该改条件。
+ */
+type ScreenDialogTab = 'use' | 'build'
 
 /**
  * 统计窗口默认值（交易日）。
@@ -315,6 +327,11 @@ export function ScreenStocksDialog({
   const { toast } = useToast()
   const askConfirm = useConfirm()
   const [form, setForm] = useState<DraftForm>(() => toDraft(initialRequest ?? null))
+  /**
+   * 默认落在「条件选股」那个 tab：打开弹窗的第一件事通常是选条件执行搜索。
+   * 草稿在两个 tab 之间共享 —— 在「新建条件」里改的内容，切回来就能直接搜。
+   */
+  const [tab, setTab] = useState<ScreenDialogTab>('use')
   const [issues, setIssues] = useState<ValidationIssue[]>([])
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -330,6 +347,8 @@ export function ScreenStocksDialog({
       setSubmitted(false)
       setSubmitting(false)
       setError(null)
+      // 每次打开都从「条件选股」开始；关掉再开不应该停在上次的编辑态
+      setTab('use')
     }
   }, [open, initialRequest])
 
@@ -494,6 +513,25 @@ export function ScreenStocksDialog({
 
   const formDisabled = submitting
 
+  /**
+   * 规则预览块：两个 tab 都要有。
+   *
+   * 「条件选股」那一侧要看到选中条件的完整规则，「新建条件」那一侧要边改边看，
+   * 所以抽成一块、两处渲染。Radix 的 TabsContent 会把非激活内容卸载，
+   * 同一时刻 DOM 里只有一个预览框。
+   */
+  const previewBlock = (
+    <div className="space-y-1">
+      <div className="text-[11px] text-muted-foreground">{T.previewTitle}</div>
+      <div
+        className="rounded-md border border-dashed border-border px-2 py-1.5 font-mono text-[11px] text-foreground"
+        data-fork-screen-preview
+      >
+        {preview}
+      </div>
+    </div>
+  )
+
   return (
     <Dialog open={open} onOpenChange={next => (next ? onOpenChange(true) : handleCancel())}>
       <DialogContent
@@ -515,96 +553,31 @@ export function ScreenStocksDialog({
         }}
       >
         <DialogHeader>
-          <div className="flex flex-wrap items-center gap-3" data-fork-screen-preset-picker>
-            <DialogTitle>{T.title}</DialogTitle>
-            {/*
-              选股条件：标题右边的下拉（用户 2026-11-05：从标题下方挪到标题右侧）。
-              选中 → 下面内容整个换成那个条件（相当于「编辑」）；清空 → 回到新增条件。
-              × 在触发框内部右侧：平时是下拉箭头，鼠标移到框上时箭头被 × 盖住
-              （用户 2026-11-05 要求做成截图的 hover 效果，不再往下拉列表里塞一行「清除选择」）。
-              放在 fieldset 外面：草稿整体禁用时它仍然要能操作。
-            */}
-            <div className="group/preset relative w-[200px]">
-              <Select
-                // 换选中项就重挂一次：Radix 的 value 从 undefined 变字符串时会被判成
-                // 「受控/非受控切换」，同一实例上会打警告。
-                key={presetName ?? 'none'}
-                value={presetName ?? undefined}
-                disabled={presets.length === 0}
-                onValueChange={next => onSelectPreset?.(next)}
-              >
-                <SelectTrigger
-                  className="h-7 w-[200px] text-[12px]"
-                  data-fork-preset-select
-                  aria-label={SCREEN_PRESET_TEXTS_ZH.pickerLabel}
-                  title={
-                    presets.length === 0
-                      ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
-                      : SCREEN_PRESET_TEXTS_ZH.pickerLabel
-                  }
-                >
-                  <SelectValue
-                    placeholder={
-                      presets.length === 0
-                        ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
-                        : SCREEN_PRESET_TEXTS_ZH.pickerPlaceholder
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent className="min-w-[220px]">
-                  {presets.map(preset => (
-                    <SelectItem
-                      key={preset.name}
-                      value={preset.name}
-                      className="text-[12px]"
-                      // 悬停看完整规则，免得同名前缀的两个条件分不清
-                      title={formatRule(preset.request.rule, preset.request.trading_days)}
-                    >
-                      {preset.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              {/*
-                清空按钮：浮在触发框右侧、与下拉箭头完全重合（right-4 + h-4/w-4 == 箭头那个
-                16px 盒子），不透明底色把箭头盖住，所以视觉上就是「箭头变成 ×」，
-                不用去改共享的 SelectTrigger。
-                - onPointerDown 必须拦：否则 Radix 会当成「点了触发器」直接展开下拉
-                - tabIndex=-1：键盘用户走下拉列表，不给这个隐藏按钮留 Tab 停靠点
-              */}
-              {presetName && (
-                <button
-                  type="button"
-                  data-fork-preset-clear
-                  tabIndex={-1}
-                  aria-label={SCREEN_PRESET_TEXTS_ZH.pickerClear}
-                  title={SCREEN_PRESET_TEXTS_ZH.pickerClear}
-                  className="pointer-events-none absolute right-4 top-1/2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded bg-card text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/preset:pointer-events-auto group-hover/preset:opacity-100"
-                  onPointerDown={event => {
-                    event.preventDefault()
-                    event.stopPropagation()
-                  }}
-                  onClick={event => {
-                    event.stopPropagation()
-                    onSelectPreset?.(null)
-                  }}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
+          <DialogTitle>{T.title}</DialogTitle>
           <DialogDescription>
             {presetName ? SCREEN_PRESET_TEXTS_ZH.editingPreset(presetName) : T.description}
           </DialogDescription>
         </DialogHeader>
+
+        <Tabs value={tab} onValueChange={value => setTab(value === 'build' ? 'build' : 'use')}>
+          <TabsList className="mb-1" data-fork-screen-tabs>
+            <TabsTrigger value="use" data-fork-screen-tab="use">
+              {T.tabUse}
+            </TabsTrigger>
+            <TabsTrigger value="build" data-fork-screen-tab="build">
+              {T.tabBuild}
+            </TabsTrigger>
+          </TabsList>
+
+          {/* 条件选股：选时间 → 选条件 → 预览 → 执行搜索 */}
+          <TabsContent value="use" className="mt-2">
 
         <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
           {/* 窗口截止日：独立区域，放在基础筛选之前（用户 2026-11-04 第 1 条）。
               不勾「启用」= 库里最新交易日；勾上后从这天往前数「统计窗口」个交易日。
               非交易日（周末/长假）由后端落到 ≤ 它的最大交易日，所以这里不拦。 */}
           <div className="rounded-lg border border-border/60 p-3" data-fork-screen-asof>
-            <div className="mb-2 text-[12px] font-medium text-foreground">{T.asofLabel}</div>
+            <div className="mb-2 text-[12px] font-medium text-foreground">{T.useTimeTitle}</div>
             <div className="flex flex-wrap items-center gap-2">
               <input
                 type="date"
@@ -640,6 +613,93 @@ export function ScreenStocksDialog({
               <span className="text-[11px] text-muted-foreground">{T.asofHint}</span>
             </div>
           </div>
+
+              {/* 选择条件：选中即把草稿换成那条条件（相当于编辑），× 清空回到新增 */}
+              <div className="rounded-lg border border-border/60 p-3" data-fork-screen-preset-picker>
+                <div className="mb-2 text-[12px] font-medium text-foreground">{T.useConditionTitle}</div>
+                <div className="group/preset relative w-[240px]">
+                  <Select
+                    // 换选中项就重挂一次：Radix 的 value 从 undefined 变字符串时会被判成
+                    // 「受控/非受控切换」，同一实例上会打警告。
+                    key={presetName ?? 'none'}
+                    value={presetName ?? undefined}
+                    disabled={presets.length === 0}
+                    onValueChange={next => onSelectPreset?.(next)}
+                  >
+                    <SelectTrigger
+                      className="h-7 w-[240px] text-[12px]"
+                      data-fork-preset-select
+                      aria-label={SCREEN_PRESET_TEXTS_ZH.pickerLabel}
+                      title={
+                        presets.length === 0
+                          ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
+                          : SCREEN_PRESET_TEXTS_ZH.pickerLabel
+                      }
+                    >
+                      <SelectValue
+                        placeholder={
+                          presets.length === 0
+                            ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
+                            : SCREEN_PRESET_TEXTS_ZH.pickerPlaceholder
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent className="min-w-[260px]">
+                      {presets.map(preset => (
+                        <SelectItem
+                          key={preset.name}
+                          value={preset.name}
+                          className="text-[12px]"
+                          // 悬停看完整规则，免得同名前缀的两个条件分不清
+                          title={formatRule(preset.request.rule, preset.request.trading_days)}
+                        >
+                          {preset.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {/*
+                    × 与下拉箭头完全重合（right-4 + h-4/w-4 == 箭头那个 16px 盒子），
+                    不透明底色把箭头盖住，视觉上就是「鼠标移上去箭头变 ×」。
+                    - onPointerDown 必须拦：否则 Radix 会当成「点了触发器」直接展开下拉
+                    - tabIndex=-1：键盘用户走下拉列表，不给这个隐藏按钮留 Tab 停靠点
+                  */}
+                  {presetName && (
+                    <button
+                      type="button"
+                      data-fork-preset-clear
+                      tabIndex={-1}
+                      aria-label={SCREEN_PRESET_TEXTS_ZH.pickerClear}
+                      title={SCREEN_PRESET_TEXTS_ZH.pickerClear}
+                      className="pointer-events-none absolute right-4 top-1/2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded bg-card text-muted-foreground opacity-0 transition-opacity hover:text-foreground group-hover/preset:pointer-events-auto group-hover/preset:opacity-100"
+                      onPointerDown={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                      }}
+                      onClick={event => {
+                        event.stopPropagation()
+                        onSelectPreset?.(null)
+                      }}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="mt-1 text-[11px] text-muted-foreground">{T.useHint}</div>
+              </div>
+
+              {/* 预览上方点名「现在要搜的是哪一条」：选中的已保存条件，或刚在另一个 tab 编的草稿 */}
+              <div className="text-[11px] text-muted-foreground" data-fork-screen-current-preset>
+                {T.currentCondition(presetName)}
+              </div>
+              {previewBlock}
+            </fieldset>
+          </TabsContent>
+
+          {/* 新建条件：基础筛选 + 条件树 + 预览 + 保存/删除 */}
+          <TabsContent value="build" className="mt-2">
+            <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
+              <div className="text-[11px] text-muted-foreground">{T.buildHint}</div>
 
           {/* 基础筛选：先在 MySQL 里过滤，和条件树是「且」。统计窗口 / 市场在这里，
               但预览里会作为条件显示（用户 2026-11-04 第 2 条）。 */}
@@ -756,18 +816,11 @@ export function ScreenStocksDialog({
             />
           </div>
 
-          {/* 规则预览 */}
-          <div className="space-y-1">
-            <div className="text-[11px] text-muted-foreground">{T.previewTitle}</div>
-            <div
-              className="rounded-md border border-dashed border-border px-2 py-1.5 font-mono text-[11px] text-foreground"
-              data-fork-screen-preview
-            >
-              {preview}
-            </div>
-            {conflict ? <div className="text-[11px] text-muted-foreground">{T.conflictHint}</div> : null}
-          </div>
-        </fieldset>
+          {previewBlock}
+          {conflict ? <div className="text-[11px] text-muted-foreground">{T.conflictHint}</div> : null}
+            </fieldset>
+          </TabsContent>
+        </Tabs>
 
         {shownIssues.length > 0 ? (
           <div className="rounded-md border border-destructive/50 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive" data-fork-screen-issues>
@@ -794,46 +847,54 @@ export function ScreenStocksDialog({
               : T.footerMetaNoAsOf(bars, conditions, depth)}
           </div>
           <div className="flex items-center gap-1.5">
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              className="h-7 px-2 text-[12px] disabled:opacity-40"
-              disabled={!presetName || submitting || !onDeletePreset}
-              title={presetName ? undefined : SCREEN_PRESET_TEXTS_ZH.deleteDisabled}
-              onClick={() => {
-                if (presetName && onDeletePreset) onDeletePreset(presetName)
-              }}
-              data-fork-screen-delete-preset
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              {SCREEN_PRESET_TEXTS_ZH.delete}
-            </Button>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className="h-7 px-2 text-[12px]"
-              disabled={submitting || !onSavePreset}
-              onClick={() => void handleSave()}
-              data-fork-screen-save-preset
-            >
-              <Save className="h-3.5 w-3.5" />
-              {/* 文案永远是「保存」（用户第 2 条）：覆盖保存时行为仍是覆盖，只是不再换词 —— 
-                  同一个按钮一会儿叫保存一会儿叫覆盖保存，看着像两个功能。 */}
-              {SCREEN_PRESET_TEXTS_ZH.dialogSave}
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              className="h-7 px-2 text-[12px]"
-              disabled={submitting || (submitted && liveIssues.length > 0)}
-              onClick={() => void handleSubmit()}
-              data-fork-screen-submit
-            >
-              {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Filter className="h-3.5 w-3.5" />}
-              {submitting ? T.submitting : T.submit}
-            </Button>
+            {/* 两个 tab 的动作不同（用户 2026-11-05）：
+                「新建条件」= 删除 / 保存；「条件选股」= 执行搜索。
+                执行搜索用当前草稿（可能是在另一个 tab 刚改过的未保存条件）。 */}
+            {tab === 'build' ? (
+              <>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  className="h-7 px-2 text-[12px] disabled:opacity-40"
+                  disabled={!presetName || submitting || !onDeletePreset}
+                  title={presetName ? undefined : SCREEN_PRESET_TEXTS_ZH.deleteDisabled}
+                  onClick={() => {
+                    if (presetName && onDeletePreset) onDeletePreset(presetName)
+                  }}
+                  data-fork-screen-delete-preset
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {SCREEN_PRESET_TEXTS_ZH.delete}
+                </Button>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  className="h-7 px-2 text-[12px]"
+                  disabled={submitting || !onSavePreset}
+                  onClick={() => void handleSave()}
+                  data-fork-screen-save-preset
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  {/* 文案永远是「保存」：覆盖保存时行为仍是覆盖，只是不再换词 ——
+                      同一个按钮一会儿叫保存一会儿叫覆盖保存，看着像两个功能。 */}
+                  {SCREEN_PRESET_TEXTS_ZH.dialogSave}
+                </Button>
+              </>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 px-2 text-[12px]"
+                disabled={submitting || (submitted && liveIssues.length > 0)}
+                onClick={() => void handleSubmit()}
+                data-fork-screen-submit
+              >
+                {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Filter className="h-3.5 w-3.5" />}
+                {submitting ? T.submitting : T.submit}
+              </Button>
+            )}
           </div>
         </div>
       </DialogContent>
