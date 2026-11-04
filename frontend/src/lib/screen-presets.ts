@@ -54,8 +54,7 @@ export const SCREEN_PRESET_TEXTS_ZH = {
    * 工具条上的下拉搬进弹窗，编辑按钮去掉 —— 选一个就把内容填进来，本身就是编辑）。
    */
   pickerLabel: '选股条件',
-  pickerPlaceholder: '新增条件（未选择）',
-  pickerHint: '选一个已保存的条件会替换下面的内容；点 × 清空，回到新增条件',
+  pickerPlaceholder: '请选择条件',
   pickerClear: '清除选择，回到新增条件',
   editingPreset: (name: string) => `正在编辑已保存条件「${name}」：改完点「开始选股」查看结果。`,
   summary: (name: string) => `「${name}」`,
