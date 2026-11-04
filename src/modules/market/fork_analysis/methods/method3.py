@@ -837,6 +837,19 @@ def _empty_report(meta: dict[str, Any], params: dict[str, Any], events: Sequence
     )
 
 
+def _coverage(usable: Sequence[dict[str, Any]], total_n: int) -> float:
+    """有效分类覆盖的信号比例（按单个维度去重，取最大的那一维）。"""
+    if not total_n:
+        return 0.0
+    by_level: dict[str, int] = {}
+    for item in usable:
+        key = str(item.get("level") or "")
+        by_level[key] = by_level.get(key, 0) + int(item.get("n") or 0)
+    if not by_level:
+        return 0.0
+    return min(100.0, max(by_level.values()) / total_n * 100.0)
+
+
 def _headline(signal: Sequence[tuple], windows_rows: Sequence[dict[str, Any]],
               best: dict[str, Any], p_any: Optional[float], base_any: Optional[float],
               usable: Sequence[dict[str, Any]], usable_n: int, total_n: int,
@@ -845,7 +858,10 @@ def _headline(signal: Sequence[tuple], windows_rows: Sequence[dict[str, Any]],
     best_pp = best.get("excess_pp")
     t_value = best.get("t")
     significant = bool(best_pp is not None and t_value is not None and abs(t_value) >= 2.0)
-    cover = (usable_n / total_n * 100.0) if total_n else 0.0
+    # 分类维度之间会重复计数（同一条信号既在一个行业、又在一个市值档……），
+    # 把各分类样本数直接相加能超过 100%（线上真出现过「覆盖 521.1%」）。
+    # 所以按维度分别求和、取最大的那一个：这是「至少覆盖」的下界。
+    cover = _coverage(usable, total_n)
 
     metrics = [
         metric("p_any", "总盈利概率", round(p_any, 2) if p_any is not None else None, "%",
@@ -884,7 +900,7 @@ def _headline(signal: Sequence[tuple], windows_rows: Sequence[dict[str, Any]],
                 f"{_fmt(best.get('base_p'))}%（{_signed(best_pp)}pp，t={_fmt(t_value, 2)}）。"
                 f"只有 {top['level_label']}「{top['value']}」勉强过线"
                 f"（{_fmt(top['p_net'])}% 对 {_fmt(top['base_p'])}%，{_signed(top['excess_pp'])}pp，"
-                f"q={_fmt(top['q'])}），但只覆盖 {cover:.1f}% 的信号，不足以支撑「这个条件能用」。"
+                f"q={_fmt(top['q'])}），但至少覆盖 {cover:.1f}% 的信号仍不足以支撑「这个条件能用」。"
             ),
             metrics=metrics,
         )
@@ -892,7 +908,7 @@ def _headline(signal: Sequence[tuple], windows_rows: Sequence[dict[str, Any]],
     if usable:
         top = usable[0]
         head = (
-            f"只在 {len(usable)} 个分类里有效（覆盖 {cover:.1f}% 的信号）："
+            f"只在 {len(usable)} 个分类里有效（至少覆盖 {cover:.1f}% 的信号）："
             f"{top['level_label']}「{top['value']}」{top['best_window']} 日 "
             f"{_fmt(top['p_net'])}%（基准 {_fmt(top['base_p'])}%，{_signed(top['excess_pp'])}pp）"
         )
