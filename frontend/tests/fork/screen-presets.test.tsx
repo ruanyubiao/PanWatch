@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '@panwatch/base-ui/components/ui/toast'
@@ -222,18 +222,31 @@ describe('条件选股弹窗：标题下的「选股条件」下拉（2026-11-04
 })
 
 describe('条件弹窗：已保存条件模式', () => {
-  const renderDialog = (over: Partial<React.ComponentProps<typeof ScreenStocksDialog>> = {}) => {
+  /**
+   * 弹窗拆成两个 tab 后（用户 2026-11-05）：默认「条件选股」，
+   * 保存 / 删除按钮在「新建条件」里，所以那些用例要传 tab='build'。
+   */
+  const renderDialog = (
+    over: Partial<React.ComponentProps<typeof ScreenStocksDialog>> = {},
+    tab: 'use' | 'build' = 'use',
+  ) => {
     const onResult = vi.fn()
     render(
       <ToastProvider>
         <ScreenStocksDialog open onOpenChange={vi.fn()} onResult={onResult} asof="2026-10-20" {...over} />
       </ToastProvider>,
     )
+    if (tab === 'build') {
+      // Radix 的 TabsTrigger 靠 mousedown 激活（click 不触发），这里必须用 mouseDown
+      fireEvent.mouseDown(document.querySelector('[data-fork-screen-tab="build"]') as HTMLElement, {
+        button: 0,
+      })
+    }
     return { onResult }
   }
 
   it('N9 删除按钮一直在：没保存过时禁用；从已保存条件打开时可用，且排在「保存」前面', () => {
-    renderDialog()
+    renderDialog({}, 'build')
     // 第 5 条：删除按钮不再是「只有编辑模式才出现」，而是常在 + 禁用
     const disabled = document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement
     expect(disabled).toBeTruthy()
@@ -243,11 +256,14 @@ describe('条件弹窗：已保存条件模式', () => {
     cleanup()
 
     const onDeletePreset = vi.fn()
-    renderDialog({
-      initialRequest: baseRequest(),
-      presetName: '四连阳',
-      onDeletePreset,
-    })
+    renderDialog(
+      {
+        initialRequest: baseRequest(),
+        presetName: '四连阳',
+        onDeletePreset,
+      },
+      'build',
+    )
 
     const remove = document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement
     const save = document.querySelector('[data-fork-screen-save-preset]') as HTMLButtonElement
@@ -264,7 +280,7 @@ describe('条件弹窗：已保存条件模式', () => {
 
   it('N9b 弹窗「保存」交出去的是当前草稿：没保存过 → name=null；已保存 → 带上原名', async () => {
     const onSavePreset = vi.fn()
-    renderDialog({ onSavePreset })
+    renderDialog({ onSavePreset }, 'build')
 
     await userEvent.click(document.querySelector('[data-fork-screen-save-preset]') as HTMLElement)
     expect(onSavePreset).toHaveBeenCalledTimes(1)
@@ -279,7 +295,7 @@ describe('条件弹窗：已保存条件模式', () => {
     cleanup()
 
     const overlay = vi.fn()
-    renderDialog({ initialRequest: baseRequest(), presetName: '四连阳', onSavePreset: overlay })
+    renderDialog({ initialRequest: baseRequest(), presetName: '四连阳', onSavePreset: overlay }, 'build')
     await userEvent.click(document.querySelector('[data-fork-screen-save-preset]') as HTMLElement)
     // 已保存过的也照旧只交出「请求 + 原名」，由页面弹输入框（名字预填原名，可改名）
     expect(overlay.mock.calls[0][1]).toBe('四连阳')
@@ -287,7 +303,7 @@ describe('条件弹窗：已保存条件模式', () => {
   })
 
   it('N10 已保存条件的完整请求被回填（窗口 / 市值条件 / 条件树）', () => {
-    renderDialog({ initialRequest: baseRequest(), presetName: '四连阳' })
+    renderDialog({ initialRequest: baseRequest(), presetName: '四连阳' }, 'build')
 
     const days = document.querySelector<HTMLInputElement>('[data-screen-field="trading_days"]')!
     expect(days.value).toBe('30')
