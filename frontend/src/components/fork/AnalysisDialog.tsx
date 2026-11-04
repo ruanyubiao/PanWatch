@@ -1,12 +1,12 @@
 /**
- * 「数据分析」弹窗（三态：未开始 / 进行中 / 已完成）。
+ * 「数据分析」弹窗（两个 tab：创建任务 / 历史任务）。
  *
- * 未开始：选一个已保存条件 + 日期区间 + 股票范围 → 创建任务
- * 进行中：进度条、已完成天数、命中数、预计剩余、停止按钮、最近完成的日期
- * 已完成（含已停止）：结论卡 + 六周期柱状图 + 前 10 名个股排行 + 完整报告 / Excel
+ * 创建任务 tab 里是「上下两块」而不是互斥的两个页面（用户 2026-11-04）：
+ *   上面：最近一次任务的面板（进行中 → 进度与停止；已结束 → 结果）
+ *   下面：新建任务表单，常驻展开，随时可以再起一个任务
+ * 所以不再有「新建任务」按钮：表单一直都在，没有页面需要切回去。
  *
- * 任务在后端线程里跑（页面可以关）。重新打开弹窗时如果有任务在跑，直接进「进行中」，
- * 不用用户自己找 —— 否则关掉弹窗就再也看不到进度了。
+ * 历史任务 tab：分析 + 条件推理两类任务混排。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BarChart3, Download, ExternalLink, Play, Square } from 'lucide-react'
@@ -125,7 +125,6 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
   resultPending: '正在计算统计结果…',
   excel: '下载 Excel',
   excelPending: 'Excel 生成中',
-  newTask: '新建任务',
   tabCreate: '创建任务',
   tabHistory: '历史任务',
   historyTitle: '历史记录',
@@ -347,9 +346,11 @@ export function AnalysisDialog({
     }
   }, [T, open, reset])
 
-  // 预估交易日数（条件 / 区间变了才问）
+  // 预估交易日数（条件 / 区间变了才问）。
+  // 表单常驻在「创建任务」tab 里，所以判断条件从 mode 改成 tab：
+  // 用 mode 的话，任务一进入进行中就再也拿不到新的预估了（用户 2026-11-04）。
   useEffect(() => {
-    if (!open || mode !== 'create' || !form.preset || !form.startDate) {
+    if (!open || tab !== 'create' || !form.preset || !form.startDate) {
       setPreview(null)
       return
     }
@@ -384,7 +385,7 @@ export function AnalysisDialog({
       cancelled = true
       window.clearTimeout(handle)
     }
-  }, [form.endDate, form.method, form.preset, form.startDate, form.validateDays, mode, open])
+  }, [form.endDate, form.method, form.preset, form.startDate, form.validateDays, open, tab])
 
   // 进行中：轮询；到终态后拉统计
   useEffect(() => {
@@ -506,8 +507,9 @@ export function AnalysisDialog({
   }
 
   // ---- 条件推理：轮询 + 终态拉结果
+  // 不绑在 mode 上：面板切到上面的分析任务时，推理还在后台跑，进度也得继续更新
   useEffect(() => {
-    if (!open || mode !== 'infer' || !inferRun) return
+    if (!open || !inferRun) return
     const active = ['pending', 'running', 'paused'].includes(inferRun.status) && inferRun.alive !== false
     if (!active) return
     const handle = window.setInterval(() => {
@@ -667,11 +669,13 @@ export function AnalysisDialog({
           </TabsList>
 
           <TabsContent value="create">
-        <div className="max-h-[68vh] overflow-y-auto scrollbar pr-1">
-          {error && <p className="mb-2 rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px]">{error}</p>}
+        {/* 视觉顺序 = 上面的任务面板 → 下面的新建表单（用户 2026-11-04）。
+            表单在 DOM 里靠前，用 order 提到下面，避免搬动近 190 行 JSX 引入无谓风险。 */}
+        <div className="flex max-h-[68vh] flex-col gap-3 overflow-y-auto scrollbar pr-1">
+          {error && <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px]">{error}</p>}
 
-          {mode === 'create' && (
-            <div className="space-y-3" data-fork-analysis-create>
+          {/* 新建任务表单常驻展开：任务在跑也照样能再起一个（用户 2026-11-04） */}
+          <div className="order-2 space-y-3" data-fork-analysis-create>
               <div className="rounded-lg border border-border/60 bg-accent/10 p-3">
                 <p className="mb-2 text-[12px] font-medium">{T.createTitle}</p>
                 <p className="mb-2 text-[10px] text-muted-foreground">{T.createHint}</p>
@@ -856,12 +860,10 @@ export function AnalysisDialog({
                   {submitting ? T.creating : T.create}
                 </Button>
               </div>
-
-            </div>
-          )}
+          </div>
 
           {mode === 'infer' && inferRun && (
-            <div className="space-y-3" data-fork-analysis-infer>
+            <div className="order-1 space-y-3" data-fork-analysis-infer>
               <AnalysisInferPanel
                 run={inferRun}
                 finalists={inferFinalists}
@@ -872,16 +874,11 @@ export function AnalysisDialog({
                 onStop={() => void handleInferControl('stop')}
                 onSave={item => void handleSaveInfer(item)}
               />
-              <div className="flex items-center gap-2">
-                <Button size="sm" variant="ghost" className="h-7 px-3 text-[12px]" onClick={reset}>
-                  {T.newTask}
-                </Button>
-              </div>
             </div>
           )}
 
           {mode === 'run' && run && (
-            <div className="space-y-3" data-fork-analysis-run={run.status}>
+            <div className="order-1 space-y-3" data-fork-analysis-run={run.status}>
               <div className="rounded-lg border border-border/60 bg-accent/10 p-3">
                 <div className="mb-1 flex items-center justify-between text-[11px]">
                   <span className="font-medium">
@@ -990,9 +987,6 @@ export function AnalysisDialog({
                       <Download className="h-3.5 w-3.5" />
                       {T.excel}
                     </Button>
-                    <Button size="sm" variant="ghost" className="h-7 px-3 text-[12px]" onClick={reset}>
-                      {T.newTask}
-                    </Button>
                   </div>
                 </div>
               )}
@@ -1016,9 +1010,6 @@ export function AnalysisDialog({
                     >
                       <ExternalLink className="h-3.5 w-3.5" />
                       {T.fullReport}
-                    </Button>
-                    <Button size="sm" variant="ghost" className="h-7 px-3 text-[12px]" onClick={reset}>
-                      {T.newTask}
                     </Button>
                   </div>
                 </div>
