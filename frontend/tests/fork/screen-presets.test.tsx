@@ -3,7 +3,6 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ToastProvider } from '@panwatch/base-ui/components/ui/toast'
 import { SaveConditionDialog } from '@/components/fork/SaveConditionDialog'
-import { ScreenPresetMenu } from '@/components/fork/ScreenPresetMenu'
 import { ScreenStocksDialog } from '@/components/fork/ScreenStocksDialog'
 import { SCREEN_PRESET_TEXTS_ZH, presetNameError } from '@/lib/screen-presets'
 import type { ScreenRequest } from '@/lib/screen-rule'
@@ -14,7 +13,7 @@ import type { ScreenRequest } from '@/lib/screen-rule'
  * 钉住的是用户点得到的那几条：
  *   名字 = 文件名，所以 32 个字符上限、`/` 这类字符要**当场**拦住；
  *   保存弹窗的输入框自己限长，但列表和确认按钮也得跟着灰；
- *   一个条件都没有时，下拉与编辑**都不能操作**；
+ *   一个条件都没有时，弹窗里的下拉**不能操作**；
  *   只有「从已保存条件进来」的弹窗才在「取消」前面多一个「删除」。
  */
 
@@ -147,34 +146,73 @@ describe('保存条件弹窗', () => {
   })
 })
 
-describe('已保存条件下拉 + 编辑', () => {
-  it('N7 一个条件都没有时，下拉与编辑都不能操作', () => {
-    render(<ScreenPresetMenu presets={[]} value={null} onChange={vi.fn()} onEdit={vi.fn()} />)
+describe('条件选股弹窗：标题下的「选股条件」下拉（2026-11-04 第 1 条）', () => {
+  const renderPicker = (over: Partial<React.ComponentProps<typeof ScreenStocksDialog>> = {}) => {
+    const props = {
+      open: true,
+      onOpenChange: vi.fn(),
+      onResult: vi.fn(),
+      asof: '2026-10-20',
+      ...over,
+    }
+    const utils = render(
+      <ToastProvider>
+        <ScreenStocksDialog {...props} />
+      </ToastProvider>,
+    )
+    /** 换 props 再渲染一次：模拟用户在页面下拉里切换 / 清空 */
+    const rerenderWith = (next: Partial<React.ComponentProps<typeof ScreenStocksDialog>>) =>
+      utils.rerender(
+        <ToastProvider>
+          <ScreenStocksDialog {...props} {...next} />
+        </ToastProvider>,
+      )
+    return { rerenderWith }
+  }
+
+  it('N7 一个条件都没有时下拉禁用、提示「暂无已保存条件」、没有叉叉', () => {
+    renderPicker()
 
     const trigger = document.querySelector('[data-fork-preset-select]') as HTMLButtonElement
-    const edit = screen.getByRole('button', { name: /编辑/ }) as HTMLButtonElement
+    expect(trigger).toBeTruthy()
     expect(trigger.disabled).toBe(true)
-    expect(edit.disabled).toBe(true)
     expect(screen.getByText(SCREEN_PRESET_TEXTS_ZH.menuEmpty)).toBeTruthy()
+    expect(document.querySelector('[data-fork-preset-clear]')).toBeNull()
   })
 
-  it('N8 有已保存条件时能选、只有选中后才点得动编辑', async () => {
-    const onChange = vi.fn()
-    const onEdit = vi.fn()
-    const presets = [preset('四连阳'), preset('低市值')]
-    render(<ScreenPresetMenu presets={presets} value={null} onChange={onChange} onEdit={onEdit} />)
+  it('N8 选一条把名字交出去；已选中时出现叉叉，点它交回 null', async () => {
+    const onSelectPreset = vi.fn()
+    renderPicker({ presets: [preset('四连阳'), preset('低市值')], onSelectPreset })
 
-    const edit = screen.getByRole('button', { name: /编辑/ }) as HTMLButtonElement
-    expect(edit.disabled).toBe(true) // 还没选
+    // 没选中 → 不显示叉叉
+    expect(document.querySelector('[data-fork-preset-clear]')).toBeNull()
 
     await userEvent.click(document.querySelector('[data-fork-preset-select]') as HTMLElement)
     await userEvent.click(await screen.findByRole('option', { name: '四连阳' }))
-    expect(onChange).toHaveBeenCalledWith('四连阳')
+    expect(onSelectPreset).toHaveBeenCalledWith('四连阳')
 
     cleanup()
-    render(<ScreenPresetMenu presets={presets} value="四连阳" onChange={onChange} onEdit={onEdit} />)
-    await userEvent.click(screen.getByRole('button', { name: /编辑/ }))
-    expect(onEdit).toHaveBeenCalledWith('四连阳')
+    renderPicker({ presets: [preset('四连阳')], presetName: '四连阳', onSelectPreset })
+    const clear = document.querySelector('[data-fork-preset-clear]') as HTMLButtonElement
+    expect(clear).toBeTruthy()
+    await userEvent.click(clear)
+    expect(onSelectPreset).toHaveBeenCalledWith(null)
+  })
+
+  it('N8b 换了 initialRequest 就换掉下面整块内容；清空回到新增条件', () => {
+    const { rerenderWith } = renderPicker({ presets: [preset('四连阳')] })
+    const previewText = () => document.querySelector('[data-fork-screen-preview]')?.textContent || ''
+
+    // 新增条件：条件树是空的
+    expect(previewText()).not.toContain('连续')
+
+    // 选中「四连阳」→ 规则预览换成这个条件的内容
+    rerenderWith({ presetName: '四连阳', initialRequest: baseRequest() })
+    expect(previewText()).toContain('连续')
+
+    // 点叉叉清空 → 内容删除，回到新增条件
+    rerenderWith({ presetName: null, initialRequest: null })
+    expect(previewText()).not.toContain('连续')
   })
 })
 

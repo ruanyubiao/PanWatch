@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Filter, Loader2, Save, Trash2 } from 'lucide-react'
+import { Filter, Loader2, Save, Trash2, X } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Switch } from '@panwatch/base-ui/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@panwatch/base-ui/components/ui/select'
 import {
   Dialog,
   DialogContent,
@@ -49,7 +56,7 @@ import {
 } from '@/components/fork/ScreenStepButtons'
 import { ScreenConditionGroup, type ScreenTreeHandlers } from '@/components/fork/ScreenConditionGroup'
 import { screenStocks } from '@/lib/screen-api'
-import { SCREEN_PRESET_TEXTS_ZH } from '@/lib/screen-presets'
+import { SCREEN_PRESET_TEXTS_ZH, type ScreenPreset } from '@/lib/screen-presets'
 
 /**
  * fork 专用：条件选股弹窗（需求规格 §5.2 / §5.3 / §5.4 / §6）。
@@ -269,6 +276,8 @@ export function ScreenStocksDialog({
   asof,
   onResult,
   presetName = null,
+  presets = [],
+  onSelectPreset,
   onDeletePreset,
   onSavePreset,
 }: {
@@ -282,6 +291,16 @@ export function ScreenStocksDialog({
    * 底部「保存」变成「覆盖保存」、「删除」可用。
    */
   presetName?: string | null
+  /** 标题下那个「选股条件」下拉的全部选项（用户 2026-11-04 第 1 条）。 */
+  presets?: ScreenPreset[]
+  /**
+   * 在下拉里选了一个条件 / 点了叉叉。
+   *
+   * 内容替换由页面负责：页面把 `initialRequest` 换成那个条件的请求，弹窗的
+   * `useEffect` 就把草稿整个重置成它；传 `null` = 清空选择，草稿回到「新增条件」。
+   * 这样「选中即编辑」不需要第二个编辑按钮。
+   */
+  onSelectPreset?: (name: string | null) => void
   onDeletePreset?: (name: string) => void
   /**
    * 底部「保存」：把**当前草稿**交出去（用户第 5 条要求保存按钮放进弹窗）。
@@ -498,6 +517,75 @@ export function ScreenStocksDialog({
             {presetName ? SCREEN_PRESET_TEXTS_ZH.editingPreset(presetName) : T.description}
           </DialogDescription>
         </DialogHeader>
+
+        {/*
+          选股条件：标题下的下拉（用户 2026-11-04 第 1 条，原来挂在分析页工具条上）。
+          选中 → 下面内容整个换成那个条件（相当于「编辑」）；点 × 清空 → 回到新增条件。
+          所以不需要第二个「编辑」按钮，也没有单独的「新建」按钮：清空就是新建。
+          放在 fieldset 外面：草稿整体禁用时它仍然要能操作。
+        */}
+        <div className="flex flex-wrap items-center gap-2" data-fork-screen-preset-picker>
+          <span className="w-24 shrink-0 text-[11px] text-muted-foreground">
+            {SCREEN_PRESET_TEXTS_ZH.pickerLabel}
+          </span>
+          <Select
+            // 换选中项就重挂一次：Radix 的 value 从 undefined 变字符串时会被判成
+            // 「受控/非受控切换」，同一实例上会打警告。
+            key={presetName ?? 'none'}
+            value={presetName ?? undefined}
+            disabled={presets.length === 0}
+            onValueChange={next => onSelectPreset?.(next)}
+          >
+            <SelectTrigger
+              className="h-7 w-[220px] text-[12px]"
+              data-fork-preset-select
+              aria-label={SCREEN_PRESET_TEXTS_ZH.pickerLabel}
+              title={
+                presets.length === 0
+                  ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
+                  : SCREEN_PRESET_TEXTS_ZH.pickerHint
+              }
+            >
+              <SelectValue
+                placeholder={
+                  presets.length === 0
+                    ? SCREEN_PRESET_TEXTS_ZH.menuEmpty
+                    : SCREEN_PRESET_TEXTS_ZH.pickerPlaceholder
+                }
+              />
+            </SelectTrigger>
+            <SelectContent className="min-w-[220px]">
+              {presets.map(preset => (
+                <SelectItem
+                  key={preset.name}
+                  value={preset.name}
+                  className="text-[12px]"
+                  // 悬停看完整规则，免得同名前缀的两个条件分不清
+                  title={formatRule(preset.request.rule, preset.request.trading_days)}
+                >
+                  {preset.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {presetName && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-7 px-1.5"
+              data-fork-preset-clear
+              aria-label={SCREEN_PRESET_TEXTS_ZH.pickerClear}
+              title={SCREEN_PRESET_TEXTS_ZH.pickerClear}
+              onClick={() => onSelectPreset?.(null)}
+            >
+              <X className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          <span className="text-[10px] text-muted-foreground/80">
+            {presets.length > 0 ? SCREEN_PRESET_TEXTS_ZH.pickerHint : ''}
+          </span>
+        </div>
 
         <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
           {/* 基础筛选：先在 MySQL 里过滤，和条件树是「且」 */}
