@@ -297,6 +297,13 @@ export const SCREEN_TEXTS_ZH = {
   previewTitle: '规则预览',
   previewEmptyRoot: '（无技术条件，仅按基础筛选）',
   previewEmptyGroup: '( 空组 )',
+  // 统计窗口 / 市场 在预览里当条件显示（用户 2026-11-04 第 2 条）。
+  // 实际执行仍由基础筛选完成，这里只是让「规则」一眼看全。
+  previewScopeDays: (days: number) => `统计窗口 ${days} 个交易日`,
+  previewScopeDaysEmpty: '统计窗口（未填写）',
+  previewScopeMarket: (markets: string, st: string) => `市场 ${markets} · ${st}`,
+  previewEmptyTree: '（无技术条件）',
+  previewScopeJoiner: ' AND ',
   footerMeta: (asof: string, bars: number, conditions: number, depth: number) =>
     `数据截至 ${asof} · 预计读取 ${bars} 根日线 · ${conditions} 个条件 / ${depth} 层`,
   footerMetaNoAsOf: (bars: number, conditions: number, depth: number) =>
@@ -1694,17 +1701,50 @@ export function countConditionsIn(node: RuleNode): number {
 
 /** 基础筛选的一句话摘要（横幅第二行用）。 */
 export function summarizeBase(req: ScreenRequest): string {
-  const marketLabels: Record<ScreenMarket, string> = {
+  return T.baseSummary(
+    marketLabelOf(req.markets),
+    req.include_st ? T.stIncluded : T.stExcluded,
+    req.trading_days,
+  )
+}
+
+/** 市场选择的一句话形式：「全部」或「上证/深证/创业板/科创板」（横幅与预览共用）。 */
+function marketLabelOf(markets: ScreenMarket[]): string {
+  const labels: Record<ScreenMarket, string> = {
     sh: T.marketSh,
     sz: T.marketSz,
     cyb: T.marketCyb,
     kcb: T.marketKcb,
   }
-  const markets =
-    req.markets.length === SCREEN_MARKETS.length
-      ? T.marketAll
-      : req.markets.map(m => marketLabels[m]).join(T.summaryPeriodsJoin)
-  return T.baseSummary(markets, req.include_st ? T.stIncluded : T.stExcluded, req.trading_days)
+  return markets.length === SCREEN_MARKETS.length
+    ? T.marketAll
+    : markets.map(m => labels[m]).join(T.summaryPeriodsJoin)
+}
+
+/**
+ * 规则预览专用：把「统计窗口」和「市场」当条件拼在条件树**前面**，用 AND 连接
+ * （用户 2026-11-04 第 2 条）。
+ *
+ * 只是显示口径 —— 后端仍然按 `trading_days` / `markets` / `include_st` 这三个
+ * 顶层字段执行，条件树里没有对应节点，所以保存的条件、探索变异都不受影响。
+ * 树为空时显示「（无技术条件）」，不能沿用 previewEmptyRoot（那句话在窗口/市场
+ * 已经是条件之后就不对了）。
+ */
+export function formatScopedRule(
+  rule: GroupNode,
+  tradingDays: number,
+  req: Pick<ScreenRequest, 'markets' | 'include_st'>,
+): string {
+  const days =
+    Number.isFinite(tradingDays) && tradingDays > 0
+      ? T.previewScopeDays(tradingDays)
+      : T.previewScopeDaysEmpty
+  const parts = [
+    days,
+    T.previewScopeMarket(marketLabelOf(req.markets), req.include_st ? T.stIncluded : T.stExcluded),
+    rule.children.length === 0 ? T.previewEmptyTree : formatRule(rule, tradingDays),
+  ]
+  return parts.join(T.previewScopeJoiner)
 }
 
 // ------------------------------------------------------------------ 校验

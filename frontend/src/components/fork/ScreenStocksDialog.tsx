@@ -32,6 +32,7 @@ import {
   findConflictGroup,
   findNode,
   formatRule,
+  formatScopedRule,
   migrateLegacyMarketCap,
   removeNode,
   requiredBarsOf,
@@ -337,9 +338,11 @@ export function ScreenStocksDialog({
   const shownIssues = submitted ? liveIssues : issues
   // 预览要把统计窗口一起传进去：阴阳线计数的「窗口最后一天」是哨兵（m=0），
   // 不知道窗口长度就只能显示成「阳线多于阴线」，看不出范围（用户第 3 条）。
+  // 统计窗口与市场也作为条件拼在树前面（用户 2026-11-04 第 2 条）—— 只是显示，
+  // 执行仍走 request.trading_days / request.markets。
   const preview = useMemo(
-    () => formatRule(form.rule, request.trading_days),
-    [form.rule, request.trading_days],
+    () => formatScopedRule(form.rule, request.trading_days, request),
+    [form.rule, request],
   )
   const conflict = useMemo(() => findConflictGroup(form.rule), [form.rule])
   const bars = useMemo(() => requiredBarsOf(request), [request])
@@ -597,8 +600,50 @@ export function ScreenStocksDialog({
         </DialogHeader>
 
         <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
-          {/* 基础筛选：先在 MySQL 里过滤，和条件树是「且」 */}
-          <div className="rounded-lg border border-border/60 bg-accent/10 p-3">
+          {/* 窗口截止日：独立区域，放在基础筛选之前（用户 2026-11-04 第 1 条）。
+              不勾「启用」= 库里最新交易日；勾上后从这天往前数「统计窗口」个交易日。
+              非交易日（周末/长假）由后端落到 ≤ 它的最大交易日，所以这里不拦。 */}
+          <div className="rounded-lg border border-border/60 p-3" data-fork-screen-asof>
+            <div className="mb-2 text-[12px] font-medium text-foreground">{T.asofLabel}</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="date"
+                aria-label={T.asofLabel}
+                data-screen-field="asof"
+                value={form.asofText}
+                disabled={!form.asofEnabled}
+                onChange={event =>
+                  setForm(current => ({ ...current, asofText: event.target.value }))
+                }
+                className="h-7 rounded-md border border-input bg-background px-2 text-[12px] text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+              />
+              <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-primary"
+                  checked={form.asofEnabled}
+                  aria-label={T.asofEnable}
+                  data-screen-field="asof_enabled"
+                  onChange={event => {
+                    const enabled = event.target.checked
+                    // 勾上时给一个能直接改的起点：优先当前数据日期，其次今天
+                    const fallback = asof ?? new Date().toISOString().slice(0, 10)
+                    setForm(current => ({
+                      ...current,
+                      asofEnabled: enabled,
+                      asofText: enabled ? current.asofText || fallback : '',
+                    }))
+                  }}
+                />
+                {T.asofEnable}
+              </label>
+              <span className="text-[11px] text-muted-foreground">{T.asofHint}</span>
+            </div>
+          </div>
+
+          {/* 基础筛选：先在 MySQL 里过滤，和条件树是「且」。统计窗口 / 市场在这里，
+              但预览里会作为条件显示（用户 2026-11-04 第 2 条）。 */}
+          <div className="rounded-lg border border-border/60 bg-accent/10 p-3" data-fork-screen-base>
             <div className="mb-2 flex items-baseline gap-2">
               <span className="text-[12px] font-medium text-foreground">{T.baseTitle}</span>
               <span className="text-[10px] text-muted-foreground">{T.baseHint}</span>
@@ -618,44 +663,6 @@ export function ScreenStocksDialog({
                   onText={next => setForm(current => ({ ...current, daysText: next }))}
                 />
                 <span className="text-[11px] text-muted-foreground">{T.tradingDaysSuffix}</span>
-              </div>
-
-              {/* 窗口结束日（可选）：勾上「启用」才指定日期，不勾就用库里最新交易日。
-                  非交易日（周末/长假）由后端落到 ≤ 它的最大交易日，所以这里不拦。 */}
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.asofLabel}</span>
-                <input
-                  type="date"
-                  aria-label={T.asofLabel}
-                  data-screen-field="asof"
-                  value={form.asofText}
-                  disabled={!form.asofEnabled}
-                  onChange={event =>
-                    setForm(current => ({ ...current, asofText: event.target.value }))
-                  }
-                  className="h-7 rounded-md border border-input bg-background px-2 text-[12px] text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-                />
-                <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    className="h-3.5 w-3.5 accent-primary"
-                    checked={form.asofEnabled}
-                    aria-label={T.asofEnable}
-                    data-screen-field="asof_enabled"
-                    onChange={event => {
-                      const enabled = event.target.checked
-                      // 勾上时给一个能直接改的起点：优先当前数据日期，其次今天
-                      const fallback = asof ?? new Date().toISOString().slice(0, 10)
-                      setForm(current => ({
-                        ...current,
-                        asofEnabled: enabled,
-                        asofText: enabled ? current.asofText || fallback : '',
-                      }))
-                    }}
-                  />
-                  {T.asofEnable}
-                </label>
-                <span className="text-[11px] text-muted-foreground">{T.asofHint}</span>
               </div>
             </div>
 
