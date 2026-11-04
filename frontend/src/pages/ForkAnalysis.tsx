@@ -2129,7 +2129,7 @@ export default function StocksPage() {
   /**
    * fork：工具条**第一行**（2026-10-20 第 1 条要求拆成两行）。
    *
-   *   第一行左：条件选股 → 已保存条件下拉 → 编辑
+   *   第一行左：条件选股（已保存条件的下拉已搬进弹窗，2026-11-04）
    *   第一行右：数据时间 / 代码版本 / 提交时间（``tableToolbarMeta``）
    *   第二行：刷新 → 添加股票 → 搜索框 → 五组筛选 → 页码
    *
@@ -2166,7 +2166,7 @@ export default function StocksPage() {
         {screenResult ? SCREEN_TEXTS_ZH.buttonActive : SCREEN_TEXTS_ZH.button}
       </Button>
       {/* 已保存条件的下拉已搬进条件选股弹窗（用户 2026-11-04 第 1 条），
-          旁边的「编辑」按钮一并去掉 —— 选中即编辑。 */}      
+          旁边的「编辑」按钮一并去掉 —— 选中即编辑。 */}
     </div>
   )
 
@@ -2324,8 +2324,9 @@ export default function StocksPage() {
       />
 
       {/* fork：条件选股弹窗。「修改条件」时把上次的请求原样带回（不持久化，
-          只活在页面内存里 —— 需求规格 §14-Q9）；从「已保存条件 → 编辑」打开时
-          带回那个条件存下来的完整请求，并在底部多一个「删除」按钮。 */}
+          只活在页面内存里 —— 需求规格 §14-Q9）；在弹窗标题下的「选股条件」
+          下拉里选一个已保存条件时，带回那个条件存下来的完整请求，并在底部
+          多一个「删除」按钮。 */}
       <ScreenStocksDialog
         open={screenOpen}
         onOpenChange={setScreenOpen}
