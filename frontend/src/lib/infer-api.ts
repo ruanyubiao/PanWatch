@@ -237,8 +237,9 @@ export interface InferCreateBody {
   valid_start: string
   valid_end: string | null
   iterations: number
-  markets: ScreenMarket[] | null
-  include_st: boolean | null
+  /** 省略 = 用条件自己存的市场（用户 2026-11-04 第 1 条：表单不再选股票范围） */
+  markets?: ScreenMarket[] | null
+  include_st?: boolean | null
   seed?: number
 }
 

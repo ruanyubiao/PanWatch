@@ -451,8 +451,11 @@ def _base_signal_count(token: str, rule: dict[str, Any]) -> Optional[int]:
     2026-11-02 的 0 评估空跑（r11020315）就是基础条件被 refine 叠到没有信号，
     搜索 2 分 49 秒后 done=0、没评分。开任务前花 3 秒验一次，比白占 5 小时便宜。
     """
-    payload = {"trading_days": SCREEN_DAYS, "markets": ["sh", "sz", "cyb", "kcb"],
-               "include_st": False, "rule": rule}
+    # 口径必须和真正跑的那一轮一致：``_write_preset`` 写进去的是 trading_days=30 +
+    # include_st=True。2026-11-04 之前这里用的是 250 天 + 不含 ST，
+    # 体检通过不代表真跑有信号（反之会白白退回种子）。
+    payload = {"trading_days": 30, "markets": ["sh", "sz", "cyb", "kcb"],
+               "include_st": True, "rule": rule}
     try:
         # W=250 的选股本身就要 8 秒；有推理轮在跑时实测 61 秒（同一进程里抢 GIL + 内存压紧），
         # 所以超时给 180 秒。60 秒会让体检长期「skipped」，等于没有体检。

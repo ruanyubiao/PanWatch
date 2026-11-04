@@ -9,6 +9,7 @@
 export const ANALYSIS_SCORE_TEXTS_ZH = {
   train: '推理评分',
   test: '验证评分',
+  single: '评分',
   pending: '跑完才有分数',
   scale: '50 = 和随机买入一样 · 60 = 及格（能拿去用）· 85 以上 = 优秀',
   verdict: '综合判断',
@@ -81,11 +82,15 @@ export function AnalysisScoreCard({
 }: AnalysisScoreCardProps) {
   const T = ANALYSIS_SCORE_TEXTS_ZH
   const label = verdict?.verdict ? SCORE_VERDICTS_ZH[verdict.verdict] ?? verdict.verdict : null
+  // 用户 2026-11-04 第 1 条：分析任务只剩一段（不再有测试段），所以只画一张卡；
+  // 有条件推理的老任务仍然有两段，照样两张。
+  const single = test == null
   return (
     <div className="rounded-lg border border-border/60 bg-accent/10 p-3" data-fork-analysis-scores>
       <div className="flex flex-wrap items-stretch gap-2">
-        <ScoreBox label={T.train} score={train} grade={trainGrade ?? undefined} hint={trainHint} />
-        <ScoreBox label={T.test} score={test} grade={undefined} hint={testHint} />
+        <ScoreBox label={single ? T.single : T.train} score={train} grade={trainGrade ?? undefined}
+                  hint={trainHint} />
+        {!single && <ScoreBox label={T.test} score={test} grade={undefined} hint={testHint} />}
         <div className="flex min-w-[180px] flex-1 flex-col justify-center gap-0.5 text-[11px]">
           {label && (
             <p>

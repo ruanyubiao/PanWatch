@@ -297,6 +297,7 @@ describe('AnalysisDialog', () => {
       test_effective_end_date: '2026-09-09',
       train_days: 433,
       test_days: 160,
+      infer_split: { train_end: '2025-06-30', valid_start: '2025-07-01' },
       validate_days: 30,
       horizons: [5, 10, 15, 20, 25, 30],
       trading_days: 30,
@@ -322,28 +323,20 @@ describe('AnalysisDialog', () => {
     expect(document.querySelector('[data-fork-analysis-create-button]')).toBeTruthy()
   })
 
-  it('股票范围与条件选股同款：市场 pill 组 + ST 开关', async () => {
+  it('表单里不再有股票范围：市场与 ST 都不出现，创建请求也不带这两个字段', async () => {
     mocks.create.mockResolvedValue(runMeta())
     renderDialog()
     const user = userEvent.setup()
-    const all = await screen.findByRole('button', { name: '全部' })
-    expect(all.getAttribute('aria-pressed')).toBe('true')
-    // 点「上证」= 从「全部」切成只选上证（其余三个也跟着取消，「全部」显示为半选）
-    await user.click(screen.getByRole('button', { name: '上证' }))
-    expect(all.getAttribute('aria-pressed')).toBe('mixed')
-    expect(screen.getByRole('button', { name: '上证' }).getAttribute('aria-pressed')).toBe('true')
-    // 点「全部」恢复四个市场
-    await user.click(all)
-    expect(all.getAttribute('aria-pressed')).toBe('true')
-    expect(screen.getByRole('button', { name: '上证' }).getAttribute('aria-pressed')).toBe('false')
-    await user.click(screen.getByRole('button', { name: '上证' }))
-    // ST 开关（与条件选股同一个 Switch，不再是 checkbox）
-    await user.click(screen.getByRole('switch', { name: '包含 ST / *ST' }))
+    await screen.findByText('创建数据分析任务')
+    // 用户 2026-11-04 第 1 条：市场由条件自己指定，表单不再选
+    expect(screen.queryByRole('button', { name: '上证' })).toBeNull()
+    expect(screen.queryByRole('switch', { name: '包含 ST / *ST' })).toBeNull()
+    expect(document.body.textContent).not.toContain('股票范围')
     await user.click(screen.getByRole('button', { name: '创建任务' }))
     await waitFor(() => expect(mocks.create).toHaveBeenCalledTimes(1))
     const payload = mocks.create.mock.calls[0][0]
-    expect(payload.markets).toEqual(['sh'])
-    expect(payload.include_st).toBe(true)
+    expect(payload.markets).toBeUndefined()
+    expect(payload.include_st).toBeUndefined()
   })
 
   it('创建后切成进行中：进度、命中数与停止按钮', async () => {
@@ -356,8 +349,10 @@ describe('AnalysisDialog', () => {
     const payload = mocks.create.mock.calls[0][0]
     expect(payload.preset).toBe('xg1')
     expect(payload.start_date).toBe('2024-01-01')
-    expect(payload.test_start_date).toBe('2026-01-01')
-    expect(payload.markets).toEqual(['sh', 'sz', 'cyb', 'kcb'])
+    // 用户 2026-11-04 第 1 条：没有测试段、没有股票范围覆盖
+    expect(payload.test_start_date).toBeUndefined()
+    expect(payload.test_end_date).toBeUndefined()
+    expect(payload.markets).toBeUndefined()
     await waitFor(() => expect(document.querySelector('[data-fork-analysis-run="running"]')).toBeTruthy())
     expect(screen.getByRole('button', { name: '停止' })).toBeTruthy()
     expect(document.body.textContent).toContain('已完成 100 / 1650 个交易日')
@@ -412,10 +407,10 @@ describe('AnalysisDialog', () => {
       .toBe('2026-10-21'))
   })
 
-  it('推理结束时间按显示口径收到最新交易日，实际分析到「减验证天数」那天', async () => {
+  it('分析结束时间按显示口径收到最新交易日，实际分析到「减验证天数」那天', async () => {
     renderDialog()
     const user = userEvent.setup()
-    const end = (await screen.findByLabelText('推理结束时间')) as HTMLInputElement
+    const end = (await screen.findByLabelText('分析结束时间')) as HTMLInputElement
     // 显示口径 = 最新交易日；提示里写明实际分析到 2026-09-09
     await waitFor(() => expect(end.value).toBe('2026-10-21'))
     // 预估回来之后提示里写明实际分析到哪天（要等 300ms 防抖）
@@ -579,22 +574,20 @@ describe('AnalysisDialog', () => {
     expect(body).not.toContain('统计方法')
   })
 
-  it('四行时间：推理开始 / 推理结束 / 测试开始 / 测试结束，顺序与默认值正确', async () => {
+  it('两行时间：分析开始 / 分析结束，顺序与默认值正确，下面紧跟验证天数', async () => {
     renderDialog()
     await screen.findByText('创建数据分析任务')
     const start = document.querySelector('[data-fork-analysis-start]') as HTMLElement
     const end = document.querySelector('[data-fork-analysis-end]') as HTMLElement
-    const testStart = document.querySelector('[data-fork-analysis-test-start]') as HTMLElement
-    const testEnd = document.querySelector('[data-fork-analysis-test-end]') as HTMLElement
     const days = document.querySelector('[data-fork-analysis-validate-days]') as HTMLInputElement
-    expect(start && end && testStart && testEnd && days).toBeTruthy()
+    expect(start && end && days).toBeTruthy()
     expect(start.compareDocumentPosition(end) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(end.compareDocumentPosition(testStart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(testStart.compareDocumentPosition(testEnd) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(testEnd.compareDocumentPosition(days) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(end.compareDocumentPosition(days) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect((start as HTMLInputElement).value).toBe('2024-01-01')
-    expect((testStart as HTMLInputElement).value).toBe('2026-01-01')
     expect(days.value).toBe('30')
+    // 用户 2026-11-04 第 1 条：测试段的两个日期框已经删掉
+    expect(document.querySelector('[data-fork-analysis-test-start]')).toBeNull()
+    expect(document.querySelector('[data-fork-analysis-test-end]')).toBeNull()
   })
 
   it('条件推理：不勾选时次数不可编辑，勾选后能改，默认 100 次', async () => {
@@ -634,20 +627,24 @@ describe('AnalysisDialog', () => {
     const user = userEvent.setup()
     await screen.findByText('创建数据分析任务')
     await user.click(document.querySelector('[data-fork-analysis-infer-enabled]') as HTMLElement)
+    // 切分点是预览接口给的（7:3），拿到之后创建按钮才可点
+    await waitFor(() => expect(document.querySelector('[data-fork-analysis-infer-split]')).toBeTruthy())
     await user.click(screen.getByRole('button', { name: '创建任务' }))
     await waitFor(() => expect(mocks.inferCreate).toHaveBeenCalledTimes(1))
     expect(mocks.create).not.toHaveBeenCalled()
     const payload = mocks.inferCreate.mock.calls[0][0]
     expect(payload.train_start).toBe('2024-01-01')
-    expect(payload.valid_start).toBe('2026-01-01')
+    // 用户 2026-11-04 第 1 条：没有测试日期输入了，切分点由后端预览给出（7:3）
+    expect(payload.train_end).toBe('2025-06-30')
+    expect(payload.valid_start).toBe('2025-07-01')
     expect(payload.iterations).toBe(100)
     await waitFor(() => expect(document.querySelector('[data-fork-infer-panel]')).toBeTruthy())
     expect(document.body.textContent).toContain('已完成 0 / 100 次')
   })
 
-  it('历史 tab 同时显示两类任务，并分别给两个评分', async () => {
+  it('历史 tab 同时显示两类任务，评分一列（推理任务显示「搜索 / 验算」）', async () => {
     mocks.history.mockResolvedValue([
-      runMeta({ status: 'done', running: false, kind: 'analysis', score_train: 66.2, score_test: 61.8 }),
+      runMeta({ status: 'done', running: false, kind: 'analysis', score_train: 66.2, score_test: null }),
       runMeta({ run_id: '20261024-120000-abcd', status: 'done', running: false, kind: 'infer',
         score_train: 78.4, score_test: 70.1, created_at: '2026-10-24T12:00:00+08:00' }),
     ])
@@ -658,13 +655,13 @@ describe('AnalysisDialog', () => {
     const body = document.body.textContent ?? ''
     expect(body).toContain('分析')
     expect(body).toContain('条件推理')
-    // 两列分开显示：推理分 / 测试分
-    const train = Array.from(document.querySelectorAll('[data-fork-history-train]')).map(n => n.textContent)
-    const test = Array.from(document.querySelectorAll('[data-fork-history-test]')).map(n => n.textContent)
-    expect(train).toContain('78.4')
-    expect(test).toContain('70.1')
-    expect(train).toContain('66.2')
-    expect(test).toContain('61.8')
+    const scores = Array.from(document.querySelectorAll('[data-fork-history-score]')).map(n => n.textContent)
+    // 分析任务：只有一个分；推理任务：搜索分 / 验算分
+    expect(scores).toContain('66.2')
+    expect(scores).toContain('78.4 / 70.1')
+    // 表头只剩一列「评分」，不再有「推理分 / 测试分」两列
+    expect(body).not.toContain('推理分')
+    expect(body).not.toContain('测试分')
   })
 
   it('方法 2 跑完：用统一信封渲染（结论卡 + 表 + 产物），没有 Excel 按钮', async () => {
