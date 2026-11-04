@@ -510,6 +510,8 @@ export interface AnalysisPreview {
   test_effective_end_date?: string | null
   max_test_end_date?: string | null
   segments?: { kind: string; label: string; start: string; end: string; end_display?: string }[]
+  /** 条件推理的切分点（后端按交易日 7:3 给出；区间太短时为 null） */
+  infer_split?: { train_end: string; valid_start: string } | null
   validate_days: number
   /** 方法需要多少个交易日的前瞻行情（方法 1 = 30，方法 2 = 35） */
   forward_days?: number
