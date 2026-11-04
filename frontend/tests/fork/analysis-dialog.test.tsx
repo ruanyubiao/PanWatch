@@ -358,6 +358,26 @@ describe('AnalysisDialog', () => {
     expect(document.body.textContent).toContain('已完成 100 / 1650 个交易日')
   })
 
+  it('任务在跑时新建表单仍在，排在进行中面板下面，且没有「新建任务」按钮', async () => {
+    mocks.create.mockResolvedValue(runMeta())
+    renderDialog()
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '创建任务' }))
+    await waitFor(() => expect(document.querySelector('[data-fork-analysis-run="running"]')).toBeTruthy())
+
+    // 用户 2026-11-04：不再是互斥的两个页面，表单常驻展开
+    const form = document.querySelector('[data-fork-analysis-create]')
+    const panel = document.querySelector('[data-fork-analysis-run="running"]')
+    expect(form).toBeTruthy()
+    expect(form?.className).toContain('order-2')
+    expect(panel?.className).toContain('order-1')
+    // 表单排在面板之后（视觉上在下面），所以创建按钮仍然可点
+    expect(document.querySelector('[data-fork-analysis-create-button]')).toBeTruthy()
+    // 切换按钮已删除：文案和按钮都不该再出现
+    expect(screen.queryByRole('button', { name: '新建任务' })).toBeNull()
+    expect(document.body.textContent).not.toContain('新建任务')
+  })
+
   it('点停止会调用停止接口', async () => {
     mocks.create.mockResolvedValue(runMeta())
     mocks.stopRun.mockResolvedValue(runMeta({ status: 'stopped', days_done: 120 }))
@@ -561,7 +581,11 @@ describe('AnalysisDialog', () => {
     renderDialog()
     await waitFor(() => expect(document.querySelector('[data-fork-infer-panel]')).toBeTruthy())
     expect(document.body.textContent).not.toContain('undefined')
-    expect(document.body.textContent).not.toContain('个交易日')
+    // 判定的是「分析任务那套进度模板没被套到推理任务上」：
+    // 推理没有「天」，套错了就会渲染成「已完成 undefined / 652 个交易日」。
+    // 不能再用整页文本查「个交易日」——新建表单常驻，本来就带这句。
+    expect(document.querySelector('[data-fork-analysis-run]')).toBeNull()
+    expect(document.body.textContent).not.toMatch(/已完成\s*undefined/)
   })
 
   it('选股条件还在、统计方法下拉已删除（只剩一套方法）', async () => {
