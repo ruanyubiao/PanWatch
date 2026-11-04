@@ -92,7 +92,9 @@ describe('条件选股弹窗', () => {
     }
     expect(marketButton('全部').getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByText('未添加技术条件：将仅按基础筛选选股')).toBeTruthy()
-    expect(screen.getByText('（无技术条件，仅按基础筛选）')).toBeTruthy()
+    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe(
+      '统计窗口 30 个交易日 AND 市场 全部 · 不含 ST AND （无技术条件）',
+    )
     // footer 显示数据截止日与预计读取根数（空树 → 0 根）
     expect(screen.getByText(/数据截至 2026-10-16/)).toBeTruthy()
   })
@@ -301,7 +303,9 @@ describe('条件选股弹窗', () => {
     expect(marketButton('科创').getAttribute('aria-pressed')).toBe('true')
     expect(marketButton('全部').getAttribute('aria-pressed')).toBe('mixed')
     expect(screen.getAllByText('倒数第3～1天连续3日阳线').length).toBeGreaterThan(0)
-    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe('倒数第3～1天连续3日阳线')
+    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe(
+      '统计窗口 45 个交易日 AND 市场 上证/科创 · 含 ST AND 倒数第3～1天连续3日阳线',
+    )
     const radios = screen.getAllByRole('radio')
     expect(within(radios[0].parentElement as HTMLElement).getAllByRole('radio')).toHaveLength(2)
     expect(radios[1].getAttribute('aria-checked')).toBe('true')
@@ -323,8 +327,18 @@ describe('条件选股弹窗', () => {
     expect(asofToggle.checked).toBe(false)
     expect(asofInput.disabled).toBe(true)
     expect(asofInput.value).toBe('')
-    expect(asofInput.parentElement!.textContent).toContain('窗口截止日')
-    expect(asofInput.parentElement!.contains(asofToggle)).toBe(true)
+    const asofSection = document.querySelector('[data-fork-screen-asof]') as HTMLElement
+    expect(asofSection.textContent).toContain('窗口截止日')
+    expect(asofSection.contains(asofToggle)).toBe(true)
+
+    // 窗口截止日是**独立区域**，并且排在基础筛选之前（用户 2026-11-04 第 1 条）
+    const baseSection = document.querySelector('[data-fork-screen-base]')
+    expect(baseSection).not.toBeNull()
+    expect(
+      asofSection.compareDocumentPosition(baseSection as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    // 它不再属于基础筛选：基础筛选里没有日期框
+    expect((baseSection as HTMLElement).querySelector('[data-screen-field="asof"]')).toBeNull()
 
     // 总市值已经搬进条件列表：基础筛选里不该再有市值输入框
     expect(document.querySelector('[data-screen-field="market_cap.min_yi"]')).toBeNull()
@@ -391,7 +405,7 @@ describe('条件选股弹窗', () => {
     )
     // 起点 5 + 连续 4 天 → 覆盖倒数第 8～5 天（用户第 4 条要求的写法）
     expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe(
-      '倒数第8～5天连续4日阳线',
+      '统计窗口 30 个交易日 AND 市场 全部 · 不含 ST AND 倒数第8～5天连续4日阳线',
     )
   })
 
@@ -412,7 +426,9 @@ describe('条件选股弹窗', () => {
     await waitFor(() =>
       expect(document.querySelectorAll('[data-fork-screen-condition]')).toHaveLength(1),
     )
-    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe('倒数第3～1天连续3日上涨')
+    expect(document.querySelector('[data-fork-screen-preview]')?.textContent).toBe(
+      '统计窗口 30 个交易日 AND 市场 全部 · 不含 ST AND 倒数第3～1天连续3日上涨',
+    )
   })
 
   it('L3 数字框右侧有加减按钮：点一次 ±1、到边界禁用、键盘 ↑/↓ 等价', async () => {
