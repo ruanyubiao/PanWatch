@@ -707,6 +707,41 @@ describe('AnalysisDialog', () => {
     // 方法 2 不生成 Excel：界面上不该有「下载 Excel」
     expect(screen.queryByRole('button', { name: '下载 Excel' })).toBeNull()
   })
+
+  /**
+   * 2026-11-05 第 3 / 4 条：说明搬进「历史任务」tab；弹窗高度固定，切 tab 不跳。
+   */
+  it('A1 说明只在「历史任务」tab 里显示，顶部只剩屏幕阅读器文本', async () => {
+    const user = userEvent.setup()
+    renderDialog()
+
+    const content = document.querySelector('[data-fork-analysis-dialog]') as HTMLElement
+    const descId = content.getAttribute('aria-describedby')
+    const desc = descId ? document.getElementById(descId) : null
+    expect(desc).not.toBeNull()
+    expect(desc!.className).toContain('sr-only')
+
+    // 创建任务 tab 里没有那句说明
+    expect(document.querySelector('[data-fork-analysis-hint="history"]')).toBeNull()
+
+    await user.click(screen.getByRole('tab', { name: '历史任务' }))
+    const hint = document.querySelector('[data-fork-analysis-hint="history"]') as HTMLElement
+    expect(hint).not.toBeNull()
+    expect(hint.textContent).toContain('60 分 = 能和随机买入拉开差距')
+  })
+
+  it('A2 弹窗高度固定：切 tab 前后类名不变（不会跟着内容伸缩）', async () => {
+    const user = userEvent.setup()
+    renderDialog()
+
+    const content = () => document.querySelector('[data-fork-analysis-dialog]') as HTMLElement
+    const before = content().className
+    expect(before).toContain('h-[80vh]')
+    expect(before).toContain('flex-col')
+
+    await user.click(screen.getByRole('tab', { name: '历史任务' }))
+    expect(content().className).toBe(before)
+  })
 })
 
 /**

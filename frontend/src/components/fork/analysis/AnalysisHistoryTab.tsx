@@ -138,7 +138,7 @@ export function AnalysisHistoryTab({
   }
 
   return (
-    <div className="space-y-2" data-fork-analysis-history-tab>
+    <div className="flex min-h-0 flex-1 flex-col gap-2" data-fork-analysis-history-tab>
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-baseline gap-2">
           <p className="text-[12px] font-medium">{T.title}</p>
@@ -164,7 +164,7 @@ export function AnalysisHistoryTab({
       {runs.length === 0 ? (
         <p className="text-[11px] text-muted-foreground">{loading ? T.loading : T.empty}</p>
       ) : (
-        <div className="max-h-[52vh] overflow-y-auto scrollbar" data-fork-history-body>
+        <div className="min-h-0 flex-1 overflow-y-auto scrollbar" data-fork-history-body>
           <table className="w-full text-[11px]">
             <thead>
               <tr className="border-b border-border/60 text-muted-foreground">

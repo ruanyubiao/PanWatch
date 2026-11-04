@@ -5,6 +5,7 @@ import { ToastProvider } from '@panwatch/base-ui/components/ui/toast'
 import { SaveConditionDialog } from '@/components/fork/SaveConditionDialog'
 import { ScreenStocksDialog } from '@/components/fork/ScreenStocksDialog'
 import { SCREEN_PRESET_TEXTS_ZH, presetNameError } from '@/lib/screen-presets'
+import { SCREEN_TEXTS_ZH } from '@/lib/screen-rule'
 import type { ScreenRequest } from '@/lib/screen-rule'
 
 /**
@@ -312,5 +313,69 @@ describe('条件弹窗：已保存条件模式', () => {
     expect(preview).toContain('连续')
     expect(preview).toContain('总市值 > 100 亿元')
     expect(preview).toContain('总市值 < 200 亿元')
+  })
+})
+
+describe('提示与「选择条件」下拉按 tab 分开（用户 2026-11-05）', () => {
+  const open = (over: Partial<React.ComponentProps<typeof ScreenStocksDialog>> = {}, tab: 'use' | 'build' = 'use') => {
+    render(
+      <ToastProvider>
+        <ScreenStocksDialog open onOpenChange={vi.fn()} onResult={vi.fn()} asof="2026-10-20" {...over} />
+      </ToastProvider>,
+    )
+    if (tab === 'build') {
+      fireEvent.mouseDown(document.querySelector('[data-fork-screen-tab="build"]') as HTMLElement, { button: 0 })
+    }
+  }
+
+  it('H1 顶部那条说明不再是可见文本：每个 tab 各有自己的提示块', () => {
+    open()
+    // 弹窗顶部（DialogDescription）只剩给屏幕阅读器的文本
+    const content = document.querySelector('[data-fork-screen-dialog]') as HTMLElement
+    const descId = content.getAttribute('aria-describedby')
+    const desc = descId ? document.getElementById(descId) : null
+    expect(desc).not.toBeNull()
+    expect(desc!.className).toContain('sr-only')
+
+    // 条件选股 tab 的提示讲的是「筛选 / 执行」
+    const useHint = document.querySelector('[data-fork-screen-hint="use"]') as HTMLElement
+    expect(useHint).not.toBeNull()
+    expect(useHint.textContent).toContain('按基础范围和技术条件筛选 A 股')
+    cleanup()
+
+    // 新建条件 tab 的提示讲的是「怎么建 / 怎么改」，不说「筛选 A 股」
+    open({}, 'build')
+    const buildHint = document.querySelector('[data-fork-screen-hint="build"]') as HTMLElement
+    expect(buildHint).not.toBeNull()
+    expect(buildHint.textContent).toContain(SCREEN_TEXTS_ZH.buildHint)
+    expect(useHint.isConnected).toBe(false)
+  })
+
+  it('H2 正在编辑某条已保存条件：两个 tab 的提示都点名那一条', () => {
+    open({ presets: [preset('四连阳')], presetName: '四连阳' })
+    expect(
+      document.querySelector('[data-fork-screen-hint="use"]')!.textContent,
+    ).toContain(SCREEN_PRESET_TEXTS_ZH.editingPreset('四连阳'))
+    cleanup()
+
+    open({ presets: [preset('四连阳')], presetName: '四连阳' }, 'build')
+    expect(
+      document.querySelector('[data-fork-screen-hint="build"]')!.textContent,
+    ).toContain(SCREEN_PRESET_TEXTS_ZH.editingPreset('四连阳'))
+  })
+
+  it('H3 「新建条件」有自己的下拉：同一时刻只有一份，选中即交给父组件', async () => {
+    const onSelectPreset = vi.fn()
+    open({ presets: [preset('四连阳'), preset('低市值')], onSelectPreset }, 'build')
+
+    const picker = document.querySelector('[data-fork-screen-preset-picker="build"]') as HTMLElement
+    expect(picker).not.toBeNull()
+    expect(picker.textContent).toContain(SCREEN_TEXTS_ZH.buildConditionTitle)
+    // 两个 tab 各自一份，但非激活 tab 会被卸载 —— DOM 里不应出现第二份
+    expect(document.querySelectorAll('[data-fork-screen-preset-picker]')).toHaveLength(1)
+
+    await userEvent.click(picker.querySelector('[data-fork-preset-select="build"]') as HTMLElement)
+    await userEvent.click(await screen.findByRole('option', { name: '低市值' }))
+    expect(onSelectPreset).toHaveBeenCalledWith('低市值')
   })
 })
