@@ -56,6 +56,17 @@ const renderDialog = (props: Partial<React.ComponentProps<typeof ScreenStocksDia
 
 const marketButton = (name: string) => screen.getByRole('button', { name })
 const submitButton = () => screen.getByRole('button', { name: /开始选股|选股中/ })
+
+/**
+ * 弹窗拆成两个 tab 后（用户 2026-11-05）：默认落在「条件选股」，
+ * 测条件树 / 基础筛选 / 保存删除的用例要先切到「新建条件」；要执行搜索再切回来。
+ */
+const gotoBuild = async () => {
+  await userEvent.click(screen.getByRole('tab', { name: '新建条件' }))
+}
+const gotoUse = async () => {
+  await userEvent.click(screen.getByRole('tab', { name: '条件选股' }))
+}
 const daysInput = () =>
   document.querySelector<HTMLInputElement>('[data-screen-field="trading_days"]')!
 
@@ -77,15 +88,17 @@ afterEach(() => {
 })
 
 describe('条件选股弹窗', () => {
-  it('默认值：窗口预填 30 但不抢焦点、四个市场全选、不含 ST、空根组', () => {
+  it('默认值：窗口预填 30 但不抢焦点、四个市场全选、不含 ST、空根组', async () => {
     renderDialog()
+    // 焦点确实被接住了（落在弹窗容器上），不是「谁都没聚焦」的空过
+    // —— 这条要在点 tab 之前断言：点 tab 会把焦点交给 tab 按钮
+    expect(document.activeElement).toBe(document.querySelector('[data-fork-screen-dialog]'))
+    await gotoBuild()
     // 窗口有默认值 30……
     expect(daysInput().value).toBe('30')
     // ……但打开时不聚焦它，否则带焦点描边看着像「已选中」
     expect(document.activeElement).not.toBe(daysInput())
     expect(daysInput().className).not.toContain('ring')
-    // 焦点确实被接住了（落在弹窗容器上），不是「谁都没聚焦」的空过
-    expect(document.activeElement).toBe(document.querySelector('[data-fork-screen-dialog]'))
     for (const name of ['上证', '深证', '创业', '科创']) {
       // 「全部」选中时，四个市场一律显示为未选中（radio 组语义，2026-10-23 第 1 条）
       expect(marketButton(name).getAttribute('aria-pressed')).toBe('false')
@@ -101,6 +114,7 @@ describe('条件选股弹窗', () => {
 
   it('D1 市场是「全部 / 其他」radio 组：全部选中时其他取消、点其他则全部取消', async () => {
     renderDialog()
+    await gotoBuild()
 
     // ① 全选状态下点「全部」→ 仍然只有「全部」选中（不能取消）
     await userEvent.click(marketButton('全部'))
@@ -139,6 +153,7 @@ describe('条件选股弹窗', () => {
 
   it('D2 控件挡住非法窗口值；留空提交被拦并给出错误', async () => {
     renderDialog()
+    await gotoBuild()
     const input = daysInput()
 
     // 0 / 999 都进不去：控件直接夹到 [1, 250]
@@ -149,6 +164,7 @@ describe('条件选股弹窗', () => {
 
     // 清空 → 提交被拦（窗口必填），错误条里点名
     await userEvent.clear(input)
+    await gotoUse()
     await userEvent.click(submitButton())
     const issues = document.querySelector('[data-fork-screen-issues]')!
     expect(issues.textContent).toContain('有 1 处需要修正')
@@ -157,13 +173,16 @@ describe('条件选股弹窗', () => {
     expect(mocks.screen).not.toHaveBeenCalled()
 
     // 填回合法值 → 错误消失、按钮恢复
+    await gotoBuild()
     await fillDays('30')
     await waitFor(() => expect(document.querySelector('[data-fork-screen-issues]')).toBeNull())
+    await gotoUse()
     expect((submitButton() as HTMLButtonElement).disabled).toBe(false)
   })
 
   it('D3 删除非空条件组要先确认；取消后树不变', async () => {
     renderDialog()
+    await gotoBuild()
     const condRows = () => document.querySelectorAll('[data-fork-screen-condition]')
 
     // 加一个子组，再往子组里塞一个无参数条件（直接插入，不弹参数表单）
@@ -191,6 +210,7 @@ describe('条件选股弹窗', () => {
 
   it('D4 第 5 层的「+ 条件组」被禁用', async () => {
     renderDialog()
+    await gotoBuild()
     // 连点四次「最后一个 + 条件组」，得到 2、3、4、5 层
     for (let level = 2; level <= 5; level += 1) {
       const buttons = screen.getAllByRole('button', { name: '+ 条件组' })
@@ -208,7 +228,8 @@ describe('条件选股弹窗', () => {
     mocks.screen.mockResolvedValue(response(37))
     const { onResult, onOpenChange } = renderDialog()
 
-    await fillDays('30')
+    // 窗口默认就是 30，不用再填；直接切回「条件选股」执行搜索
+    await gotoUse()
     await userEvent.click(submitButton())
     await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1))
     expect(onResult.mock.calls[0][0].total).toBe(37)
@@ -222,7 +243,8 @@ describe('条件选股弹窗', () => {
     mocks.screen.mockRejectedValue(new Error('选股任务繁忙，请稍后重试'))
     const { onResult, onOpenChange } = renderDialog()
 
-    await fillDays('30')
+    // 窗口默认就是 30，不用再填；直接切回「条件选股」执行搜索
+    await gotoUse()
     await userEvent.click(submitButton())
     expect(await screen.findByText(/选股失败：选股任务繁忙，请稍后重试/)).toBeTruthy()
     expect(onResult).not.toHaveBeenCalled()
@@ -239,7 +261,8 @@ describe('条件选股弹窗', () => {
     })
     const { onOpenChange } = renderDialog()
 
-    await fillDays('30')
+    // 窗口默认就是 30，不用再填；直接切回「条件选股」执行搜索
+    await gotoUse()
     await userEvent.click(submitButton())
     await waitFor(() => expect(mocks.screen).toHaveBeenCalledTimes(1))
     expect(signal?.aborted).toBe(false)
@@ -249,25 +272,32 @@ describe('条件选股弹窗', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
-  it('D6b 底部按钮是「删除 / 保存 / 开始选股」，没有「取消」文字按钮', () => {
+  it('D6b 两个 tab 的动作不同：条件选股只有「开始选股」，新建条件只有「删除 / 保存」，都没有「取消」', async () => {
     renderDialog({ onSavePreset: vi.fn() })
     expect(screen.queryByRole('button', { name: '取消' })).toBeNull()
+
+    // 条件选股 tab：只给执行搜索，不给保存 / 删除
     expect(document.querySelector('[data-fork-screen-submit]')!.textContent).toContain('开始选股')
-    // 没保存过：删除禁用、保存按钮在
+    expect(document.querySelector('[data-fork-screen-save-preset]')).toBeNull()
+    expect(document.querySelector('[data-fork-screen-delete-preset]')).toBeNull()
+
+    // 新建条件 tab：只给删除 / 保存，不给开始选股
+    await gotoBuild()
+    expect(document.querySelector('[data-fork-screen-submit]')).toBeNull()
     const remove = document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement
     expect(remove).toBeTruthy()
+    // 没保存过：删除禁用、保存可用
     expect(remove.disabled).toBe(true)
     const save = document.querySelector('[data-fork-screen-save-preset]') as HTMLButtonElement
     expect(save.textContent).toContain('保存')
     expect(save.disabled).toBe(false)
-    // 顺序：删除 → 保存 → 开始选股
-    const submit = document.querySelector('[data-fork-screen-submit]') as HTMLElement
+    // 顺序：删除 → 保存
     expect(remove.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(save.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('D6c 从已保存条件打开时，保存按钮文案仍是「保存」而不是「覆盖保存」', () => {
+  it('D6c 从已保存条件打开时，保存按钮文案仍是「保存」而不是「覆盖保存」', async () => {
     renderDialog({ presetName: '四连阳', onSavePreset: vi.fn(), onDeletePreset: vi.fn() })
+    await gotoBuild()
     const save = document.querySelector('[data-fork-screen-save-preset]') as HTMLButtonElement
     expect(save.textContent?.trim()).toBe('保存')
     // 行为仍是覆盖：删除按钮此时可用
@@ -275,7 +305,7 @@ describe('条件选股弹窗', () => {
     expect(remove.disabled).toBe(false)
   })
 
-  it('「修改条件」把上次的请求原样带回弹窗', () => {
+  it('「修改条件」把上次的请求原样带回弹窗', async () => {
     renderDialog({
       initialRequest: {
         trading_days: 45,
@@ -296,6 +326,7 @@ describe('条件选股弹窗', () => {
         },
       },
     })
+    await gotoBuild()
 
     expect(daysInput().value).toBe('45')
     expect(marketButton('上证').getAttribute('aria-pressed')).toBe('true')
@@ -311,8 +342,35 @@ describe('条件选股弹窗', () => {
     expect(radios[1].getAttribute('aria-checked')).toBe('true')
   })
 
-  it('L1 基础筛选：标题与控件同一行；窗口截止日带「启用」；ST 开关跟在市场后面', () => {
+  it('L1 拆成两个 tab：窗口截止日在「条件选股」、基础筛选在「新建条件」', async () => {
     renderDialog()
+
+    // ---- 条件选股 tab：只有 时间 + 选条件 + 预览 ----
+    const asofSection = document.querySelector('[data-fork-screen-asof]') as HTMLElement
+    expect(asofSection).not.toBeNull()
+    // 区域标题改叫「选择时间」（用户 2026-11-05）
+    expect(asofSection.textContent).toContain('选择时间')
+    expect(document.querySelector('[data-fork-screen-base]')).toBeNull()
+
+    // 日期框 +「启用」复选框同一行；默认不启用（框禁用、不带日期）
+    const asofInput = document.querySelector<HTMLInputElement>('[data-screen-field="asof"]')!
+    const asofToggle = document.querySelector<HTMLInputElement>('[data-screen-field="asof_enabled"]')!
+    expect(asofToggle.checked).toBe(false)
+    expect(asofInput.disabled).toBe(true)
+    expect(asofInput.value).toBe('')
+    expect(asofSection.contains(asofToggle)).toBe(true)
+
+    // 选条件下拉也在这个 tab
+    expect(document.querySelector('[data-fork-screen-preset-picker]')).not.toBeNull()
+
+    // ---- 新建条件 tab：基础筛选 + 条件树 ----
+    await gotoBuild()
+    // 窗口截止日不再属于这个 tab，也不属于基础筛选
+    expect(document.querySelector('[data-fork-screen-asof]')).toBeNull()
+
+    const baseSection = document.querySelector('[data-fork-screen-base]') as HTMLElement
+    expect(baseSection).not.toBeNull()
+    expect(baseSection.querySelector('[data-screen-field="asof"]')).toBeNull()
 
     // 统计窗口：标题与输入框在同一个 flex 行容器里
     // （输入框外面多套了一层 span —— 右侧的加减按钮定位用，所以往上找两层）
@@ -320,25 +378,6 @@ describe('条件选股弹窗', () => {
     const daysRow = days.parentElement!.parentElement as HTMLElement
     expect(daysRow.className).toContain('flex')
     expect(daysRow.textContent).toContain('统计窗口')
-
-    // 窗口截止日：日期框 +「启用」复选框同一行；默认不启用（框禁用、不带日期）
-    const asofInput = document.querySelector<HTMLInputElement>('[data-screen-field="asof"]')!
-    const asofToggle = document.querySelector<HTMLInputElement>('[data-screen-field="asof_enabled"]')!
-    expect(asofToggle.checked).toBe(false)
-    expect(asofInput.disabled).toBe(true)
-    expect(asofInput.value).toBe('')
-    const asofSection = document.querySelector('[data-fork-screen-asof]') as HTMLElement
-    expect(asofSection.textContent).toContain('窗口截止日')
-    expect(asofSection.contains(asofToggle)).toBe(true)
-
-    // 窗口截止日是**独立区域**，并且排在基础筛选之前（用户 2026-11-04 第 1 条）
-    const baseSection = document.querySelector('[data-fork-screen-base]')
-    expect(baseSection).not.toBeNull()
-    expect(
-      asofSection.compareDocumentPosition(baseSection as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    // 它不再属于基础筛选：基础筛选里没有日期框
-    expect((baseSection as HTMLElement).querySelector('[data-screen-field="asof"]')).toBeNull()
 
     // 总市值已经搬进条件列表：基础筛选里不该再有市值输入框
     expect(document.querySelector('[data-screen-field="market_cap.min_yi"]')).toBeNull()
@@ -379,6 +418,7 @@ describe('条件选股弹窗', () => {
 
   it('L2 连续阳线两个参数：倒数第几个交易日（默认 1）+ 天数（默认 4）', async () => {
     renderDialog()
+    await gotoBuild()
     await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
     await userEvent.click(await screen.findByText('连续阳线（收盘 > 开盘）'))
 
@@ -411,6 +451,7 @@ describe('条件选股弹窗', () => {
 
   it('L7 连续上涨（涨幅 > 0）：两个参数，提示语说「收盘价 > 前收」', async () => {
     renderDialog()
+    await gotoBuild()
     await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
     await userEvent.click(await screen.findByText('连续上涨（涨幅 > 0）'))
 
@@ -433,6 +474,7 @@ describe('条件选股弹窗', () => {
 
   it('L3 数字框右侧有加减按钮：点一次 ±1、到边界禁用、键盘 ↑/↓ 等价', async () => {
     renderDialog()
+    await gotoBuild()
     const up = () => screen.getByRole('button', { name: '统计窗口 +1' }) as HTMLButtonElement
     const down = () => screen.getByRole('button', { name: '统计窗口 -1' }) as HTMLButtonElement
     const input = daysInput()
@@ -465,6 +507,7 @@ describe('条件选股弹窗', () => {
 
   it('L4 条件参数的加减按钮：连续阳线起点 1 → 2，上限跟着窗口走', async () => {
     renderDialog()
+    await gotoBuild()
     await userEvent.click(screen.getByRole('button', { name: '+ 条件' }))
     await userEvent.click(await screen.findByText('连续阳线（收盘 > 开盘）'))
 
@@ -479,8 +522,9 @@ describe('条件选股弹窗', () => {
     expect(form.querySelectorAll('[data-fork-screen-stepper]')).toHaveLength(2)
   })
 
-  it('L5 弹窗宽 968px；「+ 条件 / + 条件组」只有一个加号', () => {
+  it('L5 弹窗宽 968px；「+ 条件 / + 条件组」只有一个加号', async () => {
     renderDialog()
+    await gotoBuild()
     expect(document.querySelector('[data-fork-screen-dialog]')!.className).toContain('max-w-[968px]')
 
     const addCondition = screen.getByRole('button', { name: '+ 条件' })
@@ -494,6 +538,7 @@ describe('条件选股弹窗', () => {
 
   it('L6 条件列表：浮层与条件窗口同宽对齐 + 滚轮真的能滚（自己 preventDefault 改 scrollTop）', async () => {
     renderDialog()
+    await gotoBuild()
     // jsdom 没有布局：给条件窗口和触发器各声明一个矩形，才能验证「同宽对齐」
     const dialog = document.querySelector('[data-fork-screen-dialog]') as HTMLElement
     dialog.getBoundingClientRect = () =>
