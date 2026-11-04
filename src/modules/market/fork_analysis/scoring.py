@@ -307,5 +307,6 @@ def combined(analysis: dict[str, Any], validation: Optional[dict[str, Any]]) -> 
     return {
         "verdict": "pass" if single is not None and single >= PASS_SCORE else "watch",
         "score": single,
-        "text": "只跑了一段，结论只看这一段的分数" if second is None else "只有测试段",
+        "text": ("只有一个分析段：结论只看这一段的分数，没有样本外校验"
+                 if second is None else "只有测试段"),
     }

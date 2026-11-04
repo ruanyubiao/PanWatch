@@ -25,6 +25,7 @@ from src.modules.market.fork_analysis import (
     leaderboard,
     portfolio,
     runner,
+    scoring,
     significance,
     stats,
     store,
@@ -929,3 +930,31 @@ def test_历史记录里分析任务带_kind_且推理任务也带(monkeypatch):
     kinds = {item["run_id"]: item["kind"] for item in out}
     assert kinds["20261020-101010-aaaa"] == "analysis"
     assert kinds["20261102-031502-o898"] == "infer"
+
+
+# ---------------------------------------------------------------------------
+# 单段分析（用户 2026-11-04 第 1 条）：没有测试段时只剩一段
+# ---------------------------------------------------------------------------
+def test_条件推理切分点按交易日七三开():
+    cal = days(100)
+    split = runner.infer_split_of(cal)
+    assert split == {"train_end": str(cal[69]), "valid_start": str(cal[70])}
+
+
+def test_区间太短时不给条件推理切分点():
+    """任一段不足 5 个交易日就不切：界面据此禁用创建，避免「整段搜索整段验算」。"""
+    assert runner.infer_split_of([]) is None
+    assert runner.infer_split_of(days(19)) is None
+    assert runner.infer_split_of(days(20)) is not None
+
+
+def test_单段分析只有一个分数():
+    """没有测试段 → 评分表只有一行「分析段」，合成结论不再要求两段都过线。"""
+    meta = {"segments": [{"kind": "train", "label": "分析段",
+                          "start": "2024-01-01", "end": "2025-12-31"}]}
+    scored = {"score": 63.0, "grade": "C"}
+    merged = scoring.combined(scored, None)
+    assert merged["verdict"] == "pass"
+    assert merged["score"] == 63.0
+    assert "只有一个分析段" in merged["text"]
+    assert meta["segments"][0]["label"] == "分析段"

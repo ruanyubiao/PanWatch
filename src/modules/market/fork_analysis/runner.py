@@ -90,6 +90,21 @@ def _request_of(preset_name: str, markets: Optional[Sequence[str]], include_st: 
     return request
 
 
+def infer_split_of(calendar: Sequence[_dt.date]) -> Optional[dict[str, str]]:
+    """一段区间 → 条件推理的两段切分点（交易日 7:3）。
+
+    用户 2026-11-04 第 1 条把表单里的测试开始/结束时间删掉了，但条件推理
+    必须有「搜索没看过的那一段」才有意义，所以切分点由后端算，界面只显示。
+    区间太短（算出来任一段不足 5 个交易日）就返回 None，界面据此不让提交。
+    """
+    if len(calendar) < 20:
+        return None
+    cut = int(len(calendar) * 0.7)
+    if cut < 5 or cut > len(calendar) - 5:
+        return None
+    return {"train_end": str(calendar[cut - 1]), "valid_start": str(calendar[cut])}
+
+
 def preview(payload: AnalysisCreate) -> dict[str, Any]:
     """创建前的预估：区间内有几个交易日、方法要多少前瞻行情、结束日上限。
 
@@ -117,10 +132,17 @@ def preview(payload: AnalysisCreate) -> dict[str, Any]:
                 f"结束日往前推 {spec.forward_days} 个交易日）"
             )
         calendar = forward.trading_calendar(conn, payload.start_date, effective_end)
-        segments = [{"kind": "train", "label": "推理段",
+        # 用户 2026-11-04 第 1 条：创建任务不再要测试段（也就没有测试分），
+        # 只留一段。有测试段时叫「推理段」，没有就叫「分析段」——
+        # 否则界面上一段数据顶着「推理段」的标签，会让人以为还有一段没跑。
+        segments = [{"kind": "train",
+                     "label": "推理段" if payload.test_start_date is not None else "分析段",
                      "start": payload.start_date.isoformat(),
                      "end": effective_end.isoformat(),
                      "end_display": end_display.isoformat()}]
+        # 条件推理要用两段（搜索段 / 验算段），但表单里只剩一个区间了，
+        # 所以由后端按交易日 7:3 给出切分点，界面直接引用，不再让用户填日期。
+        infer_split = infer_split_of(calendar)
         test_days: list[_dt.date] = []
         if payload.test_start_date is not None:
             test_end_display = payload.test_end_date or latest
@@ -165,6 +187,8 @@ def preview(payload: AnalysisCreate) -> dict[str, Any]:
         "test_effective_end_date": (str(test_days[-1]) if test_days else None),
         "validate_days": int(payload.validate_days),
         "forward_days": int(spec.forward_days),
+        # 条件推理用的切分点（没有测试段时由这里给出，见上面 infer_split）
+        "infer_split": infer_split,
         "segments": segments,
         "horizons": (list(spec.windows) if method_id != "stat_v1"
                      else list(horizons_for(payload.validate_days))),

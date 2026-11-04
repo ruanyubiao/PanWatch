@@ -19,7 +19,6 @@ import {
   DialogTitle,
 } from '@panwatch/base-ui/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@panwatch/base-ui/components/ui/select'
-import { Switch } from '@panwatch/base-ui/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@panwatch/base-ui/components/ui/tabs'
 import { SCREEN_MARKETS, type ScreenMarket } from '@/lib/screen-rule'
 import type { ScreenPreset } from '@/lib/screen-presets'
@@ -64,9 +63,9 @@ import {
 export const ANALYSIS_DIALOG_TEXTS_ZH = {
   button: '数据分析',
   title: '数据分析',
-  description: '用一个选股条件回测历史，给出两个评分：推理段找规律、测试段验真假。',
+  description: '用一个选股条件回测历史，给出一个评分（60 分 = 能和随机买入拉开差距、可以拿去用）。',
   createTitle: '创建数据分析任务',
-  createHint: '选择条件、区间与股票范围，任务在后台跑，可以关掉页面。',
+  createHint: '选条件、区间和验证天数就能跑；市场由条件自己决定，任务在后台跑，可以关掉页面。',
   preset: '选股条件',
   presetPlaceholder: '选择一个选股条件',
   presetEmpty: '还没有选股条件，先去「条件选股」保存一个',
@@ -79,14 +78,18 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
     return matched ? `方法 ${matched[1]}` : '方法 1'
   },
   methodFallback: '统计分析方法 1：持有期胜率与超额',
-  start: '推理开始时间',
-  end: '推理结束时间',
+  start: '分析开始时间',
+  end: '分析结束时间',
+  // 用户 2026-11-04 第 1 条：不要测试段了（也就没有测试分），只留一段
   testStart: '测试开始时间',
   testEnd: '测试结束时间',
   // 结束日按「显示口径」收：可以填到最新交易日，实际只分析到「减去验证天数」的那一天
   endHint: (effective: string, days: number) => `实际分析到 ${effective}（留 ${days} 个交易日做验证）`,
   testEndHint: (effective: string, days: number) => `实际验证到 ${effective}（留 ${days} 个交易日）`,
   testOptionalHint: '测试段用于验证，不参与任何挑选',
+  inferSplit: (trainEnd: string, validStart: string) =>
+    `条件推理会自动切两段：搜索段 ~${trainEnd}，验算段 ${validStart}~（按交易日 7:3，验算段搜索不看）`,
+  inferSplitPending: '还在估算区间，稍等一下再创建（条件推理需要被后端的切分点）',
   validateDays: '验证天数',
   // 用户 2026-10-23：提示改成「向未来看几个交易日」，不再带 1–30（范围由控件自己限住）
   validateDaysHint: '向未来看几个交易日，结束时间会自动往前留出这段',
@@ -157,7 +160,6 @@ export const ANALYSIS_DIALOG_TEXTS_ZH = {
 
 const DEFAULT_START = '2024-01-01'
 const DEFAULT_TRAIN_END = '2025-12-31'
-const DEFAULT_TEST_START = '2026-01-01'
 const DEFAULT_ITERATIONS = 100
 
 type Mode = 'create' | 'run' | 'infer'
@@ -166,17 +168,11 @@ interface FormState {
   preset: string
   /** 统计分析方法 id（只剩 stat_v3，保留字段是为了兼容后端） */
   method: string
-  /** 推理段 */
+  /** 分析段（用户 2026-11-04 第 1 条：不再有测试段，只有这一段） */
   startDate: string
   endDate: string
-  /** 测试段（只验算，不参与挑选） */
-  testStart: string
-  testEnd: string
   /** 验证天数（向前看几个交易日），默认 30，最小 1 */
   validateDays: number
-  marketAll: boolean
-  markets: ScreenMarket[]
-  includeSt: boolean
   /** 条件推理：在基础条件上反复微调（用户 2026-10-24 第 5 条） */
   inferEnabled: boolean
   inferIterations: number
@@ -247,12 +243,7 @@ export function AnalysisDialog({
     method: 'stat_v3',
     startDate: DEFAULT_START,
     endDate: '',
-    testStart: DEFAULT_TEST_START,
-    testEnd: '',
     validateDays: 30,
-    marketAll: true,
-    markets: [...SCREEN_MARKETS],
-    includeSt: false,
     inferEnabled: false,
     inferIterations: DEFAULT_ITERATIONS,
   })
@@ -305,12 +296,7 @@ export function AnalysisDialog({
       startDate: DEFAULT_START,
       // 预估回来之前先给一个合理的默认，回来后由 max_end_date 覆盖（用户没手选时）
       endDate: asof ?? DEFAULT_TRAIN_END,
-      testStart: DEFAULT_TEST_START,
-      testEnd: asof ?? '',
       validateDays: 30,
-      marketAll: true,
-      markets: [...SCREEN_MARKETS],
-      includeSt: false,
       inferEnabled: false,
       inferIterations: DEFAULT_ITERATIONS,
     })
@@ -376,22 +362,14 @@ export function AnalysisDialog({
             method: form.method,
             start_date: form.startDate,
             end_date: form.endDate || null,
-            test_start_date: form.testStart || null,
-            test_end_date: form.testEnd || null,
             validate_days: form.validateDays,
-            markets: form.marketAll ? [...SCREEN_MARKETS] : form.markets,
-            include_st: form.includeSt,
           })
           if (!cancelled) {
             setPreview(data)
             setPreviewError(null)
             // 结束时间默认 = 最新交易日（显示口径）；用户手选过就不动
             if (!endTouchedRef.current && data.max_end_date) {
-              setForm(current => ({
-                ...current,
-                endDate: data.max_end_date,
-                testEnd: current.testEnd || data.max_test_end_date || data.max_end_date,
-              }))
+              setForm(current => ({ ...current, endDate: data.max_end_date }))
             }
           }
         } catch (exc) {
@@ -406,8 +384,7 @@ export function AnalysisDialog({
       cancelled = true
       window.clearTimeout(handle)
     }
-  }, [form.endDate, form.includeSt, form.marketAll, form.markets, form.method, form.preset,
-      form.startDate, form.testEnd, form.testStart, form.validateDays, mode, open])
+  }, [form.endDate, form.method, form.preset, form.startDate, form.validateDays, mode, open])
 
   // 进行中：轮询；到终态后拉统计
   useEffect(() => {
@@ -485,20 +462,23 @@ export function AnalysisDialog({
     if (!form.preset || submitting) return
     setSubmitting(true)
     setError(null)
-    const markets = form.marketAll ? [...SCREEN_MARKETS] : form.markets
     try {
       if (form.inferEnabled) {
-        // 条件推理：训练段搜索 + 测试段验算（两段都由后端把「验证天数」扣掉）
+        // 条件推理：搜索段 + 验算段由后端按交易日 7:3 给出（表单里不再有测试日期）。
+        // 没拿到切分点就不提交：退回「整段搜索、整段验算」等于没有样本外校验。
+        const split = preview?.infer_split ?? null
+        if (!split) {
+          setError(T.inferSplitPending)
+          return
+        }
         const created = await createInfer({
           preset: form.preset,
           method: 'stat_v3',
           train_start: form.startDate,
-          train_end: form.endDate,
-          valid_start: form.testStart,
-          valid_end: form.testEnd || null,
+          train_end: split.train_end,
+          valid_start: split.valid_start,
+          valid_end: form.endDate || null,
           iterations: form.inferIterations,
-          markets,
-          include_st: form.includeSt,
         })
         setInferRun(created)
         setInferFinalists([])
@@ -511,11 +491,7 @@ export function AnalysisDialog({
         method: form.method,
         start_date: form.startDate,
         end_date: form.endDate || null,
-        test_start_date: form.testStart || null,
-        test_end_date: form.testEnd || null,
         validate_days: form.validateDays,
-        markets,
-        include_st: form.includeSt,
       })
       setRun(created)
       setReport(null)
@@ -662,20 +638,6 @@ export function AnalysisDialog({
     [T],
   )
 
-  const toggleMarket = (key: ScreenMarket) => {
-    setForm(current => {
-      if (current.marketAll) {
-        return { ...current, marketAll: false, markets: [key] }
-      }
-      const next = current.markets.includes(key)
-        ? current.markets.filter(item => item !== key)
-        : [...current.markets, key]
-      if (next.length === 0) return current
-      if (next.length === SCREEN_MARKETS.length) return { ...current, marketAll: true, markets: next }
-      return { ...current, markets: next }
-    })
-  }
-
   const progress = run?.progress
   const percent = useMemo(() => {
     if (!run) return 0
@@ -777,39 +739,6 @@ export function AnalysisDialog({
                     </span>
                   </div>
 
-                  {/* 测试段（用户第 1 条）：和推理段一样扣掉验证天数 */}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.testStart}</span>
-                    <input
-                      type="date"
-                      value={form.testStart}
-                      aria-label={T.testStart}
-                      data-fork-analysis-test-start
-                      onChange={event => setForm(current => ({ ...current, testStart: event.target.value }))}
-                      className="h-7 rounded-md border border-input bg-background px-2 text-[12px]"
-                    />
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.testEnd}</span>
-                    <input
-                      type="date"
-                      value={form.testEnd}
-                      aria-label={T.testEnd}
-                      data-fork-analysis-test-end
-                      max={preview?.max_test_end_date ?? preview?.max_end_date ?? undefined}
-                      onChange={event =>
-                        setForm(current => ({ ...current, testEnd: event.target.value }))
-                      }
-                      className="h-7 rounded-md border border-input bg-background px-2 text-[12px]"
-                    />
-                    <span className="text-[10px] text-muted-foreground">
-                      {preview?.test_effective_end_date
-                        ? T.testEndHint(preview.test_effective_end_date, preview.forward_days ?? 30)
-                        : T.testOptionalHint}
-                    </span>
-                  </div>
-
                   {/* 验证天数 */}
                   <div className="flex flex-wrap items-center gap-2" data-fork-analysis-validate-row="edit">
                     <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.validateDays}</span>
@@ -842,74 +771,6 @@ export function AnalysisDialog({
                     <span className="text-[10px] text-muted-foreground" data-fork-analysis-validate-hint>
                       {T.validateDaysHint}
                     </span>
-                  </div>
-
-                  {/* 市场：与条件选股界面完全同一套样式（带 ✓ 的 pill 组 + ST 开关） */}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.market}</span>
-                    <div className="flex flex-wrap items-center gap-1" role="group" aria-label={T.market}>
-                      <button
-                        type="button"
-                        aria-pressed={form.marketAll ? true : form.markets.length === 0 ? false : 'mixed'}
-                        aria-label={T.marketAll}
-                        data-fork-analysis-market-all
-                        onClick={() =>
-                          setForm(current => ({ ...current, marketAll: true, markets: [...SCREEN_MARKETS] }))
-                        }
-                        className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ${
-                          form.marketAll
-                            ? 'border-primary/60 bg-primary/10 text-primary'
-                            : 'border-border text-muted-foreground hover:text-foreground'
-                        }`}
-                      >
-                        <span
-                          className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] border border-current/60 text-[8px] leading-none"
-                          aria-hidden
-                        >
-                          {form.marketAll ? '✓' : form.markets.length === 0 ? '' : '–'}
-                        </span>
-                        {T.marketAll}
-                      </button>
-                      {/* 「全部」选中时其余四个显示为未选中（radio 组语义，与条件选股一致） */}
-                      {SCREEN_MARKETS.map(key => {
-                        const selected = !form.marketAll && form.markets.includes(key)
-                        return (
-                          <button
-                            key={key}
-                            type="button"
-                            aria-pressed={selected}
-                            aria-label={MARKET_LABELS[key]}
-                            data-fork-analysis-market={key}
-                            onClick={() => toggleMarket(key)}
-                            className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ${
-                              selected
-                                ? 'border-primary/60 bg-primary/10 text-primary'
-                                : 'border-border text-muted-foreground hover:text-foreground'
-                            }`}
-                          >
-                            <span
-                              className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] border border-current/60 text-[8px] leading-none"
-                              aria-hidden
-                            >
-                              {selected ? '✓' : ''}
-                            </span>
-                            {MARKET_LABELS[key]}
-                          </button>
-                        )
-                      })}
-                    </div>
-                    {/* 含 ST：与条件选股同一个 Switch 组件，跟在市场按钮后面 */}
-                    <div className="ml-3 flex items-center gap-1.5">
-                      <Switch
-                        checked={form.includeSt}
-                        aria-label={T.includeSt}
-                        data-fork-analysis-include-st
-                        onCheckedChange={checked =>
-                          setForm(current => ({ ...current, includeSt: checked }))
-                        }
-                      />
-                      <span className="text-[11px] text-muted-foreground">{T.includeSt}</span>
-                    </div>
                   </div>
 
                   {/* 条件推理（用户第 5 条）：股票范围下面一行，勾选后才可填次数 */}
@@ -964,6 +825,11 @@ export function AnalysisDialog({
                       />
                       <span className="text-[10px] text-muted-foreground">{T.inferIterationsUnit}</span>
                     </div>
+                    {form.inferEnabled && preview?.infer_split && (
+                      <p className="mt-1 text-[10px] text-muted-foreground" data-fork-analysis-infer-split>
+                        {T.inferSplit(preview.infer_split.train_end, preview.infer_split.valid_start)}
+                      </p>
+                    )}
                   </div>
 
                   <p className="text-[10px] text-muted-foreground" data-fork-analysis-estimate>
@@ -979,7 +845,10 @@ export function AnalysisDialog({
                 <Button
                   size="sm"
                   className="h-7 px-3 text-[12px]"
-                  disabled={!form.preset || submitting || presets.length === 0}
+                  // 条件推理要先拿到后端给的 7:3 切分点（预览接口），否则会退回
+                  // 「整段搜索、整段验算」——那等于没有样本外校验，分数必然虚高。
+                  disabled={!form.preset || submitting || presets.length === 0
+                    || (form.inferEnabled && !preview?.infer_split)}
                   onClick={() => void handleCreate()}
                   data-fork-analysis-create-button
                 >
