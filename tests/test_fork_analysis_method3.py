@@ -312,3 +312,21 @@ def test_cluster_excess_removes_common_market_factor():
     excess = method3._cluster_excess(signal, base, 0)
     assert excess["pp"] == pytest.approx(15.0, abs=2.0)
     assert excess["t"] is not None and excess["t"] > 8
+
+
+def test_有效分类覆盖率按维度去重且不超过一百():
+    """线上出现过「覆盖 521.1% 的信号」：不同维度把同一条信号重复计入。
+
+    现在按维度分别求和取最大，既不会被重复计数，也不会超过 100%。
+    """
+    usable = [
+        {"level": "industry", "n": 600},
+        {"level": "industry", "n": 300},
+        {"level": "mcap", "n": 700},
+        {"level": "board", "n": 900},
+    ]
+    # 逐维求和：industry 900、mcap 700、board 900 → 取最大 900/1000 = 90%
+    assert method3._coverage(usable, 1000) == 90.0
+    assert method3._coverage(usable * 3, 1000) <= 100.0
+    assert method3._coverage([], 1000) == 0.0
+    assert method3._coverage(usable, 0) == 0.0
