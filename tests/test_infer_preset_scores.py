@@ -184,3 +184,11 @@ def test_关掉应用层登录时用空token继续(tmp_path, monkeypatch):
     # 空 token 不能发 "Bearer " 头
     assert scheduler._headers("") == {}
     assert scheduler._headers("abc") == {"Authorization": "Bearer abc"}
+
+
+def test_自动保存用轮次自己的时间戳命名():
+    """同一个 tick 里保存多个轮次时，名字要能看出是哪一轮（不能全是 p11051755）。"""
+    scheduler = _load("scheduler_stamp", "scripts/infer_scheduler.py")
+    assert scheduler._run_stamp("20261105-061033-27hz") == "11050610"
+    assert scheduler._run_stamp("20261102-082002-8aii") == "11020820"
+    assert len(scheduler._run_stamp("")) == 8
