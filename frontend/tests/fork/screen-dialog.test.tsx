@@ -151,8 +151,9 @@ describe('条件选股弹窗', () => {
     expect(marketButton('科创').getAttribute('aria-pressed')).toBe('false')
   })
 
-  it('D2 控件挡住非法窗口值；留空提交被拦并给出错误', async () => {
-    renderDialog()
+  it('D2 控件挡住非法窗口值；留空时「保存」被拦并点名错误', async () => {
+    const onSavePreset = vi.fn()
+    renderDialog({ onSavePreset })
     await gotoBuild()
     const input = daysInput()
 
@@ -162,22 +163,23 @@ describe('条件选股弹窗', () => {
     await fillDays('999')
     expect(input.value).toBe('250')
 
-    // 清空 → 提交被拦（窗口必填），错误条里点名
+    /*
+     * 清空 → 「保存」被拦（窗口必填）。
+     * 用户 2026-11-05：两个 tab 的草稿各管各的，「条件选股」那一侧跑的是已保存条件，
+     * 窗口一定合法；会被这条校验拦住的只有「新建条件」里的保存。
+     */
     await userEvent.clear(input)
-    await gotoUse()
-    await userEvent.click(submitButton())
+    await userEvent.click(document.querySelector('[data-fork-screen-save-preset]') as HTMLElement)
     const issues = document.querySelector('[data-fork-screen-issues]')!
     expect(issues.textContent).toContain('有 1 处需要修正')
     expect(issues.textContent).toContain('统计窗口需为 1–250 的整数')
-    await waitFor(() => expect((submitButton() as HTMLButtonElement).disabled).toBe(true))
-    expect(mocks.screen).not.toHaveBeenCalled()
+    expect(onSavePreset).not.toHaveBeenCalled()
 
-    // 填回合法值 → 错误消失、按钮恢复
-    await gotoBuild()
+    // 填回合法值 → 错误消失
     await fillDays('30')
     await waitFor(() => expect(document.querySelector('[data-fork-screen-issues]')).toBeNull())
-    await gotoUse()
-    expect((submitButton() as HTMLButtonElement).disabled).toBe(false)
+    await userEvent.click(document.querySelector('[data-fork-screen-save-preset]') as HTMLElement)
+    expect(onSavePreset).toHaveBeenCalled()
   })
 
   it('D3 删除非空条件组要先确认；取消后树不变', async () => {

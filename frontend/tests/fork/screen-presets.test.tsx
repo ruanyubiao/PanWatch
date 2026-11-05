@@ -181,44 +181,46 @@ describe('条件选股弹窗：标题下的「选股条件」下拉（2026-11-04
     expect(document.querySelector('[data-fork-preset-clear]')).toBeNull()
   })
 
-  it('N8 选一条把名字交出去；已选中时叉叉在触发框里（不是列表多一行），点它交回 null', async () => {
+  it('N8 「条件选股」的下拉只换这一侧的草稿，不交给父组件（两个 tab 互不相干）', async () => {
     const onSelectPreset = vi.fn()
     renderPicker({ presets: [preset('四连阳'), preset('低市值')], onSelectPreset })
+
+    const previewText = () => document.querySelector('[data-fork-screen-preview]')?.textContent || ''
 
     // 没选中 → 不显示叉叉
     expect(document.querySelector('[data-fork-preset-clear]')).toBeNull()
 
     await userEvent.click(document.querySelector('[data-fork-preset-select]') as HTMLElement)
     await userEvent.click(await screen.findByRole('option', { name: '四连阳' }))
-    expect(onSelectPreset).toHaveBeenCalledWith('四连阳')
 
-    cleanup()
-    renderPicker({ presets: [preset('四连阳')], presetName: '四连阳', onSelectPreset })
+    // 用户 2026-11-05：这一侧选中 = 「要搜哪一条」，不能顺手把父组件的
+    // 「正在编辑哪一条」也改掉，所以 onSelectPreset 一次都不该被调
+    expect(onSelectPreset).not.toHaveBeenCalled()
+    expect(previewText()).toContain('连续')
+
     const clear = document.querySelector('[data-fork-preset-clear]') as HTMLButtonElement
     expect(clear).toBeTruthy()
     // 叉叉挂在触发框那一块里，且没展开下拉就已经在文档中（用户 2026-11-05：hover 才显形）
     expect(clear.closest('[data-fork-screen-preset-picker]')).toBeTruthy()
     expect(screen.queryByRole('listbox')).toBeNull()
     await userEvent.click(clear)
-    expect(onSelectPreset).toHaveBeenCalledWith(null)
-    // 点叉叉只清空，不该顺手把下拉打开
+    // 点叉叉只清空这一侧的草稿，不回传父组件、也不顺手把下拉打开
+    expect(onSelectPreset).not.toHaveBeenCalled()
+    expect(previewText()).not.toContain('连续')
     expect(screen.queryByRole('listbox')).toBeNull()
   })
 
-  it('N8b 换了 initialRequest 就换掉下面整块内容；清空回到新增条件', () => {
+  it('N8b 父组件换掉 initialRequest 时，「条件选股」这边的选择不受影响', () => {
     const { rerenderWith } = renderPicker({ presets: [preset('四连阳')] })
     const previewText = () => document.querySelector('[data-fork-screen-preview]')?.textContent || ''
 
     // 新增条件：条件树是空的
     expect(previewText()).not.toContain('连续')
 
-    // 选中「四连阳」→ 规则预览换成这个条件的内容
+    // 页面在别处（「新建条件」里选了一条）换了 initialRequest —— 这一侧不动
     rerenderWith({ presetName: '四连阳', initialRequest: baseRequest() })
-    expect(previewText()).toContain('连续')
-
-    // 点叉叉清空 → 内容删除，回到新增条件
-    rerenderWith({ presetName: null, initialRequest: null })
     expect(previewText()).not.toContain('连续')
+    expect(document.querySelector('[data-fork-preset-clear]')).toBeNull()
   })
 })
 
@@ -351,11 +353,13 @@ describe('提示与「选择条件」下拉按 tab 分开（用户 2026-11-05）
     expect(useHint.isConnected).toBe(false)
   })
 
-  it('H2 正在编辑某条已保存条件：两个 tab 的提示都点名那一条', () => {
+  it('H2 正在编辑某条已保存条件：只有「新建条件」的提示点名那一条', () => {
+    // 用户 2026-11-05：两个 tab 现在互不相干 —— 「条件选股」讲的是「要搜什么」，
+    // 不该被「正在编辑哪一条」污染（否则看着像两处在互相改写）。
     open({ presets: [preset('四连阳')], presetName: '四连阳' })
     expect(
       document.querySelector('[data-fork-screen-hint="use"]')!.textContent,
-    ).toContain(SCREEN_PRESET_TEXTS_ZH.editingPreset('四连阳'))
+    ).toBe(SCREEN_TEXTS_ZH.description)
     cleanup()
 
     open({ presets: [preset('四连阳')], presetName: '四连阳' }, 'build')
