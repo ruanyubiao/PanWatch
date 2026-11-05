@@ -690,6 +690,19 @@ def _best_variant_index(run_id: str) -> Optional[int]:
     return best_index
 
 
+def _run_stamp(run_id: str) -> str:
+    """``20261105-061033-27hz`` → ``11050610``（月日时分），给保存的条件起名用。
+
+    以前用「当前时间」当名字前缀：一轮保存多个轮次时前缀全一样（``p11051755``），
+    只能靠评分后缀区分，看名字不知道是哪一轮。用轮次自己的时间戳更清楚，
+    而且同一个 run 重复保存时名字稳定。
+    """
+    digits = re.sub(r"[^0-9]", "", str(run_id) or "")
+    if len(digits) >= 12:          # YYYYMMDDHHMM…
+        return digits[4:12]        # MMDDHHMM
+    return datetime.now().strftime("%m%d%H%M")
+
+
 def auto_save(token: str, runs: list[dict[str, Any]], state: dict[str, Any]) -> None:
     """自动保存够格的条件（每轮只存一次）。
 
@@ -719,9 +732,12 @@ def auto_save(token: str, runs: list[dict[str, Any]], state: dict[str, Any]) -> 
         if index is None:
             _log(f"autosave SKIP run={run_id}：找不到最优变体序号")
             continue
-        name = _preset_name("p", state)
+        name = f"p{_run_stamp(run_id)}"
+        saved_name = name
         try:
-            _post_empty(f"/api/stocks/infer/runs/{run_id}/save?index={index}&name={name}", token)
+            resp = _post_empty(f"/api/stocks/infer/runs/{run_id}/save?index={index}&name={name}", token)
+            if isinstance(resp, dict) and resp.get("name"):
+                saved_name = str(resp["name"])
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:200]
             _log(f"autosave FAILED run={run_id} http={exc.code} {detail}")
@@ -731,7 +747,7 @@ def auto_save(token: str, runs: list[dict[str, Any]], state: dict[str, Any]) -> 
             continue
         saved.add(run_id)
         scope = "通用" if general else "个股"
-        _log(f"autosave OK run={run_id} -> {name} （{tr}/{te}，{scope}，序号 {index}）")
+        _log(f"autosave OK run={run_id} -> {saved_name} （{tr}/{te}，{scope}，序号 {index}）")
     state["saved"] = sorted(saved)
 
 
