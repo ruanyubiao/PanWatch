@@ -89,6 +89,13 @@ CRON_LINE = "*/5 * * * * {py} {script} tick >> {log} 2>&1"
 # HTTP
 # --------------------------------------------------------------------------- #
 def _login() -> str:
+    """登录拿 token。
+
+    服务器关掉应用层登录（``deploy/50-disable-login.sh`` 删掉 auth 三项）时，
+    ``/api/auth/login`` 返回 400 ``auth_not_configured``，但此时所有接口本来就放行
+    （``get_current_user`` 见无密码直接 return None）—— 这种情况返回空 token，
+    不能当成「接口不可达」把整轮调度跳过。
+    """
     with open(CRED_FILE, "r", encoding="utf-8") as fh:
         cred = json.load(fh)
     req = urllib.request.Request(
@@ -97,12 +104,27 @@ def _login() -> str:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.load(resp)["data"]["token"]
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.load(resp)["data"]["token"]
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        if exc.code == 400 and "auth_not_configured" in body:
+            _log("login skipped：应用层登录已关闭（auth_not_configured），用空 token 访问")
+            return ""
+        raise
+
+
+def _headers(token: str, **extra: str) -> dict[str, str]:
+    """带 token 的请求头；空 token（免登录）时不发 Authorization。"""
+    headers = dict(extra)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _get(path: str, token: str) -> Any:
-    req = urllib.request.Request(API + path, headers={"Authorization": f"Bearer {token}"})
+    req = urllib.request.Request(API + path, headers=_headers(token))
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.load(resp)["data"]
 
@@ -111,7 +133,7 @@ def _post(path: str, payload: dict[str, Any], token: str, timeout: int = 60) -> 
     req = urllib.request.Request(
         API + path,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        headers=_headers(token, **{"Content-Type": "application/json"}),
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -120,7 +142,7 @@ def _post(path: str, payload: dict[str, Any], token: str, timeout: int = 60) -> 
 
 def _post_empty(path: str, token: str) -> Any:
     req = urllib.request.Request(
-        API + path, data=b"", headers={"Authorization": f"Bearer {token}"}, method="POST"
+        API + path, data=b"", headers=_headers(token), method="POST"
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.load(resp)["data"]
