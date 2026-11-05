@@ -686,9 +686,11 @@ export function AnalysisDialog({
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto scrollbar pr-1">
           {error && <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px]">{error}</p>}
 
-          {/* 新建任务表单常驻展开：任务在跑也照样能再起一个（用户 2026-11-04） */}
-          <div className="order-2 shrink-0 space-y-3" data-fork-analysis-create>
-              <div className="rounded-lg border border-border/60 bg-accent/10 p-3">
+          {/* 新建任务表单常驻展开：任务在跑也照样能再起一个（用户 2026-11-04）。
+              没有任务面板时卡片撑满剩余高度（用户 2026-11-05：原来切到「创建任务」
+              下半屏是空的）；有面板时保持自然高度，免得把表单挤扁、字段溢出到面板上。 */}
+          <div className={`order-2 flex min-h-0 flex-col gap-3 ${mode === 'create' ? 'flex-1' : ''}`} data-fork-analysis-create>
+              <div className={`flex min-h-0 flex-col rounded-lg border border-border/60 bg-accent/10 p-3 ${mode === 'create' ? 'flex-1' : ''}`}>
                 <p className="mb-2 text-[12px] font-medium">{T.createTitle}</p>
                 <p className="mb-2 text-[10px] text-muted-foreground">{T.createHint}</p>
 
@@ -857,7 +859,7 @@ export function AnalysisDialog({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <Button
                   size="sm"
                   className="h-7 px-3 text-[12px]"
