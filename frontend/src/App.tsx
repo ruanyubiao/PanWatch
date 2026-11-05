@@ -24,6 +24,7 @@ const {
   // fork：分析页（上游 Stocks.tsx 的副本 + fork 改造），挂在 /analysis
   ForkAnalysisPage,
   ForkAnalysisReportPage,
+  ForkAnalysisTaskPage,
   GettingStartedPage,
   OpportunitiesPage,
   StocksPage,
@@ -138,7 +139,10 @@ function App() {
   }, [version])
 
   // 数据分析完整报告：独立页面，不显示任何导航（用户 2026-10-22 第 7 条）
-  const bareReport = location.pathname.startsWith('/analysis/report/')
+  // fork：独立页面（完整报告 / 任务详情）不显示任何导航与返回（用户 2026-10-22 第 7 条、2026-11-05）
+  const bareReport =
+    location.pathname.startsWith('/analysis/report/') ||
+    location.pathname.startsWith('/analysis/task/')
 
   // 登录页面不显示导航
   if (location.pathname === '/login') {
@@ -328,6 +332,8 @@ function App() {
               <Route path="/analysis" element={<ForkAnalysisPage />} />
               {/* fork：数据分析完整报告（弹窗里「查看完整报告」在新标签页打开） */}
               <Route path="/analysis/report/:runId" element={<ForkAnalysisReportPage />} />
+              {/* fork：任务详情独立页（历史任务点一行，在新窗口打开；无导航、无返回） */}
+              <Route path="/analysis/task/:kind/:runId" element={<ForkAnalysisTaskPage />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/evaluations" element={<EvaluationsPage />} />
               <Route path="/history" element={<HistoryPage />} />
