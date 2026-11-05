@@ -32,6 +32,7 @@ import contextlib
 import fcntl
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -155,8 +156,13 @@ def _log(line: str) -> None:
     except OSError:
         pass
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    with open(LOG_FILE, "a", encoding="utf-8") as fh:
-        fh.write(f"{stamp} {line}\n")
+    # 日志写不进去（目录被清、盘满、权限）不能把整轮 tick 干掉：
+    # 这条路径在 cron 里跑，抛异常等于调度器静默停摆。
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {line}\n")
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -707,6 +713,72 @@ def auto_save(token: str, runs: list[dict[str, Any]], state: dict[str, Any]) -> 
     state["saved"] = sorted(saved)
 
 
+#: 名字末尾的评分后缀：``_999_778`` / ``_716``（和 fork_infer.search 保持一致）。
+SCORE_SUFFIX_RE = re.compile(r"(?:_\d{2,4}){1,2}$")
+
+
+def _score_suffix_text(item: dict[str, Any]) -> str:
+    """这一轮的两个评分 ×10 取整数部分（``_716_491``）。没有分就没后缀。"""
+    parts: list[str] = []
+    for key in ("score_train", "score_test"):
+        value = item.get(key)
+        if value is None:
+            continue
+        try:
+            parts.append(str(int(float(value) * 10)))
+        except (TypeError, ValueError):
+            continue
+    return "_" + "_".join(parts) if parts else ""
+
+
+def rename_preset_with_scores(runs: list[dict[str, Any]], state: dict[str, Any]) -> None:
+    """轮次跑完后，把这一轮用的基础条件名补上评分（用户 2026-11-05 第 1/2 条）。
+
+    调度器开轮前写下的 ``r11050610`` 这类条件名本身没有分数 —— 分数只有跑完才有。
+    这里在轮次结束后把文件改名成 ``r11050610_716_491``，并回写文件内的 name，
+    这样「新推理出来的条件」在已保存条件里也带着两个评分。
+    """
+    by_run = {str(entry.get("run_id")): str(entry.get("preset") or "")
+              for entry in (state.get("starts") or [])}
+    renamed = dict(state.get("renamed") or {})
+    changed = False
+    for item in _finished(runs):
+        run_id = str(item.get("run_id"))
+        preset = by_run.get(run_id) or ""
+        if not preset or run_id in renamed:
+            continue
+        suffix = _score_suffix_text(item)
+        if not suffix:
+            continue
+        old_path = os.path.join(PRESET_DIR, preset + ".json")
+        new_name = preset + suffix
+        if SCORE_SUFFIX_RE.search(preset) or not os.path.exists(old_path):
+            renamed[run_id] = preset
+            changed = True
+            continue
+        new_path = os.path.join(PRESET_DIR, new_name + ".json")
+        try:
+            with open(old_path, "r", encoding="utf-8") as handle:
+                record = json.load(handle)
+            if not isinstance(record, dict):
+                record = {}
+            record["name"] = new_name
+            temp = os.path.join(PRESET_DIR, f".rename-{new_name}.json")
+            with open(temp, "w", encoding="utf-8") as handle:
+                json.dump(record, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            os.replace(temp, new_path)
+            os.remove(old_path)
+        except OSError as exc:
+            _log(f"preset rename FAILED {preset} -> {new_name}: {exc}")
+            continue
+        renamed[run_id] = new_name
+        changed = True
+        _log(f"preset rename {preset} -> {new_name}（run={run_id}）")
+    if changed:
+        state["renamed"] = renamed
+
+
 def prune(state: dict[str, Any], dry: bool = False) -> dict[str, Any]:
     """清磁盘但**不删历史记录**（用户 2026-11-02 第 2 条）。
 
@@ -852,8 +924,9 @@ def cmd_tick(args: argparse.Namespace) -> int:
     if resumed:
         runs = _runs(token)
 
-    # 3) 跑完的轮次自动保存 + 清盘
+    # 3) 跑完的轮次自动保存 + 补评分后缀 + 清盘
     auto_save(token, runs, state)
+    rename_preset_with_scores(runs, state)
     auto_save_pr = prune(state)
     state["last_tick"] = time.time()
     state["last_prune"] = auto_save_pr

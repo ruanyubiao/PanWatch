@@ -525,9 +525,9 @@ def _save_with(monkeypatch, scores, name=None, exists_times=0):
 
 
 def test_保存条件名字带两个评分乘十的整数部分(monkeypatch):
-    """99.9 / 77.8 → ``-999-778``（用户第 1 条）。"""
+    """99.9 / 77.8 → ``_999_778``（用户 2026-11-05 第 1/2 条，下划线）。"""
     name = _save_with(monkeypatch, {"train": {"score": 99.9}, "test": {"score": 77.8}})
-    assert name == "xg1-1-999-778"
+    assert name == "xg1-1_999_778"
 
 
 def test_没有评分时不加后缀(monkeypatch):
@@ -541,13 +541,13 @@ def test_同名时自动加序号(monkeypatch):
     """同一分数被存第二次：不能静默覆盖，也不该直接报错让用户不知所措。"""
     name = _save_with(monkeypatch, {"train": {"score": 60.0}, "test": {"score": 61.0}},
                       exists_times=1)
-    assert name == "xg1-1-600-610-1"
+    assert name == "xg1-1_600_610_1"
 
 
 def test_用户指定的名字优先于自动编号(monkeypatch):
     name = _save_with(monkeypatch, {"train": {"score": 88.0}, "test": {"score": 70.0}},
                       name="my_good")
-    assert name == "my_good-880-700"
+    assert name == "my_good_880_700"
 
 
 # --------------------------------------------------------------------------- #
