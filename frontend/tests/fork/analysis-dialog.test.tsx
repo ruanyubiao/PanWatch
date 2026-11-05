@@ -481,18 +481,12 @@ describe('AnalysisDialog', () => {
     expect(mocks.create.mock.calls[0][0].validate_days).toBe(12)
   })
 
-  it('历史 tab 里点分析任务开的是任务详情窗口，不是数据分析界面', async () => {
+  it('历史 tab 里点分析任务在新窗口打开任务详情（不在弹窗里再嵌一层对话框）', async () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
     mocks.history.mockResolvedValue([
       runMeta({ status: 'done', running: false, days_done: 1650, hits: 1800, excel_ready: true,
         kind: 'analysis', score_train: 66.2, score_test: 61.8 }),
     ])
-    mocks.detail.mockResolvedValue({
-      run: runMeta({ status: 'done', running: false, excel_ready: true }),
-      condition: { name: 'xg1', saved_at: '2026-10-20T10:00:00+08:00', request: presets[0].request },
-      verdict: { usable: false, reason: 'no_edge', best_horizon: 10, best_excess_pp: 0.4, sample: 1800 },
-      horizons: [5, 10, 15, 20, 25, 30],
-    })
-    mocks.report.mockResolvedValue(report())
     renderDialog()
     const user = userEvent.setup()
     await user.click(await screen.findByRole('tab', { name: '历史任务' }))
@@ -502,11 +496,12 @@ describe('AnalysisDialog', () => {
       return node as HTMLElement
     })
     await user.click(row)
-    await waitFor(() => expect(document.querySelector('[data-fork-analysis-task-detail]')).toBeTruthy())
-    expect(document.body.textContent).toContain('条件详情')
-    // 详情窗口只给报告与 Excel，不给「新建任务」
-    expect(screen.queryByRole('button', { name: '新建任务' })).toBeNull()
-    expect(screen.getByRole('button', { name: /查看完整报告/ })).toBeTruthy()
+    // 新窗口、无导航无返回：kind 进 URL，由独立页面自己渲染
+    expect(open).toHaveBeenCalledWith('/analysis/task/analysis/20261022-120000-abcd', '_blank', 'noopener')
+    // 弹窗里不该再出现内嵌详情，也不该替页面去拉详情接口
+    expect(document.querySelector('[data-fork-analysis-task-detail]')).toBeNull()
+    expect(mocks.detail).not.toHaveBeenCalled()
+    open.mockRestore()
   })
 
   it('历史 tab 直接列出全部任务（不再是简版 + 查看全部两层）', async () => {
@@ -526,24 +521,12 @@ describe('AnalysisDialog', () => {
     expect(mocks.history).toHaveBeenCalledWith(500)
   })
 
-  it('推理任务在历史 tab 里点开进推理面板，不丢给分析详情接口', async () => {
+  it('推理任务点开走的是 infer 详情页，不丢给分析详情接口', async () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
     mocks.history.mockResolvedValue([
       runMeta({ run_id: '20261102-031502-o898', status: 'done', running: false, kind: 'infer',
         preset: 'r11020315', score_train: 53.1, score_test: 57.0 }),
     ])
-    mocks.inferGet.mockResolvedValue({
-      run_id: '20261102-031502-o898',
-      created_at: '2026-11-02T03:15:02+08:00',
-      status: 'done',
-      preset: 'r11020315',
-      iterations: 1000,
-      done_iterations: 0,
-      alive: false,
-      train_start: '2024-01-02',
-      train_end: '2025-12-31',
-      valid_start: '2026-01-05',
-      valid_end: '2026-09-02',
-    })
     renderDialog()
     const user = userEvent.setup()
     await user.click(await screen.findByRole('tab', { name: '历史任务' }))
@@ -553,10 +536,12 @@ describe('AnalysisDialog', () => {
       return node as HTMLElement
     })
     await user.click(row)
-    await waitFor(() => expect(document.querySelector('[data-fork-infer-panel]')).toBeTruthy())
-    expect(mocks.inferGet).toHaveBeenCalledWith('20261102-031502-o898')
-    // 关键：不能去问分析详情（那会报「分析任务 xxx 不存在」）
+    expect(open).toHaveBeenCalledWith('/analysis/task/infer/20261102-031502-o898', '_blank', 'noopener')
+    // 关键：不能去问分析详情（那会报「分析任务 xxx 不存在」），也不在弹窗里切到推理面板
     expect(mocks.detail).not.toHaveBeenCalled()
+    expect(mocks.inferGet).not.toHaveBeenCalled()
+    expect(document.querySelector('[data-fork-infer-panel]')).toBeNull()
+    open.mockRestore()
   })
 
   it('打开时若有任务在跑，直接进那个任务的进度页', async () => {
