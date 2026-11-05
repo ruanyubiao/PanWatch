@@ -378,24 +378,30 @@ describe('AnalysisDialog', () => {
     expect(document.body.textContent).not.toContain('新建任务')
   })
 
-  it('切 tab 不留半屏空白：创建卡片在任何状态下都撑满剩余高度', async () => {
+  it('不留半屏空白：弹窗贴合内容，不强制 80vh，卡片也不再撑满', async () => {
     mocks.create.mockResolvedValue(runMeta())
     renderDialog()
 
-    // 空态：卡片撑满 80vh 的窗口，底部不再空一块
-    const idleCard = document.querySelector('[data-fork-analysis-create] > div') as HTMLElement
-    expect(idleCard.className).toContain('grow')
-    expect(idleCard.className).toContain('shrink-0')
-    expect(document.querySelector('[data-fork-analysis-dialog]')!.className).toContain('h-[80vh]')
+    // 根因：固定 h-[80vh] 时，内容短就必然在底部留白；把卡片 grow 只是把空白
+    // 换成「空卡片」。正确做法是让弹窗高度跟着内容走，只用 max-h 封顶。
+    const dlg = document.querySelector('[data-fork-analysis-dialog]') as HTMLElement
+    expect(dlg.className).toContain('max-h-[85vh]')
+    expect(dlg.className).not.toContain('h-[80vh]')
 
-    // 有任务面板时同样撑满（用户 2026-11-05 反馈：有面板时下半屏空了出来），
-    // 但不能被压扁 —— shrink-0 保证内容超高时交给外层滚动，而不是压缩字段。
+    const idleCard = document.querySelector('[data-fork-analysis-create] > div') as HTMLElement
+    expect(idleCard.className).not.toContain('grow')
+
+    // 内容超高时必须能滚，而不是被 overflow-hidden 裁掉
+    const scroller = document.querySelector('[data-fork-analysis-create]')!.parentElement as HTMLElement
+    expect(scroller.className).toContain('overflow-y-auto')
+    expect(scroller.className).toContain('max-h-[')
+
+    // 有任务面板时也不撑满（同样是为了不留白）
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '创建任务' }))
     await waitFor(() => expect(document.querySelector('[data-fork-analysis-run="running"]')).toBeTruthy())
     const busyCard = document.querySelector('[data-fork-analysis-create] > div') as HTMLElement
-    expect(busyCard.className).toContain('grow')
-    expect(busyCard.className).toContain('shrink-0')
+    expect(busyCard.className).not.toContain('grow')
   })
 
   it('点停止会调用停止接口', async () => {
@@ -750,13 +756,14 @@ describe('AnalysisDialog', () => {
     expect(hint.textContent).toContain('60 分 = 能和随机买入拉开差距')
   })
 
-  it('A2 弹窗高度固定：切 tab 前后类名不变（不会跟着内容伸缩）', async () => {
+  it('A2 弹窗有明确高度上限：切 tab 前后类名不变，且不会溢出视口', async () => {
     const user = userEvent.setup()
     renderDialog()
 
     const content = () => document.querySelector('[data-fork-analysis-dialog]') as HTMLElement
     const before = content().className
-    expect(before).toContain('h-[80vh]')
+    expect(before).toContain('max-h-[85vh]')
+    expect(before).toContain('min-h-[320px]')
     expect(before).toContain('flex-col')
 
     await user.click(screen.getByRole('tab', { name: '历史任务' }))
