@@ -378,6 +378,23 @@ describe('AnalysisDialog', () => {
     expect(document.body.textContent).not.toContain('新建任务')
   })
 
+  it('切 tab 不留半屏空白：没有任务面板时创建卡片撑满，有面板时保持自然高度', async () => {
+    mocks.create.mockResolvedValue(runMeta())
+    renderDialog()
+
+    // 空态：卡片带 flex-1，把 80vh 的窗口填满，底部不再空一块
+    const idleCard = document.querySelector('[data-fork-analysis-create] > div') as HTMLElement
+    expect(idleCard.className).toContain('flex-1')
+    expect(document.querySelector('[data-fork-analysis-dialog]')!.className).toContain('h-[80vh]')
+
+    // 有任务面板时不撑：撑了会把表单挤扁、字段溢出到面板上
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '创建任务' }))
+    await waitFor(() => expect(document.querySelector('[data-fork-analysis-run="running"]')).toBeTruthy())
+    const busyCard = document.querySelector('[data-fork-analysis-create] > div') as HTMLElement
+    expect(busyCard.className).not.toContain('flex-1')
+  })
+
   it('点停止会调用停止接口', async () => {
     mocks.create.mockResolvedValue(runMeta())
     mocks.stopRun.mockResolvedValue(runMeta({ status: 'stopped', days_done: 120 }))
