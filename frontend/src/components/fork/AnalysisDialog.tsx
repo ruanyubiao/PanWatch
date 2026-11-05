@@ -44,7 +44,6 @@ import { AnalysisHistoryTab } from './analysis/AnalysisHistoryTab'
 import { AnalysisMethodResult } from './analysis/AnalysisMethodResult'
 import { AnalysisStockTable } from './analysis/AnalysisStockTable'
 import { AnalysisSummaryBody } from './analysis/AnalysisSummary'
-import { AnalysisTaskDetailDialog } from './analysis/AnalysisTaskDetail'
 import { AnalysisInferPanel } from './analysis/AnalysisInferPanel'
 import { AnalysisScoreCard } from './analysis/AnalysisScoreCard'
 import {
@@ -261,8 +260,6 @@ export function AnalysisDialog({
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [stopping, setStopping] = useState(false)
-  // 历史任务点开的是「任务详情」窗口；「查看全部」是完整列表
-  const [detailRunId, setDetailRunId] = useState<string | null>(null)
   // 两个 tab：创建任务 / 历史任务（用户 2026-11-02 第 4 条）
   const [tab, setTab] = useState<'create' | 'history'>('create')
   // 条件推理（从本弹窗创建，取代主界面原来的「条件推理」按钮）
@@ -616,29 +613,9 @@ export function AnalysisDialog({
     }
   }
 
-  // 历史行 → 对应详情。**必须按 kind 分发**：推理任务有自己的接口，
-  // 丢给分析详情会报「分析任务 xxx 不存在」（2026-11-02 第 3 条）。
-  const openHistoryRun = useCallback(
-    (item: AnalysisRunMeta) => {
-      if (item.kind === 'infer') {
-        void getInferRun(item.run_id)
-          .then(next => {
-            setInferRun(next)
-            setMode('infer')
-            setTab('create')
-            if (!['pending', 'running', 'paused'].includes(next.status)) {
-              void getInferResults(next.run_id)
-                .then(data => setInferFinalists(data.finalists ?? []))
-                .catch(() => undefined)
-            }
-          })
-          .catch(exc => setError(T.openFailed(exc instanceof Error ? exc.message : String(exc))))
-        return
-      }
-      setDetailRunId(item.run_id)
-    },
-    [T],
-  )
+  // 历史行 → 在新窗口打开任务详情（用户 2026-11-05）。
+  // 弹窗里不再内嵌详情，也不用再按 kind 分发接口 —— kind 直接进了 URL。
+  // detailRunId 状态随内嵌详情一起删掉了。
 
   const progress = run?.progress
   const percent = useMemo(() => {
@@ -1047,16 +1024,10 @@ export function AnalysisDialog({
             <p className="mb-2 shrink-0 text-[11px] text-muted-foreground" data-fork-analysis-hint="history">
               {T.description}
             </p>
-            <AnalysisHistoryTab onOpen={openHistoryRun} reloadKey={historyReload} />
+            <AnalysisHistoryTab reloadKey={historyReload} />
           </TabsContent>
         </Tabs>
       </DialogContent>
-
-      <AnalysisTaskDetailDialog
-        runId={detailRunId}
-        open={detailRunId !== null}
-        onOpenChange={next => !next && setDetailRunId(null)}
-      />
     </Dialog>
   )
 }

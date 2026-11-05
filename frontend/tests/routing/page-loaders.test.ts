@@ -9,6 +9,8 @@ describe('route page loaders', () => {
       // fork: 分析页（A 股全市场行情表），挂在 /analysis
       'forkAnalysis',
     'forkAnalysisReport',
+      // fork: 任务详情独立页（/analysis/task/:kind/:runId）
+      'forkAnalysisTask',
       'dashboard',
       'gettingStarted',
       'stocks',
