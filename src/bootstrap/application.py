@@ -30,6 +30,7 @@ from src.modules.automation.api import agents, suggestions, templates
 from src.modules.market.api import (
     discovery,
     fork_analysis,
+    fork_catalog,
     fork_infer,
     fork_market,
     fork_screen,
@@ -81,6 +82,11 @@ app.include_router(
 # 全市场列表一个外网请求都不发；路径 /api/stocks/market-table。
 app.include_router(
     fork_market.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
+)
+# fork: A 股全市场目录（浏览「全部 / 上证 / 深证 / 科创 / 创业 / ST」时的板块计数）。
+# 上游只有必须带关键词的 /stocks/search，没有「列出全市场」的接口；路径 /api/stocks/catalog。
+app.include_router(
+    fork_catalog.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
 )
 # fork: 条件选股（分析页「条件选股」按钮的后端）。同样只读本机 MySQL，
 # 路径 /api/stocks/screen；业务逻辑在 src/modules/market/fork_screen/。
