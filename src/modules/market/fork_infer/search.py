@@ -31,6 +31,7 @@ import datetime as _dt
 import logging
 import os
 import random
+import re
 import threading
 import time
 from pathlib import Path
@@ -976,23 +977,40 @@ def results(run_id: str, limit: int = 50) -> dict[str, Any]:
     }
 
 
-def _score_suffix(meta: dict[str, Any]) -> str:
-    """两个评分 ×10 取整数部分，拼成名字后缀（用户 2026-11-02 第 1 条）。
+#: 名字末尾的评分后缀：``_999_778`` / ``_716``（2–4 位数字，1–2 段）。
+#: 只认 2 位以上，避免把 ``base_1`` 这种自带数字的名字误当已带后缀。
+SCORE_SUFFIX_RE = re.compile(r"(?:_\d{2,4}){1,2}$")
 
-    99.9 / 77.8 → ``-999-778``。分数缺失（没跑完 / 空搜索）时不给后缀，
-    免得名字里出现 ``-None``。整数部分用 ``int()`` 向下取整：81.9 → 819。
+
+def _score_suffix(meta: dict[str, Any]) -> str:
+    """评分 ×10 取整数部分，拼成名字后缀（用户 2026-11-05）。
+
+    99.9 / 77.8 → ``_999_778``；只有一段（单段分析）→ ``_716``。
+    没有分数的段直接跳过：推理轮里验证段没跑出分，不该让整条后缀消失。
+    整数部分用 ``int()`` 向下取整：81.9 → 819。
     """
     scores = meta.get("scores") or {}
     parts: list[str] = []
     for key in ("train", "test"):
         value = (scores.get(key) or {}).get("score")
         if value is None:
-            return ""
+            continue
         try:
             parts.append(str(int(float(value) * 10)))
         except (TypeError, ValueError):
-            return ""
-    return "-" + "-".join(parts)
+            continue
+    return "_" + "_".join(parts) if parts else ""
+
+
+def scored_name(name: str, scores: dict[str, Any] | None) -> str:
+    """给名字补上评分后缀；已经带后缀的不重复追加。
+
+    用户 2026-11-05 第 1/2 条：已保存条件与新推理出来的条件，名字里都要有分数。
+    """
+    stem = str(name or "")
+    if SCORE_SUFFIX_RE.search(stem):
+        return stem
+    return f"{stem}{_score_suffix({'scores': scores or {}})}"
 
 
 def save_condition(run_id: str, index: int, name: Optional[str] = None) -> dict[str, Any]:
@@ -1017,17 +1035,18 @@ def save_condition(run_id: str, index: int, name: Optional[str] = None) -> dict[
         "include_st": bool(base.get("include_st", False)),
         "rule": rule,
     })
-    # 名字里带上两段评分（用户 2026-11-02 第 1 条）：xxx-999-778。
+    # 名字里带上两段评分（用户 2026-11-05 第 2 条）：xxx_999_778。
     # 同名再存（同一分数被存第二次）时加序号 —— presets.save 不允许静默覆盖，
     # 而用户看到「已存在同名条件」也不知道该改什么。
     stem = str(name) if name else f"{meta.get('preset', 'xg')}-{index}"
-    final_name = f"{stem}{_score_suffix(meta)}"
+    suffix = _score_suffix(meta)
+    final_name = f"{stem}{suffix}"
     payload = request.model_dump(mode="json")
     for attempt in range(1, 10):
         try:
             return presets.save(final_name, payload, overwrite=False)
         except presets.PresetExists:
-            final_name = f"{stem}{_score_suffix(meta)}-{attempt}"
+            final_name = f"{stem}{suffix}_{attempt}"
             continue
     raise presets.PresetExists(f"同名条件太多，换一个名字再存（最后一次尝试：{final_name}）")
 
