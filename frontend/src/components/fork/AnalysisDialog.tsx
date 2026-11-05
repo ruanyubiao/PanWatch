@@ -658,7 +658,7 @@ export function AnalysisDialog({
         原来弹窗跟着内容伸缩，切 tab 时会跳一下、还会重新居中。
         这里把高度钉死，滚动交给各 tab 自己。
       */}
-      <DialogContent className="flex h-[80vh] max-w-[968px] flex-col overflow-hidden" data-fork-analysis-dialog>
+      <DialogContent className="flex max-h-[85vh] min-h-[320px] max-w-[968px] flex-col overflow-hidden md:top-[4vh] md:translate-y-0" data-fork-analysis-dialog>
         <DialogHeader className="mb-3 shrink-0">
           <DialogTitle className="flex items-center gap-2">
             <BarChart3 className="h-4 w-4" />
@@ -673,17 +673,17 @@ export function AnalysisDialog({
         <Tabs
           value={tab}
           onValueChange={value => setTab(value === 'history' ? 'history' : 'create')}
-          className="flex min-h-0 flex-1 flex-col"
+          className="flex min-h-0 flex-col"
         >
           <TabsList className="mb-1 shrink-0">
             <TabsTrigger value="create" data-fork-analysis-tab="create">{T.tabCreate}</TabsTrigger>
             <TabsTrigger value="history" data-fork-analysis-tab="history">{T.tabHistory}</TabsTrigger>
           </TabsList>
 
-          <TabsContent value="create" className="flex min-h-0 flex-1 flex-col">
+          <TabsContent value="create" className="flex min-h-0 flex-col">
         {/* 视觉顺序 = 上面的任务面板 → 下面的新建表单（用户 2026-11-04）。
             表单在 DOM 里靠前，用 order 提到下面，避免搬动近 190 行 JSX 引入无谓风险。 */}
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto scrollbar pr-1">
+        <div className="flex min-h-0 max-h-[calc(85vh-7rem)] flex-col gap-3 overflow-y-auto scrollbar pr-1">
           {error && <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px]">{error}</p>}
 
           {/* 新建任务表单常驻展开：任务在跑也照样能再起一个（用户 2026-11-04）。
@@ -691,8 +691,8 @@ export function AnalysisDialog({
               一旦上面有任务面板就缩回自然高度，下半屏又空出来）。
               grow + shrink-0：有富余就撑满，内容超高时保持自然高度交给外层滚动，
               不会被压扁、也不会把字段溢出到面板上。 */}
-          <div className="order-2 flex min-h-0 flex-1 flex-col gap-3" data-fork-analysis-create>
-              <div className="flex grow shrink-0 flex-col rounded-lg border border-border/60 bg-accent/10 p-3">
+          <div className="order-2 flex min-h-0 flex-col gap-3" data-fork-analysis-create>
+              <div className="flex flex-col rounded-lg border border-border/60 bg-accent/10 p-3">
                 <p className="mb-2 text-[12px] font-medium">{T.createTitle}</p>
                 <p className="mb-2 text-[10px] text-muted-foreground">{T.createHint}</p>
 
@@ -1041,7 +1041,7 @@ export function AnalysisDialog({
         </div>
           </TabsContent>
 
-          <TabsContent value="history" className="flex min-h-0 flex-1 flex-col">
+          <TabsContent value="history" className="flex min-h-0 flex-col">
             {/* 说明搬到这个 tab（用户 2026-11-05 第 3 条）：讲的是「回测历史、给评分」，
                 放在历史列表顶上才说得通。 */}
             <p className="mb-2 shrink-0 text-[11px] text-muted-foreground" data-fork-analysis-hint="history">
