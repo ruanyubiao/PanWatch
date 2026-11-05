@@ -148,3 +148,39 @@ def test_迁移脚本给已有条件补分数(tmp_path, monkeypatch):
 
     names = sorted(path.stem for path in preset_dir.glob("*.json"))
     assert names == ["base_1_550", "e11051525_716_491", "r11050610_716_491"]
+
+
+# ---------------------------------------------------------------- 免登录兜底
+def test_关掉应用层登录时用空token继续(tmp_path, monkeypatch):
+    """服务器上应用登录被关掉（auth_not_configured）时不能把整轮调度判成 api_unreachable。"""
+    scheduler = _load("scheduler_login", "scripts/infer_scheduler.py")
+    monkeypatch.setattr(scheduler, "API", "http://api.test")
+    cred = tmp_path / ".agent_api.json"
+    cred.write_text(json.dumps({"username": "admin", "password": "x"}), encoding="utf-8")
+    monkeypatch.setattr(scheduler, "CRED_FILE", str(cred))
+    monkeypatch.setattr(scheduler, "LOG_FILE", str(tmp_path / "s.log"))
+
+    class _Err:
+        code = 400
+
+        def read(self) -> bytes:
+            return b'{"code":400,"error_code":"auth_not_configured","message":"\xe8\xaf\xb7\xe5\x85\x88\xe8\xae\xbe\xe7\xbd\xae\xe8\xb4\xa6\xe5\x8f\xb7"}'
+
+        def __enter__(self):
+            raise AssertionError("不应走到这里")
+
+        def __exit__(self, *a):
+            return False
+
+        def close(self):
+            return None
+
+    def fake_urlopen(req, timeout=0):
+        raise scheduler.urllib.error.HTTPError("http://api.test/api/auth/login", 400,
+                                               "Bad Request", {}, _Err())
+
+    monkeypatch.setattr(scheduler.urllib.request, "urlopen", fake_urlopen)
+    assert scheduler._login() == ""
+    # 空 token 不能发 "Bearer " 头
+    assert scheduler._headers("") == {}
+    assert scheduler._headers("abc") == {"Authorization": "Bearer abc"}
