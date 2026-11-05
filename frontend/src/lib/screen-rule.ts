@@ -1755,12 +1755,28 @@ export function formatScopedRule(
     Number.isFinite(tradingDays) && tradingDays > 0
       ? T.previewScopeDays(tradingDays)
       : T.previewScopeDaysEmpty
+  const tree =
+    rule.children.length === 0 ? T.previewEmptyTree : formatRule(rule, tradingDays)
   const parts = [
     days,
     T.previewScopeMarket(marketLabelOf(req.markets), req.include_st ? T.stIncluded : T.stExcluded),
-    rule.children.length === 0 ? T.previewEmptyTree : formatRule(rule, tradingDays),
+    wrapOrRootForScope(rule, tree),
   ]
   return parts.join(T.previewScopeJoiner)
+}
+
+/**
+ * 根节点是 OR 组时，整棵树必须先加括号，再拼到「统计窗口 AND 市场 AND …」这条 AND 链上。
+ *
+ * 不加括号会写成 `窗口 AND 市场 AND A OR B`，读起来是 `(窗口 AND 市场 AND A) OR B`
+ * —— OR 的分支逃出了 AND 链，和真实执行（窗口 ∧ 市场 ∧ (A ∨ B)）不是一回事。
+ * 预览是给人判断「这条条件到底在筛什么」用的，宁可多一对括号。
+ *
+ * 子组不用管：formatGroup 在 isRoot=false 时本来就会加括号。
+ */
+function wrapOrRootForScope(rule: GroupNode, formatted: string): string {
+  if (rule.operator === 'OR' && rule.children.length > 1) return `( ${formatted} )`
+  return formatted
 }
 
 // ------------------------------------------------------------------ 校验

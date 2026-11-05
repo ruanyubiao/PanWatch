@@ -15,6 +15,7 @@ import {
   fillDefaultParams,
   findNode,
   formatRule,
+  formatScopedRule,
   migrateLegacyMarketCap,
   removeNode,
   requiredBarsOf,
@@ -79,6 +80,42 @@ describe('条件选股 / 规则预览', () => {
     // 空子组用「( 空组 )」
     const emptySub = group([cond('more_bullish_candles'), group([])])
     expect(formatRule(emptySub)).toBe('阳线多于阴线（统计窗口内） AND ( 空组 )')
+  })
+
+  it('F1c 统计窗口 / 市场 拼在树前面时，OR 根组要加括号（否则 OR 分支逃出 AND 链）', () => {
+    const base = createDefaultRequest()
+    const prefix = '统计窗口 30 个交易日 AND 市场 全部 · 不含 ST AND '
+    const scope = (rule: GroupNode) => formatScopedRule(rule, 30, base)
+
+    // 空树：保持原样，不加括号
+    expect(scope(createGroup('AND'))).toBe(`${prefix}（无技术条件）`)
+
+    // AND 根组：不加括号（和拼之前完全一样）
+    const and = group([cond('ma_bullish', { n: 5, m: 1, periods: [5, 10, 20, 60] })])
+    expect(scope(and)).toBe(`${prefix}${formatRule(and, 30)}`)
+
+    // 用户报的那条：均线多头 AND 窗口内每天均线多头 —— 根是 OR，必须包一对括号
+    const or = group(
+      [
+        cond('ma_bullish', { n: 5, m: 1, periods: [5, 10, 20, 60] }),
+        cond('ma_bullish_all', { n: 5, m: 1, periods: [5, 10, 20, 60] }),
+      ],
+      'OR',
+    )
+    expect(scope(or)).toBe(`${prefix}( ${formatRule(or, 30)} )`)
+    expect(scope(or).startsWith(`${prefix}( `)).toBe(true)
+    expect(scope(or).endsWith(' )')).toBe(true)
+
+    // 根是 AND、子组是 OR：子组本来就有括号，不能再套一层
+    const nested = group([
+      cond('ma_bullish', { n: 5, m: 1, periods: [5, 10, 20, 60] }),
+      group([cond('consecutive_bullish', { start: 4, days: 4 }), cond('more_bullish_candles')], 'OR'),
+    ])
+    expect(scope(nested)).toBe(`${prefix}${formatRule(nested, 30)}`)
+
+    // 只有一个子节点的 OR 组没有并列分支，不加
+    const single = group([cond('more_bullish_candles')], 'OR')
+    expect(scope(single)).toBe(`${prefix}${formatRule(single, 30)}`)
   })
 
   it('F1b 同组多条「代码 / 名称」按「或」显示（与后端编译期合并一致）', () => {
