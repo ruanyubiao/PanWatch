@@ -87,11 +87,21 @@ function rangeText(run: AnalysisRunMeta): string {
   return ANALYSIS_HISTORY_TAB_TEXTS_ZH.row(run.start_date, run.end_date)
 }
 
+/**
+ * 历史任务 → 在新窗口打开任务详情（用户 2026-11-05）。
+ *
+ * kind 直接由列表给出，拼进 URL：推理任务去 /analysis/task/infer/<id>，
+ * 分析任务去 /analysis/task/analysis/<id>。以前是在弹窗里内嵌一层详情对话框，
+ * 现在改成独立窗口（无导航、无返回）。
+ */
+export function openTaskDetailWindow(run: Pick<AnalysisRunMeta, 'run_id' | 'kind'>): void {
+  const kind = run.kind === 'infer' ? 'infer' : 'analysis'
+  window.open(`/analysis/task/${kind}/${run.run_id}`, '_blank', 'noopener')
+}
+
 export function AnalysisHistoryTab({
-  onOpen,
   reloadKey = 0,
 }: {
-  onOpen: (run: AnalysisRunMeta) => void
   reloadKey?: number
 }) {
   const T = ANALYSIS_HISTORY_TAB_TEXTS_ZH
@@ -184,7 +194,7 @@ export function AnalysisHistoryTab({
                 <tr
                   key={run.run_id}
                   className="cursor-pointer border-b border-border/30 hover:bg-accent/20"
-                  onClick={() => onOpen(run)}
+                  onClick={() => openTaskDetailWindow(run)}
                   data-fork-history-row={run.kind ?? 'analysis'}
                 >
                   <td className="px-2 py-1 text-muted-foreground">

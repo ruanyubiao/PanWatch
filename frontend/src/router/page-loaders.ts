@@ -6,6 +6,8 @@ export const pageLoaders = {
   forkAnalysis: () => import('@/pages/ForkAnalysis'),
   // fork：数据分析完整报告（/analysis/report/:runId，弹窗里「查看完整报告」开在新标签页）
   forkAnalysisReport: () => import('@/pages/ForkAnalysisReport'),
+  // fork：任务详情独立页（/analysis/task/:kind/:runId，历史任务点一行开在新窗口）
+  forkAnalysisTask: () => import('@/pages/ForkAnalysisTask'),
   dashboard: () => import('@/pages/Dashboard'),
   gettingStarted: () => import('@/pages/GettingStarted'),
   stocks: () => import('@/pages/Stocks'),
@@ -28,6 +30,7 @@ export const routePages = {
   // fork：分析页
   ForkAnalysisPage: lazy(pageLoaders.forkAnalysis),
   ForkAnalysisReportPage: lazy(pageLoaders.forkAnalysisReport),
+  ForkAnalysisTaskPage: lazy(pageLoaders.forkAnalysisTask),
   DashboardPage: lazy(pageLoaders.dashboard),
   GettingStartedPage: lazy(pageLoaders.gettingStarted),
   StocksPage: lazy(pageLoaders.stocks),
@@ -61,6 +64,7 @@ const routeMatchers: Array<{ key: RouteKey; matches: (pathname: string) => boole
   { key: 'settings', matches: pathname => pathname === '/settings' },
   // fork：报告页必须排在 analysisDetail 前面 —— 后者吃所有 /analysis/ 前缀
   { key: 'forkAnalysisReport', matches: pathname => pathname.startsWith('/analysis/report/') },
+  { key: 'forkAnalysisTask', matches: pathname => pathname.startsWith('/analysis/task/') },
   { key: 'analysisDetail', matches: pathname => pathname.startsWith('/analysis/') },
 ]
 
