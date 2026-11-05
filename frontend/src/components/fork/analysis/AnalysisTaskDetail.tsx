@@ -12,13 +12,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Download, ExternalLink } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@panwatch/base-ui/components/ui/dialog'
 import { toLocalDateTimeInput } from '@panwatch/base-ui/datetime'
 import { countConditions, summarizeBase, type ScreenRequest } from '@/lib/screen-rule'
 import {
@@ -56,7 +49,6 @@ export const ANALYSIS_TASK_TEXTS_ZH = {
   report: '查看完整报告',
   excel: '下载 Excel',
   excelPending: 'Excel 生成中',
-  close: '关闭',
   loading: '正在读取任务…',
   loadFailed: (message: string) => `读取任务失败：${message}`,
   elapsed: (text: string) => `耗时 ${text}`,
@@ -80,15 +72,7 @@ function formatCreatedAt(instant?: string | null): string {
   return toLocalDateTimeInput(instant).slice(0, 16).replace('T', ' ')
 }
 
-export function AnalysisTaskDetailDialog({
-  runId,
-  open,
-  onOpenChange,
-}: {
-  runId: string | null
-  open: boolean
-  onOpenChange: (open: boolean) => void
-}) {
+export function AnalysisTaskDetailView({ runId }: { runId: string }) {
   const T = ANALYSIS_TASK_TEXTS_ZH
   const [detail, setDetail] = useState<AnalysisDetail | null>(null)
   const [report, setReport] = useState<AnalysisReport | null>(null)
@@ -132,9 +116,9 @@ export function AnalysisTaskDetailDialog({
   }, [])
 
   useEffect(() => {
-    if (!open || !runId) return
+    if (!runId) return
     void load(runId)
-  }, [load, open, runId])
+  }, [load, runId])
 
   const handleDownload = async () => {
     if (!detail) return
@@ -153,14 +137,13 @@ export function AnalysisTaskDetailDialog({
   const conditionCount = request?.rule ? countConditions(request.rule) : 0
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[900px]" data-fork-analysis-task-detail>
-        <DialogHeader>
-          <DialogTitle>{T.title}</DialogTitle>
-          <DialogDescription>{T.description}</DialogDescription>
-        </DialogHeader>
+    <div className="space-y-3" data-fork-analysis-task-detail>
+      <header>
+        <h2 className="text-[15px] font-semibold">{T.title}</h2>
+        <p className="text-[11px] text-muted-foreground">{T.description}</p>
+      </header>
 
-        <div className="max-h-[72vh] space-y-3 overflow-y-auto scrollbar pr-1">
+      <div className="space-y-3">
           {error && (
             <p className="rounded border border-destructive/40 bg-destructive/10 p-2 text-[11px]">{error}</p>
           )}
@@ -249,19 +232,10 @@ export function AnalysisTaskDetailDialog({
                     {T.excel}
                   </Button>
                 )}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="ml-auto h-7 px-3 text-[12px]"
-                  onClick={() => onOpenChange(false)}
-                >
-                  {T.close}
-                </Button>
               </div>
             </>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+    </div>
   )
 }
