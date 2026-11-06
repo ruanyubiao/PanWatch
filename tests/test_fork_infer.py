@@ -595,12 +595,23 @@ class _StubMetrics:
         self._days_with_hits = days_with_hits
         self._excess = excess
         self.horizons = [5, 10, 20, 25, 30]
+        self.days = 200
 
     def signals(self) -> int:
         return self._signals
 
     def days_with_hits(self) -> int:
         return self._days_with_hits
+
+    # 计分口径（2026-11-06 新规则）：一律给足样本，让门槛成为唯一的变量
+    def peak_lower(self, index: int, horizon: int) -> float:
+        return self._excess
+
+    def peak_mean(self, index: int) -> float:
+        return 0.01
+
+    def peak_neff(self, horizon: int) -> int:
+        return 100
 
     def signal_count(self, index: int, metric: str) -> int:
         return self._signals
@@ -634,3 +645,65 @@ def test_有信号的天数门槛随抽样天数一起缩放():
     assert MIN_DAYS_WITH_HITS <= SEARCH_DAYS // 4
     assert score_of(_StubMetrics(400, days_with_hits=MIN_DAYS_WITH_HITS), "stat_v3")[0] is not None
     assert score_of(_StubMetrics(400, days_with_hits=MIN_DAYS_WITH_HITS - 1), "stat_v3")[0] is None
+
+
+# --------------------------------------------------------------------------- #
+# 新评分规则（2026-11-06）：窗口内最高收盘盈利 + 50+5×下限
+# --------------------------------------------------------------------------- #
+def test_peak_是收盘口径_不高于盘中最高价():
+    """用户定的是「最高收盘价」，不是盘中最高价：摸到高价又回落不算赚。"""
+    stock = make_stock("sh.600000", 120, step=0.01)
+    dataset = make_dataset([stock], 120)
+    result = forward_of(stock, dataset.cal_index[dataset.calendar[10]], 10,
+                        len(dataset.calendar))
+    assert result is not None and result.peak
+    for index in range(len(result.peak)):
+        peak = result.peak[index]
+        touch = result.touch[index]
+        if peak is None or touch is None:
+            continue
+        assert peak <= touch + 1e-9
+
+
+def test_peak_随窗口单调不减_全亏时为负():
+    """窗口越长，最高收盘只会更高；整段都亏时是负数（「亏最少的那个」）。"""
+    up = make_stock("sh.600001", 120, step=0.01)
+    # 阴跌 + 开盘高于收盘：买进去之后每一根收盘都在成本下方
+    down = make_stock("sh.600002", 120, step=-0.01, open_factor=1.05)
+    dataset = make_dataset([up, down], 120)
+    index0 = dataset.cal_index[dataset.calendar[10]]
+    up_fwd = forward_of(up, index0, index0, len(dataset.calendar))
+    down_fwd = forward_of(down, index0, index0, len(dataset.calendar))
+    assert up_fwd and down_fwd
+    ups = [value for value in up_fwd.peak if value is not None]
+    assert ups == sorted(ups)
+    downs = [value for value in down_fwd.peak if value is not None]
+    assert downs and all(value < 0 for value in downs)
+
+
+def test_一字涨停的peak不计分_买不进不能算赚():
+    """开盘就封板的股票买不进去，peak 口径也不该把它的收益算进来。"""
+    stock = make_stock("sh.600003", 120, step=0.0, gap_up=0.11, open_factor=1.0)
+    dataset = make_dataset([stock], 120)
+    index0 = dataset.cal_index[dataset.calendar[10]]
+    result = forward_of(stock, index0, index0, len(dataset.calendar))
+    assert result is not None and result.unfillable is True
+
+
+def test_分数就是五十加五乘下限():
+    """把公式钉死：50 + 5 × 下限，越界的截到 0–100。"""
+    from src.modules.market.fork_infer.engine import SCORE_BASE, SCORE_PER_PP
+
+    assert SCORE_BASE == 50.0 and SCORE_PER_PP == 5.0
+    assert score_of(_StubMetrics(5000, excess=2.0), "stat_v3")[0] == 60.0
+    assert score_of(_StubMetrics(5000, excess=0.0), "stat_v3")[0] == 50.0
+    assert score_of(_StubMetrics(5000, excess=-30.0), "stat_v3")[0] == 0.0
+    assert score_of(_StubMetrics(5000, excess=30.0), "stat_v3")[0] == 100.0
+
+
+def test_独立片段不足时不给及格分():
+    """重叠太多（独立片段 < 30）→ 封顶 55，宁可说「判不了」。"""
+    stub = _StubMetrics(5000, excess=9.0)
+    stub.peak_neff = lambda horizon: 5  # type: ignore[assignment]
+    score, _ = score_of(stub, "stat_v3")
+    assert score is not None and score <= 55.0

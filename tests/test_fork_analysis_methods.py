@@ -365,3 +365,41 @@ def test_日历不足35天判为不完整():
     result = method2_data.build_event(bars, days, D0, "600000", method2.WINDOWS)
     assert result is not None
     assert result["valid"] is False
+
+
+# --------------------------------------------------------------------------- #
+# 新评分规则（2026-11-06）：30 日最高收盘盈利 + 50+5×下限
+# --------------------------------------------------------------------------- #
+def _peak_tuple(day: str, peak_net: float, *, control: bool = False) -> tuple:
+    """造一行事件：只关心 ``_IDX_ANY``（30 天内最高收盘的净收益）。"""
+    from src.modules.market.fork_analysis.methods import method3
+
+    row = [day, "600000", "测试", "sh", "行业", "小", "中", "低", day[:4],
+           1 if control else 0, 1, 10.0, 0.002]
+    row.extend([0.0] * len(method3.WINDOWS))      # 5/10/20/25/30 日净收益
+    row.append(peak_net)                           # _IDX_ANY
+    return tuple(row)
+
+
+def test_peak_row_超额等于两组均值之差():
+    """分数口径：条件组 30 日最高收盘盈利 10%，基准 2% → 超额 +8pp。"""
+    from src.modules.market.fork_analysis.methods import method3
+
+    signal = [_peak_tuple("2024-01-02", 0.10), _peak_tuple("2024-01-03", 0.10)]
+    base = [_peak_tuple("2024-01-02", 0.02, control=True),
+            _peak_tuple("2024-01-03", 0.02, control=True)]
+    row = method3._peak_row(signal, base)
+    assert row["window"] == 30
+    assert row["excess_pp"] == pytest.approx(8.0, abs=0.01)
+    # 两天样本远不到 30 个独立片段 → 下限必须比点估计低
+    assert row["lower_pp"] is not None and row["lower_pp"] <= row["excess_pp"]
+
+
+def test_peak_row_没有共同交易日就不出数():
+    """两组没有同一天的数据时不能硬算一个超额。"""
+    from src.modules.market.fork_analysis.methods import method3
+
+    signal = [_peak_tuple("2024-01-02", 0.10)]
+    base = [_peak_tuple("2024-01-05", 0.02, control=True)]
+    row = method3._peak_row(signal, base)
+    assert row["excess_pp"] is None and row["lower_pp"] is None

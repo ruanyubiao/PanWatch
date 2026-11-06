@@ -11,7 +11,7 @@ export const ANALYSIS_SCORE_TEXTS_ZH = {
   test: '验证评分',
   single: '评分',
   pending: '跑完才有分数',
-  scale: '50 = 和随机买入一样 · 60 = 及格（能拿去用）· 85 以上 = 优秀',
+  scale: '50 = 和随机买入一样 · 每多 5 分 = 多 1pp · 60 = 比随机好 2pp（能用）· 85 = 好 7pp',
   verdict: '综合判断',
   lower: (value: number) => `超额下界 ${value}pp`,
   window: (days: number) => `最优 ${days} 日`,

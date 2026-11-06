@@ -450,6 +450,62 @@ def _windows_rows(signal: Sequence[tuple], base: Sequence[tuple]) -> list[dict[s
     return rows
 
 
+def _peak_row(signal: Sequence[tuple], base: Sequence[tuple],
+              horizon: int = 30) -> dict[str, Any]:
+    """计分口径：``horizon`` 天内最高**收盘**盈利（净、可执行价买入）。
+
+    用户 2026-11-06 的新规则就是这一条：每笔信号先算窗口内最高收盘盈利（允许为负，
+    整段都亏时最大值天生就是「亏最少那天」），条件组按日取均值，减同日基准均值。
+    ``_IDX_ANY`` 就是 30 天内最高收盘的净收益，所以不用重跑数据。
+
+    基准这里是任务里的对照组（``is_control=1``），与条件组不重叠，不需要再做剔除。
+    """
+    def by_day(rows: Sequence[tuple]) -> dict[str, list[float]]:
+        out: dict[str, list[float]] = {}
+        for row in rows:
+            value = row[_IDX_ANY]
+            if value is None:
+                continue
+            out.setdefault(str(row[0]), []).append(float(value))
+        return out
+
+    picked = by_day(signal)
+    peers = by_day(base)
+    days = sorted(set(picked) & set(peers))
+    series: list[float] = []
+    for day in days:
+        series.append(sum(picked[day]) / len(picked[day]) - sum(peers[day]) / len(peers[day]))
+    count = len(series)
+    excess_pp: Optional[float] = None
+    lower_pp: Optional[float] = None
+    if count:
+        mean = sum(series) / count
+        excess_pp = mean * 100.0
+        # Newey–West，滞后 = 持有期 − 1：重叠样本只算一个独立片段
+        lag = min(max(1, horizon - 1), max(1, count - 1))
+        variance = sum((value - mean) ** 2 for value in series) / count
+        for offset in range(1, lag + 1):
+            cov = sum((series[i] - mean) * (series[i - offset] - mean)
+                      for i in range(offset, count)) / count
+            variance += 2.0 * (1.0 - offset / (lag + 1.0)) * cov
+        if variance > 0:
+            lower_pp = (mean - 1.96 * (variance / count) ** 0.5) * 100.0
+        else:
+            lower_pp = excess_pp
+    values = [row[_IDX_ANY] for row in signal if row[_IDX_ANY] is not None]
+    return {
+        "window": horizon,
+        "n": len(values),
+        "excess_pp": None if excess_pp is None else round(excess_pp, 3),
+        "lower_pp": None if lower_pp is None else round(lower_pp, 3),
+        "n_eff": int(count // max(1, horizon)),
+        "expectancy": round(sum(values) / len(values) * 100.0, 3) if values else None,
+        "t": None,
+        "p_net": None,
+        "base_p": None,
+    }
+
+
 def _stress_excess(signal: Sequence[tuple], base: Sequence[tuple], index: int,
                    cost: float = scoring.STRESS_COST) -> Optional[float]:
     """成本抬到 ``cost`` 后、该周期的超额（pp）。简单差分，只作为评分门槛用。"""
@@ -518,15 +574,16 @@ def _segment_scores(meta: dict[str, Any], signal: Sequence[tuple],
             }
             continue
         windows = _windows_rows(picked_signal, picked_base)
-        best = scoring.best_horizon_by_lower(windows) or windows[0]
-        index = WINDOWS.index(best["window"])
-        year_excess, layer_excess = _segment_extras(picked_signal, picked_base, index)
+        # 计分只看 30 日「最高收盘盈利」这一条（用户 2026-11-06 定的规则）；
+        # 5/10/20/25 那几档留着做明细，不参与打分。
+        peak = _peak_row(picked_signal, picked_base)
+        index = WINDOWS.index(30) if 30 in WINDOWS else len(WINDOWS) - 1
+        _, layer_excess = _segment_extras(picked_signal, picked_base, index)
         days_with_hits = len({str(row[0]) for row in picked_signal})
         scored = scoring.score_segment(
-            windows=windows,
+            windows=[peak] if peak.get("excess_pp") is not None else [],
             events=len(picked_signal),
             days=days_with_hits,
-            year_excess=year_excess,
             layer_excess=layer_excess,
             stress_excess=_stress_excess(picked_signal, picked_base, index),
         )

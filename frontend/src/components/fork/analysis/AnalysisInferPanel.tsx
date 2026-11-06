@@ -11,6 +11,15 @@ import { Button } from '@panwatch/base-ui/components/ui/button'
 import { AnalysisScoreCard, SCORE_VERDICTS_ZH } from './AnalysisScoreCard'
 import { formatInferDuration, type InferFinalist, type InferRunMeta } from '@/lib/infer-api'
 
+/** 分数下面那行小字：超额下限 + 独立片段数（后者说明这个分数有多硬）。 */
+function scoreHint(
+  segment?: { lower_pp?: number | null; n_eff?: number | null } | null,
+): string | undefined {
+  if (segment?.lower_pp == null) return undefined
+  const base = `超额下界 ${segment.lower_pp}pp`
+  return segment.n_eff != null ? `${base} · 独立 ${segment.n_eff} 段` : base
+}
+
 export const ANALYSIS_INFER_TEXTS_ZH = {
   title: '条件推理',
   enabled: '启用',
@@ -184,8 +193,8 @@ export function AnalysisInferPanel({
           test={scores.test?.score}
           trainGrade={scores.train?.grade}
           verdict={scores.verdict ?? null}
-          trainHint={scores.train?.lower_pp != null ? `超额下界 ${scores.train.lower_pp}pp` : undefined}
-          testHint={scores.test?.lower_pp != null ? `超额下界 ${scores.test.lower_pp}pp` : undefined}
+          trainHint={scoreHint(scores.train)}
+          testHint={scoreHint(scores.test)}
           compact
         />
       )}
