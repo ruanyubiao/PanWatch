@@ -225,8 +225,11 @@ def _presets():
     """
     global _PRESETS_MOD
     if _PRESETS_MOD is None:
-        if ROOT not in sys.path:
-            sys.path.insert(0, ROOT)
+        # 服务器上脚本在 /opt/PanWatch/scripts、源码在 /opt/PanWatch/app（部署只覆盖
+        # app/），所以两个根都要进 sys.path。
+        for base in (ROOT, os.path.join(ROOT, "app")):
+            if os.path.isdir(os.path.join(base, "src")) and base not in sys.path:
+                sys.path.insert(0, base)
         from src.modules.market.fork_screen import presets as module
 
         _PRESETS_MOD = module

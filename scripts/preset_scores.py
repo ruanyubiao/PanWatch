@@ -32,7 +32,19 @@ if os.environ.get("PANWATCH_ROOT"):
 INFER_DIR = ROOT / "data" / "infer_runs"
 ANALYSIS_DIR = ROOT / "data" / "analysis_runs"
 
-sys.path.insert(0, str(ROOT))
+
+def _ensure_src_on_path() -> None:
+    """源码根进 ``sys.path``。
+
+    服务器上脚本放在 ``/opt/PanWatch/scripts``、源码在 ``/opt/PanWatch/app``（部署
+    只覆盖 app/），所以两个位置都要试 —— 否则 cron 里的脚本 import 不到 ``src``。
+    """
+    for base in (ROOT, ROOT / "app"):
+        if (base / "src").is_dir() and str(base) not in sys.path:
+            sys.path.insert(0, str(base))
+
+
+_ensure_src_on_path()
 from src.modules.market.fork_screen import presets  # noqa: E402
 
 #: 和 fork_infer.search.SCORE_SUFFIX_RE 保持一致（2–4 位数字，1–2 段）。
