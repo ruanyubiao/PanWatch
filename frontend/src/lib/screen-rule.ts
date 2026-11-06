@@ -312,21 +312,33 @@ export const SCREEN_TEXTS_ZH = {
   submit: '开始选股',
   submitting: '选股中…',
   /**
-   * 弹窗两个 tab（用户 2026-11-05）：第一个是「用」，第二个是「建」。
+   * 弹窗两个 tab（用户 2026-11-06 第 1 条：合并回一页，另加一个列表）。
    *
-   * 窗口截止日只属于「用」那一侧 —— 它是执行搜索时的时间点，不是条件本身；
-   * 条件树、基础筛选（统计窗口 / 市场）、保存删除都在「建」那一侧。
+   * `build` = 原来整页的用途（选时间 + 选/建条件 + 执行搜索 + 保存）；
+   * `list`  = 新增的「条件列表」（全部已保存条件 + 编辑/复制/删除）。
    */
   tabUse: '条件选股',
   tabBuild: '新建条件',
+  tabList: '条件列表',
   useTimeTitle: '选择时间',
   useConditionTitle: '选择条件',
-  useHint: '选中一个已保存条件即可执行搜索；也可以先在「新建条件」里编好，切回来直接搜。',
-  // 「新建条件」里也要能选一条已有条件来改（用户 2026-11-05：每个 tab 独立一套控件）
+  useHint: '选中一个已保存条件即可执行搜索。',
+  // 「新建条件」里的「选择已有条件」：选中即编辑，清空即新建
   buildConditionTitle: '选择已有条件',
   buildConditionHint: '选中一条即可在下面修改，保存会覆盖原条件；不选就是新建。',
-  buildHint: '在这里新建或修改条件，保存后可在「条件选股」里选中并执行搜索。',
+  buildHint: '在这个页面选时间、建/改条件，可以直接开始选股。',
   currentCondition: (name: string | null) => (name ? `当前条件：${name}` : '当前条件：尚未保存的草稿'),
+  // ---- 条件列表 tab
+  listHint: '全部已保存条件。编辑会在「新建条件」里打开它；复制会带着内容另存为新条件。',
+  listEmpty: '还没有保存的条件，去「新建条件」建一条。',
+  listCount: (n: number) => `共 ${n} 条`,
+  listColName: '名字',
+  listColScore: '分数',
+  listColSavedAt: '创建时间',
+  listColActions: '操作',
+  listEdit: '编辑',
+  listCopy: '复制',
+  listDelete: '删除',
   issueSummary: (n: number) => `有 ${n} 处需要修正：`,
   failed: (message: string) => `选股失败：${message}。当前列表未改变。`,
   success: (total: number) => `已筛出 ${total} 只股票`,

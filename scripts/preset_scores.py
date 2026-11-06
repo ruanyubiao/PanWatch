@@ -29,9 +29,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if os.environ.get("PANWATCH_ROOT"):
     ROOT = Path(os.environ["PANWATCH_ROOT"])
-PRESET_DIR = ROOT / "data" / "screen_presets"
 INFER_DIR = ROOT / "data" / "infer_runs"
 ANALYSIS_DIR = ROOT / "data" / "analysis_runs"
+
+sys.path.insert(0, str(ROOT))
+from src.modules.market.fork_screen import presets  # noqa: E402
 
 #: 和 fork_infer.search.SCORE_SUFFIX_RE 保持一致（2–4 位数字，1–2 段）。
 SCORE_SUFFIX_RE = re.compile(r"(?:_\d{2,4}){1,2}$")
@@ -103,14 +105,15 @@ def analysis_scores() -> dict[str, tuple[dict, str]]:
 
 
 def plan() -> tuple[list[dict], list[dict]]:
-    """返回 (要改名的, 没有分数的)。"""
+    """返回 (要改名的, 没有分数的)。条件列表读条件库（MySQL），不再扫目录。"""
     infer = infer_scores()
     analysis = analysis_scores()
     todo: list[dict] = []
     unknown: list[dict] = []
-    taken = {path.stem for path in PRESET_DIR.glob("*.json")}
-    for path in sorted(PRESET_DIR.glob("*.json")):
-        old = path.stem
+    items = presets.list_all()
+    taken = {item["name"] for item in items}
+    for item in items:
+        old = str(item["name"])
         if SCORE_SUFFIX_RE.search(old):
             continue
         source = "infer"
@@ -128,23 +131,18 @@ def plan() -> tuple[list[dict], list[dict]]:
             new = f"{old}{suffix}_{bump}"
             bump += 1
         taken.add(new)
-        todo.append({"old": old, "new": new, "source": source, "run_id": run_id,
-                     "path": path})
+        todo.append({"old": old, "new": new, "source": source, "run_id": run_id})
     return todo, unknown
 
 
 def apply(items: list[dict]) -> list[dict]:
     done: list[dict] = []
     for item in items:
-        path: Path = item["path"]
-        record = _read_json(path) or {}
-        record["name"] = item["new"]
-        temp = path.with_name(f".rename-{item['new']}.json")
-        with temp.open("w", encoding="utf-8") as handle:
-            json.dump(record, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(temp, PRESET_DIR / f"{item['new']}.json")
-        path.unlink(missing_ok=True)
+        try:
+            presets.rename(item["old"], item["new"])
+        except presets.PresetError:
+            # 单条失败不影响其余：下一次运行还会再试
+            continue
         done.append(item)
     return done
 

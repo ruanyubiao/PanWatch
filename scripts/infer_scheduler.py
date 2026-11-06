@@ -48,7 +48,7 @@ API = "http://127.0.0.1:8000"
 ROOT = "/opt/PanWatch"
 DATA_DIR = os.path.join(ROOT, "data", "infer_runs")
 ANALYSIS_DIR = os.path.join(ROOT, "data", "analysis_runs")
-PRESET_DIR = os.path.join(ROOT, "data", "screen_presets")
+#: 条件已迁到 MySQL（``panwatch.screen_preset``），这里不再需要条件目录。
 STATE_FILE = os.path.join(DATA_DIR, ".scheduler.json")
 LOG_FILE = os.path.join(DATA_DIR, "scheduler.log")
 CRED_FILE = os.path.join(ROOT, "data", ".agent_api.json")
@@ -214,38 +214,47 @@ def _flatten(node: Any) -> list[dict[str, Any]]:
     return out
 
 
+_PRESETS_MOD = None
+
+
+def _presets():
+    """条件库模块（存储已改成 MySQL，见 ``fork_screen/preset_store.py``）。
+
+    cron 里的脚本没有 systemd 的 ``EnvironmentFile``，``preset_store`` 会自己回落到
+    ``/opt/stock/.env`` 读口令 —— 仍然只有一份口令。
+    """
+    global _PRESETS_MOD
+    if _PRESETS_MOD is None:
+        if ROOT not in sys.path:
+            sys.path.insert(0, ROOT)
+        from src.modules.market.fork_screen import presets as module
+
+        _PRESETS_MOD = module
+    return _PRESETS_MOD
+
+
 def _preset_name(prefix: str, state: dict[str, Any]) -> str:
-    """已保存条件的名字上限 10 个字符，所以用「前缀+月日时分」。"""
+    """已保存条件的名字上限 32 个字符，所以用「前缀+月日时分」。"""
     stamp = datetime.now().strftime("%m%d%H%M")
     base = f"{prefix}{stamp}"
     name, i = base, 1
-    while os.path.exists(os.path.join(PRESET_DIR, f"{name}.json")):
+    while _presets().exists(name):
         name = f"{prefix}{stamp}"[:9] + str(i % 10)
         i += 1
     return name[:10]
 
 
 def _write_preset(name: str, rule: dict[str, Any], note: str) -> str:
-    os.makedirs(PRESET_DIR, exist_ok=True)
-    record = {
-        "name": name,
-        "saved_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "note": note,
-        "request": {
-            "trading_days": 30,
-            "markets": ["sh", "sz", "cyb", "kcb"],
-            "include_st": True,
-            "market_cap": None,
-            "rule": rule,
-            "asof": None,
-        },
+    """把预设计种子条件写进条件库（MySQL）。"""
+    request = {
+        "trading_days": 30,
+        "markets": ["sh", "sz", "cyb", "kcb"],
+        "include_st": True,
+        "market_cap": None,
+        "rule": rule,
+        "asof": None,
     }
-    path = os.path.join(PRESET_DIR, name + ".json")
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(record, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
-    os.replace(tmp, path)
+    _presets().save(name, request, overwrite=True, note=note)
     return name
 
 
@@ -788,26 +797,15 @@ def rename_preset_with_scores(runs: list[dict[str, Any]], state: dict[str, Any])
         suffix = _score_suffix_text(item)
         if not suffix:
             continue
-        old_path = os.path.join(PRESET_DIR, preset + ".json")
+        old_name = preset
         new_name = preset + suffix
-        if SCORE_SUFFIX_RE.search(preset) or not os.path.exists(old_path):
-            renamed[run_id] = preset
-            changed = True
-            continue
-        new_path = os.path.join(PRESET_DIR, new_name + ".json")
         try:
-            with open(old_path, "r", encoding="utf-8") as handle:
-                record = json.load(handle)
-            if not isinstance(record, dict):
-                record = {}
-            record["name"] = new_name
-            temp = os.path.join(PRESET_DIR, f".rename-{new_name}.json")
-            with open(temp, "w", encoding="utf-8") as handle:
-                json.dump(record, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-            os.replace(temp, new_path)
-            os.remove(old_path)
-        except OSError as exc:
+            if SCORE_SUFFIX_RE.search(preset) or not _presets().exists(old_name):
+                renamed[run_id] = preset
+                changed = True
+                continue
+            _presets().rename(old_name, new_name)
+        except Exception as exc:  # 存储错误 / 同名冲突：下一轮再试
             _log(f"preset rename FAILED {preset} -> {new_name}: {exc}")
             continue
         renamed[run_id] = new_name
