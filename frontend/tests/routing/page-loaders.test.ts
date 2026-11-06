@@ -6,8 +6,6 @@ describe('route page loaders', () => {
   it('registers every route page exactly once', () => {
     expect(Object.keys(pageLoaders)).toEqual([
       'login',
-      // fork: 专用首页（收盘复盘 + 交易日历），挂在 /
-      'forkDashboard',
       // fork: 分析页（A 股全市场行情表），挂在 /analysis
       'forkAnalysis',
     'forkAnalysisReport',
