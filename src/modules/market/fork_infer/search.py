@@ -544,27 +544,31 @@ def _throttle() -> None:
 def _score_100(metrics: Any, reference: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """把一次完整评估映射成 0–100 分（与数据分析用的是同一个评分模块）。
 
-    口径：方法 3 的「扣成本可执行胜率」，超额按**日**算（同日基准差），
-    t 值用逐日序列算 —— 同一天命中的几百只股票不是独立样本。
+    口径（用户 2026-11-06 定的新规则）：每一笔信号先算「验证天数内最高收盘盈利」
+    （次日开盘买入、扣往返成本、允许为负），条件组按日取均值，再减同日全截面均值
+    （把当天命中的股票自己剔掉）。**超额下限**用 Newey–West（滞后 = 持有期）算，
+    重叠样本因此被折进这个数字里；分数 = 50 + 5 × 下限。
     """
-    from .engine import primary_metric
-
-    metric, _ = primary_metric("stat_v3")
     windows: list[dict[str, Any]] = []
     for index, horizon in enumerate(metrics.horizons):
         windows.append({
             "window": horizon,
-            "n": metrics.signal_count(index, metric),
-            "p_net": metrics.rate(index, metric),
-            "base_p": metrics.base_rate(index, metric),
-            "excess_pp": metrics.day_excess(index, metric),
-            "t": metrics.day_t(index, metric),
-            "n_eff": None,
-            "expectancy": None,
+            "n": metrics.signal_count(index, "exec"),
+            "excess_pp": metrics.peak_excess(index),
+            "lower_pp": metrics.peak_lower(index, horizon),
+            "n_eff": metrics.peak_neff(horizon),
+            "expectancy": (metrics.peak_mean(index) or 0.0) * 100.0,
+            "p_net": None,
+            "base_p": None,
+            "t": None,
         })
-    best = scoring100.best_horizon_by_lower(windows) or windows[0]
-    best_index = metrics.horizons.index(best["window"])
-    years = [value for value in metrics.year_excess(best_index, metric).values()]
+    usable = [row for row in windows if row.get("excess_pp") is not None]
+    if not usable:
+        return scoring100.score_segment(windows=[], events=metrics.signals(),
+                                        days=metrics.days_with_hits())
+    best = scoring100.best_horizon_by_lower(windows) or usable[-1]
+    years = [value for value in metrics.year_excess(
+        metrics.horizons.index(best["window"]), "exec").values()]
     return scoring100.score_segment(
         windows=windows,
         events=metrics.signals(),

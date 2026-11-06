@@ -89,6 +89,8 @@ export interface InferGrade {
   best_window?: number | null
   excess_pp?: number | null
   lower_pp?: number | null
+  /** 独立片段数 ≈ 有信号的天数 / 持有期：说明这个分数有多硬 */
+  n_eff?: number | null
   events?: number
   days?: number
   caps?: string[]
