@@ -987,27 +987,14 @@ export default function StocksPage() {
   )
 
   /**
-   * 弹窗标题下的「选股条件」下拉（用户 2026-11-04 第 1 条）。
+   * 弹窗里的「选择已有条件」下拉（2026-11-06 合并 tab 后由弹窗自己加载内容）。
    *
-   * 选中 = 把那个条件的完整请求换进 `initialRequest`，弹窗的 useEffect 依赖它，
-   * 于是下面整块内容被替换成这个条件 —— 这就是原来的「编辑」，不需要第二个按钮。
-   * 传 null = 清空选择，草稿回到「新增条件」的默认状态（也不再加「新建」按钮，
-   * 清空本身就是新建）。
+   * 页面只记住「正在改哪一条」——保存时用它决定是否覆盖、预填什么名字。内容由
+   * 弹窗自己装进草稿，所以这里不再改写 `initialRequest`（改了会把弹窗的草稿重置）。
    */
-  const handlePickScreenPreset = useCallback(
-    (name: string | null) => {
-      if (!name) {
-        setScreenInitial(null)
-        setScreenPresetName(null)
-        return
-      }
-      const preset = presets.find(item => item.name === name)
-      if (!preset) return
-      setScreenInitial({ ...preset.request, rule: fillDefaultParams(preset.request.rule) })
-      setScreenPresetName(preset.name)
-    },
-    [presets],
-  )
+  const handlePickScreenPreset = useCallback((name: string | null) => {
+    setScreenPresetName(name)
+  }, [])
 
   /**
    * 保存条件（名字就是服务器上的文件名）。
@@ -1072,7 +1059,8 @@ export default function StocksPage() {
       if (!ok) return
       try {
         await deletePreset(name)
-        setScreenOpen(false)
+        // 删完不关弹窗：「条件列表」里还要接着管别的条件
+        if (screenPresetName === name) setScreenPresetName(null)
         toast(SCREEN_PRESET_TEXTS_ZH.deleted(name), 'success')
         await reloadPresets()
       } catch (exc) {
@@ -1080,7 +1068,7 @@ export default function StocksPage() {
         toast(SCREEN_PRESET_TEXTS_ZH.deleteFailed(message), 'error')
       }
     },
-    [confirmAction, reloadPresets, toast],
+    [confirmAction, reloadPresets, screenPresetName, toast],
   )
 
   // 刷新 = 重新读本机行情库 + 建议池 + 价格提醒。不打外网批量行情/K 线。

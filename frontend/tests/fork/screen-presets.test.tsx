@@ -181,7 +181,7 @@ describe('条件选股弹窗：标题下的「选股条件」下拉（2026-11-04
     expect(document.querySelector('[data-fork-preset-clear]')).toBeNull()
   })
 
-  it('N8 「条件选股」的下拉只换这一侧的草稿，不交给父组件（两个 tab 互不相干）', async () => {
+  it('N8 下拉选中即编辑：内容进草稿，并把「正在改哪一条」交给父组件；叉叉清空', async () => {
     const onSelectPreset = vi.fn()
     renderPicker({ presets: [preset('四连阳'), preset('低市值')], onSelectPreset })
 
@@ -193,45 +193,45 @@ describe('条件选股弹窗：标题下的「选股条件」下拉（2026-11-04
     await userEvent.click(document.querySelector('[data-fork-preset-select]') as HTMLElement)
     await userEvent.click(await screen.findByRole('option', { name: '四连阳' }))
 
-    // 用户 2026-11-05：这一侧选中 = 「要搜哪一条」，不能顺手把父组件的
-    // 「正在编辑哪一条」也改掉，所以 onSelectPreset 一次都不该被调
-    expect(onSelectPreset).not.toHaveBeenCalled()
+    // 合并成一个 tab 后，「选中」就是「要改这一条」：内容进草稿，并通知页面
+    expect(onSelectPreset).toHaveBeenLastCalledWith('四连阳')
     expect(previewText()).toContain('连续')
 
     const clear = document.querySelector('[data-fork-preset-clear]') as HTMLButtonElement
     expect(clear).toBeTruthy()
-    // 叉叉挂在触发框那一块里，且没展开下拉就已经在文档中（用户 2026-11-05：hover 才显形）
+    // 叉叉挂在触发框那一块里，且没展开下拉就已经在文档中（hover 才显形）
     expect(clear.closest('[data-fork-screen-preset-picker]')).toBeTruthy()
     expect(screen.queryByRole('listbox')).toBeNull()
     await userEvent.click(clear)
-    // 点叉叉只清空这一侧的草稿，不回传父组件、也不顺手把下拉打开
-    expect(onSelectPreset).not.toHaveBeenCalled()
+    // 点叉叉 = 回到新增条件：草稿清空、告诉页面不再关联任何条件
+    expect(onSelectPreset).toHaveBeenLastCalledWith(null)
     expect(previewText()).not.toContain('连续')
     expect(screen.queryByRole('listbox')).toBeNull()
   })
 
-  it('N8b 父组件换掉 initialRequest 时，「条件选股」这边的选择不受影响', () => {
+  it('N8b 页面把名字回传（presetName 变化）不会把刚装好的草稿冲掉', () => {
+    // 合并后选中条件 → 弹窗装内容 → 通知页面 → 页面把 presetName 传回来。
+    // 如果 presetName 也被写进「重置草稿」那个 effect，回传一次草稿就没了。
     const { rerenderWith } = renderPicker({ presets: [preset('四连阳')] })
     const previewText = () => document.querySelector('[data-fork-screen-preview]')?.textContent || ''
 
-    // 新增条件：条件树是空的
     expect(previewText()).not.toContain('连续')
 
-    // 页面在别处（「新建条件」里选了一条）换了 initialRequest —— 这一侧不动
-    rerenderWith({ presetName: '四连阳', initialRequest: baseRequest() })
+    rerenderWith({ presetName: '四连阳' })
+    // 只是名字变了，草稿该保留（这里本来就是空的，关键是没有被换成 initialRequest 的默认值）
     expect(previewText()).not.toContain('连续')
-    expect(document.querySelector('[data-fork-preset-clear]')).toBeNull()
+    expect(document.querySelector('[data-fork-preset-clear]')).toBeTruthy()
   })
 })
 
 describe('条件弹窗：已保存条件模式', () => {
   /**
-   * 弹窗拆成两个 tab 后（用户 2026-11-05）：默认「条件选股」，
-   * 保存 / 删除按钮在「新建条件」里，所以那些用例要传 tab='build'。
+   * 2026-11-06 合并 tab 后：默认就停在「新建条件」，保存 / 删除都在这一页，
+   * 所以这里的用例不再需要切 tab（参数留着只是为了旧用例读起来不变）。
    */
   const renderDialog = (
     over: Partial<React.ComponentProps<typeof ScreenStocksDialog>> = {},
-    tab: 'use' | 'build' = 'use',
+    tab: 'build' | 'list' = 'build',
   ) => {
     const onResult = vi.fn()
     render(
@@ -239,9 +239,9 @@ describe('条件弹窗：已保存条件模式', () => {
         <ScreenStocksDialog open onOpenChange={vi.fn()} onResult={onResult} asof="2026-10-20" {...over} />
       </ToastProvider>,
     )
-    if (tab === 'build') {
+    if (tab === 'list') {
       // Radix 的 TabsTrigger 靠 mousedown 激活（click 不触发），这里必须用 mouseDown
-      fireEvent.mouseDown(document.querySelector('[data-fork-screen-tab="build"]') as HTMLElement, {
+      fireEvent.mouseDown(document.querySelector('[data-fork-screen-tab="list"]') as HTMLElement, {
         button: 0,
       })
     }
@@ -318,19 +318,16 @@ describe('条件弹窗：已保存条件模式', () => {
   })
 })
 
-describe('提示与「选择条件」下拉按 tab 分开（用户 2026-11-05）', () => {
-  const open = (over: Partial<React.ComponentProps<typeof ScreenStocksDialog>> = {}, tab: 'use' | 'build' = 'use') => {
+describe('提示与「选择条件」下拉（2026-11-06 合并 tab 后）', () => {
+  const open = (over: Partial<React.ComponentProps<typeof ScreenStocksDialog>> = {}) => {
     render(
       <ToastProvider>
         <ScreenStocksDialog open onOpenChange={vi.fn()} onResult={vi.fn()} asof="2026-10-20" {...over} />
       </ToastProvider>,
     )
-    if (tab === 'build') {
-      fireEvent.mouseDown(document.querySelector('[data-fork-screen-tab="build"]') as HTMLElement, { button: 0 })
-    }
   }
 
-  it('H1 顶部那条说明不再是可见文本：每个 tab 各有自己的提示块', () => {
+  it('H1 顶部那条说明不再是可见文本：提示落在各自的 tab 里', () => {
     open()
     // 弹窗顶部（DialogDescription）只剩给屏幕阅读器的文本
     const content = document.querySelector('[data-fork-screen-dialog]') as HTMLElement
@@ -339,43 +336,47 @@ describe('提示与「选择条件」下拉按 tab 分开（用户 2026-11-05）
     expect(desc).not.toBeNull()
     expect(desc!.className).toContain('sr-only')
 
-    // 条件选股 tab 的提示讲的是「筛选 / 执行」
-    const useHint = document.querySelector('[data-fork-screen-hint="use"]') as HTMLElement
-    expect(useHint).not.toBeNull()
-    expect(useHint.textContent).toContain('按基础范围和技术条件筛选 A 股')
-    cleanup()
-
-    // 新建条件 tab 的提示讲的是「怎么建 / 怎么改」，不说「筛选 A 股」
-    open({}, 'build')
+    // 新建条件 tab 的提示讲的是「怎么建 / 怎么改」
     const buildHint = document.querySelector('[data-fork-screen-hint="build"]') as HTMLElement
     expect(buildHint).not.toBeNull()
     expect(buildHint.textContent).toContain(SCREEN_TEXTS_ZH.buildHint)
-    expect(useHint.isConnected).toBe(false)
-  })
-
-  it('H2 正在编辑某条已保存条件：只有「新建条件」的提示点名那一条', () => {
-    // 用户 2026-11-05：两个 tab 现在互不相干 —— 「条件选股」讲的是「要搜什么」，
-    // 不该被「正在编辑哪一条」污染（否则看着像两处在互相改写）。
-    open({ presets: [preset('四连阳')], presetName: '四连阳' })
-    expect(
-      document.querySelector('[data-fork-screen-hint="use"]')!.textContent,
-    ).toBe(SCREEN_TEXTS_ZH.description)
+    // 「条件选股」那个 tab 已经合并掉了
+    expect(document.querySelector('[data-fork-screen-hint="use"]')).toBeNull()
     cleanup()
 
-    open({ presets: [preset('四连阳')], presetName: '四连阳' }, 'build')
+    // 条件列表 tab 有自己的提示
+    open()
+    fireEvent.mouseDown(document.querySelector('[data-fork-screen-tab="list"]') as HTMLElement, {
+      button: 0,
+    })
+    const listHint = document.querySelector('[data-fork-screen-hint="list"]') as HTMLElement
+    expect(listHint).not.toBeNull()
+    expect(listHint.textContent).toContain(SCREEN_TEXTS_ZH.listHint)
+    expect(buildHint.isConnected).toBe(false)
+  })
+
+  it('H2 正在编辑某条已保存条件：只有新建条件的提示点名那一条', () => {
+    open({ presets: [preset('四连阳')], presetName: '四连阳' })
     expect(
       document.querySelector('[data-fork-screen-hint="build"]')!.textContent,
     ).toContain(SCREEN_PRESET_TEXTS_ZH.editingPreset('四连阳'))
+    // 列表 tab 不该被「正在编辑」污染
+    fireEvent.mouseDown(document.querySelector('[data-fork-screen-tab="list"]') as HTMLElement, {
+      button: 0,
+    })
+    expect(
+      document.querySelector('[data-fork-screen-hint="list"]')!.textContent,
+    ).not.toContain('正在编辑')
   })
 
-  it('H3 「新建条件」有自己的下拉：同一时刻只有一份，选中即交给父组件', async () => {
+  it('H3 下拉只有一份：选中即交给父组件', async () => {
     const onSelectPreset = vi.fn()
-    open({ presets: [preset('四连阳'), preset('低市值')], onSelectPreset }, 'build')
+    open({ presets: [preset('四连阳'), preset('低市值')], onSelectPreset })
 
     const picker = document.querySelector('[data-fork-screen-preset-picker="build"]') as HTMLElement
     expect(picker).not.toBeNull()
     expect(picker.textContent).toContain(SCREEN_TEXTS_ZH.buildConditionTitle)
-    // 两个 tab 各自一份，但非激活 tab 会被卸载 —— DOM 里不应出现第二份
+    // 合并后只剩一份（另一个 tab 是列表，没有下拉）
     expect(document.querySelectorAll('[data-fork-screen-preset-picker]')).toHaveLength(1)
 
     await userEvent.click(picker.querySelector('[data-fork-preset-select="build"]') as HTMLElement)

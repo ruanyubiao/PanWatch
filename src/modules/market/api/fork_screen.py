@@ -85,7 +85,9 @@ def screen(payload: ScreenRequest) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 # 已保存条件（用户反馈 2026-10-20 第 1 / 2 条）
 #
-# 存在磁盘上、一个条件一个文件，文件名 = 用户输入的名字（见 presets.py）。
+# 2026-11-06 第 3 条：存储从「一个条件一个 JSON 文件」改成 MySQL
+# （``panwatch.screen_preset``，见 ``fork_screen/preset_store.py``）。接口形状不变，
+# 列表多返回一个 ``scores``（名字后缀里的评分，列表页直接用）。
 # 保存的是一个**完整的选股请求**，所以「编辑」时能把窗口 / 市场 / 市值 / 条件树
 # 一并带回来，而不是只回填条件树。
 # --------------------------------------------------------------------------
@@ -122,8 +124,14 @@ def _check_request(payload: ScreenRequest) -> None:
 
 @router.get("/screen/presets")
 def list_screen_presets() -> dict[str, Any]:
-    """全部已保存条件（新的在前）。没有目录时返回空列表，不是错误。"""
-    return {"items": presets.list_all()}
+    """全部已保存条件（新的在前）。空库返回空列表，不是错误。"""
+    try:
+        return {"items": presets.list_all()}
+    except presets.PresetStorageError as exc:
+        logger.exception("读取条件列表失败：%s", exc)
+        raise _bad(
+            status=503, code="screen_preset_store_unavailable", message=str(exc)
+        ) from exc
 
 
 @router.post("/screen/presets")
@@ -140,10 +148,10 @@ def save_screen_preset(payload: PresetSaveBody) -> dict[str, Any]:
         raise _bad(status=400, code="screen_preset_name_invalid", message=str(exc)) from exc
     except presets.PresetExists as exc:
         raise _bad(status=409, code="screen_preset_exists", message=str(exc)) from exc
-    except OSError as exc:
+    except presets.PresetStorageError as exc:
         logger.exception("保存选股条件失败：%s", exc)
         raise _bad(
-            status=500, code="screen_preset_write_failed", message="保存条件失败，请检查服务器磁盘"
+            status=503, code="screen_preset_store_unavailable", message=str(exc)
         ) from exc
     return {"item": record}
 
@@ -153,11 +161,11 @@ def delete_screen_preset(name: str) -> dict[str, Any]:
     """删除一个已保存条件。名字非法或不存在都按 404（不去猜用户的意图）。"""
     try:
         presets.delete(name)
-    except presets.PresetError as exc:
-        raise _bad(status=404, code="screen_preset_not_found", message=str(exc)) from exc
-    except OSError as exc:
+    except presets.PresetStorageError as exc:
         logger.exception("删除选股条件失败：%s", exc)
         raise _bad(
-            status=500, code="screen_preset_write_failed", message="删除条件失败，请检查服务器磁盘"
+            status=503, code="screen_preset_store_unavailable", message=str(exc)
         ) from exc
+    except presets.PresetError as exc:
+        raise _bad(status=404, code="screen_preset_not_found", message=str(exc)) from exc
     return {"deleted": name}
