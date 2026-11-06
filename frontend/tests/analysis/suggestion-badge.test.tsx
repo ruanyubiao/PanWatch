@@ -27,6 +27,11 @@ describe('suggestion badges', () => {
     expect(screen.queryByText(/AI ·/)).toBeNull()
     expect(screen.getByRole('button', { name: '指标 · 持有' })).toBeTruthy()
   })
+  it('drops the "指标 · " prefix when the column header already says 指标', () => {
+    render(<SuggestionBadge suggestion={suggestion} kline={technical} hasPosition hideTechnicalPrefix />)
+    expect(screen.getByRole('button', { name: '持有' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '指标 · 持有' })).toBeNull()
+  })
   it('does not display watch as the conclusion of missing technical data', () => {
     render(<SuggestionBadge suggestion={suggestion} kline={null} />)
     expect(screen.getByRole('button', { name: '指标 · 暂无数据' })).toBeTruthy()
