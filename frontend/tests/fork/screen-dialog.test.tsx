@@ -58,15 +58,15 @@ const marketButton = (name: string) => screen.getByRole('button', { name })
 const submitButton = () => screen.getByRole('button', { name: /开始选股|选股中/ })
 
 /**
- * 弹窗拆成两个 tab 后（用户 2026-11-05）：默认落在「条件选股」，
- * 测条件树 / 基础筛选 / 保存删除的用例要先切到「新建条件」；要执行搜索再切回来。
+ * 弹窗合并成一个「新建条件」tab（用户 2026-11-06 第 1 条）：选时间、选/建条件、
+ * 保存、开始选股全在一页，所以这里不再需要来回切 tab；`gotoBuild` 保留成
+ * 「确认停在新建条件 tab」，让原来的用例读起来不变。
  */
 const gotoBuild = async () => {
-  await userEvent.click(screen.getByRole('tab', { name: '新建条件' }))
+  const tab = screen.queryByRole('tab', { name: '新建条件' })
+  if (tab && tab.getAttribute('aria-selected') !== 'true') await userEvent.click(tab)
 }
-const gotoUse = async () => {
-  await userEvent.click(screen.getByRole('tab', { name: '条件选股' }))
-}
+const gotoBuildTab = () => screen.getByRole('tab', { name: '新建条件' })
 const daysInput = () =>
   document.querySelector<HTMLInputElement>('[data-screen-field="trading_days"]')!
 
@@ -230,8 +230,7 @@ describe('条件选股弹窗', () => {
     mocks.screen.mockResolvedValue(response(37))
     const { onResult, onOpenChange } = renderDialog()
 
-    // 窗口默认就是 30，不用再填；直接切回「条件选股」执行搜索
-    await gotoUse()
+    // 窗口默认就是 30，不用再填；合并后「开始选股」就在同一页
     await userEvent.click(submitButton())
     await waitFor(() => expect(onResult).toHaveBeenCalledTimes(1))
     expect(onResult.mock.calls[0][0].total).toBe(37)
@@ -245,8 +244,7 @@ describe('条件选股弹窗', () => {
     mocks.screen.mockRejectedValue(new Error('选股任务繁忙，请稍后重试'))
     const { onResult, onOpenChange } = renderDialog()
 
-    // 窗口默认就是 30，不用再填；直接切回「条件选股」执行搜索
-    await gotoUse()
+    // 窗口默认就是 30，不用再填；合并后「开始选股」就在同一页
     await userEvent.click(submitButton())
     expect(await screen.findByText(/选股失败：选股任务繁忙，请稍后重试/)).toBeTruthy()
     expect(onResult).not.toHaveBeenCalled()
@@ -263,8 +261,7 @@ describe('条件选股弹窗', () => {
     })
     const { onOpenChange } = renderDialog()
 
-    // 窗口默认就是 30，不用再填；直接切回「条件选股」执行搜索
-    await gotoUse()
+    // 窗口默认就是 30，不用再填；合并后「开始选股」就在同一页
     await userEvent.click(submitButton())
     await waitFor(() => expect(mocks.screen).toHaveBeenCalledTimes(1))
     expect(signal?.aborted).toBe(false)
@@ -274,27 +271,25 @@ describe('条件选股弹窗', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
-  it('D6b 两个 tab 的动作不同：条件选股只有「开始选股」，新建条件只有「删除 / 保存」，都没有「取消」', async () => {
+  it('D6b 合并后三个动作同屏：删除（未保存禁用）/ 保存 / 开始选股，都没有「取消」', async () => {
     renderDialog({ onSavePreset: vi.fn() })
     expect(screen.queryByRole('button', { name: '取消' })).toBeNull()
 
-    // 条件选股 tab：只给执行搜索，不给保存 / 删除
-    expect(document.querySelector('[data-fork-screen-submit]')!.textContent).toContain('开始选股')
-    expect(document.querySelector('[data-fork-screen-save-preset]')).toBeNull()
-    expect(document.querySelector('[data-fork-screen-delete-preset]')).toBeNull()
-
-    // 新建条件 tab：只给删除 / 保存，不给开始选股
-    await gotoBuild()
-    expect(document.querySelector('[data-fork-screen-submit]')).toBeNull()
     const remove = document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement
+    const save = document.querySelector('[data-fork-screen-save-preset]') as HTMLButtonElement
+    const submit = document.querySelector('[data-fork-screen-submit]') as HTMLButtonElement
     expect(remove).toBeTruthy()
+    expect(save).toBeTruthy()
+    expect(submit).toBeTruthy()
+
     // 没保存过：删除禁用、保存可用
     expect(remove.disabled).toBe(true)
-    const save = document.querySelector('[data-fork-screen-save-preset]') as HTMLButtonElement
     expect(save.textContent).toContain('保存')
     expect(save.disabled).toBe(false)
-    // 顺序：删除 → 保存
+    expect(submit.textContent).toContain('开始选股')
+    // 顺序：删除 → 保存 → 开始选股
     expect(remove.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(save.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it('D6c 从已保存条件打开时，保存按钮文案仍是「保存」而不是「覆盖保存」', async () => {
@@ -344,15 +339,16 @@ describe('条件选股弹窗', () => {
     expect(radios[1].getAttribute('aria-checked')).toBe('true')
   })
 
-  it('L1 拆成两个 tab：窗口截止日在「条件选股」、基础筛选在「新建条件」', async () => {
+  it('L1 合并后一页到底：窗口截止日 + 选条件 + 基础筛选 + 条件树都在同一个 tab', async () => {
     renderDialog()
 
-    // ---- 条件选股 tab：只有 时间 + 选条件 + 预览 ----
+    // 合并后默认就停在「新建条件」，所有区块同屏
+    expect(gotoBuildTab().getAttribute('aria-selected')).toBe('true')
+
     const asofSection = document.querySelector('[data-fork-screen-asof]') as HTMLElement
     expect(asofSection).not.toBeNull()
     // 区域标题改叫「选择时间」（用户 2026-11-05）
     expect(asofSection.textContent).toContain('选择时间')
-    expect(document.querySelector('[data-fork-screen-base]')).toBeNull()
 
     // 日期框 +「启用」复选框同一行；默认不启用（框禁用、不带日期）
     const asofInput = document.querySelector<HTMLInputElement>('[data-screen-field="asof"]')!
@@ -362,13 +358,8 @@ describe('条件选股弹窗', () => {
     expect(asofInput.value).toBe('')
     expect(asofSection.contains(asofToggle)).toBe(true)
 
-    // 选条件下拉也在这个 tab
-    expect(document.querySelector('[data-fork-screen-preset-picker]')).not.toBeNull()
-
-    // ---- 新建条件 tab：基础筛选 + 条件树 ----
-    await gotoBuild()
-    // 窗口截止日不再属于这个 tab，也不属于基础筛选
-    expect(document.querySelector('[data-fork-screen-asof]')).toBeNull()
+    // 选条件下拉也在这一页（合并后只剩一份）
+    expect(document.querySelectorAll('[data-fork-screen-preset-picker]')).toHaveLength(1)
 
     const baseSection = document.querySelector('[data-fork-screen-base]') as HTMLElement
     expect(baseSection).not.toBeNull()
@@ -391,6 +382,88 @@ describe('条件选股弹窗', () => {
     expect(marketRow.contains(stSwitch)).toBe(true)
     expect(marketRow.textContent).toContain('包含 ST / *ST')
     expect(screen.queryByText('ST 股票')).toBeNull()
+
+    // 窗口截止日排在最前面（用户 2026-11-04 第 1 条）
+    expect(
+      asofSection.compareDocumentPosition(baseSection) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it('L1c 第二个 tab 是「条件列表」：表格有名字 / 分数 / 创建时间 / 操作', async () => {
+    renderDialog({
+      presets: [
+        {
+          name: 'xg_716_491',
+          saved_at: '2026-11-06T10:00:05',
+          scores: [71.6, 49.1],
+          request: { trading_days: 30, markets: ['sh', 'sz', 'cyb', 'kcb'], include_st: false, rule: { type: 'group', id: 'g', operator: 'AND', children: [] } },
+        },
+        {
+          name: '无条件',
+          saved_at: null,
+          scores: [],
+          request: { trading_days: 30, markets: ['sh', 'sz', 'cyb', 'kcb'], include_st: false, rule: { type: 'group', id: 'g', operator: 'AND', children: [] } },
+        },
+      ],
+      onDeletePreset: vi.fn(),
+    })
+
+    await userEvent.click(screen.getByRole('tab', { name: '条件列表' }))
+    const table = document.querySelector('[data-fork-preset-table]') as HTMLElement
+    expect(table).not.toBeNull()
+    const headers = [...table.querySelectorAll('th')].map(th => th.textContent)
+    expect(headers).toEqual(['名字', '分数', '创建时间', '操作'])
+
+    const rows = table.querySelectorAll('[data-fork-preset-row]')
+    expect(rows).toHaveLength(2)
+    expect(rows[0].textContent).toContain('xg_716_491')
+    expect(rows[0].textContent).toContain('71.6 / 49.1')
+    expect(rows[0].textContent).toContain('2026-11-06 10:00')
+    expect(rows[0].textContent).toContain('编辑')
+    expect(rows[0].textContent).toContain('复制')
+    expect(rows[0].textContent).toContain('删除')
+    // 没带评分后缀的条件，分数列显示占位符而不是空白
+    expect(rows[1].textContent).toContain('—')
+  })
+
+  it('L1d 条件列表的「复制」把内容装进草稿但不关联已保存条件；「编辑」才关联', async () => {
+    const onSelectPreset = vi.fn()
+    renderDialog({
+      presets: [
+        {
+          name: '四连阳',
+          saved_at: '2026-11-06T10:00:05',
+          request: {
+            trading_days: 45,
+            markets: ['sh'],
+            include_st: true,
+            rule: { type: 'group', id: 'g-root', operator: 'AND', children: [] },
+          },
+        },
+      ],
+      onSelectPreset,
+      onSavePreset: vi.fn(),
+      onDeletePreset: vi.fn(),
+    })
+
+    await userEvent.click(screen.getByRole('tab', { name: '条件列表' }))
+    await userEvent.click(document.querySelector('[data-fork-preset-copy="四连阳"]') as HTMLElement)
+
+    // 回到新建条件 tab，内容被装进来
+    expect(gotoBuildTab().getAttribute('aria-selected')).toBe('true')
+    expect(daysInput().value).toBe('45')
+    // 复制出来的是「没保存过」的草稿：不关联任何已保存条件
+    expect(onSelectPreset).toHaveBeenLastCalledWith(null)
+    const remove = document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement
+    expect(remove.disabled).toBe(true)
+
+    // 编辑则相反：关联到那一条，删除可用
+    await userEvent.click(screen.getByRole('tab', { name: '条件列表' }))
+    await userEvent.click(document.querySelector('[data-fork-preset-edit="四连阳"]') as HTMLElement)
+    expect(onSelectPreset).toHaveBeenLastCalledWith('四连阳')
+    expect(
+      (document.querySelector('[data-fork-screen-delete-preset]') as HTMLButtonElement).disabled,
+    ).toBe(false)
   })
 
   it('L1b 勾上「启用」才提交日期：不勾时 asof 为 null，勾上后带日期', async () => {

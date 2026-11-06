@@ -59,14 +59,23 @@ export const SCREEN_PRESET_TEXTS_ZH = {
   editingPreset: (name: string) => `正在编辑已保存条件「${name}」：改完点「开始选股」查看结果。`,
   summary: (name: string) => `「${name}」`,
   loadFailed: (message: string) => `读取已保存条件失败：${message}`,
+  /** 条件列表里「分数」列的空值（名字没带评分后缀）。 */
+  scoreNone: '—',
+  /** 「复制」后的提示：内容装进草稿，但还没保存。 */
+  copied: (name: string) => `已复制「${name}」，改个名字保存就是新条件。`,
 }
 
 export interface ScreenPreset {
-  /** 名字 = 文件名 */
+  /** 条件名（条件库里的唯一键） */
   name: string
-  /** 保存时间（ISO，带时区）；老文件可能没有 */
+  /** 保存时间（ISO）；老数据可能没有 */
   saved_at: string | null
   request: ScreenRequest
+  /**
+   * 名字后缀里的评分（``_716_491`` → ``[71.6, 49.1]``），列表页「分数」列直接显示。
+   * 没带后缀就是空数组（老条件、或还没跑出分）。
+   */
+  scores?: number[]
 }
 
 /** 名字的校验结果：``null`` 表示可用，否则是给人看的错误文案。 */
