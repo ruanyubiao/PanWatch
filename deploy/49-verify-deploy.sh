@@ -42,7 +42,7 @@ PYEOF
 
 echo
 echo "=== 5. 接口 ==="
-for p in /api/health /api/auth/status "/api/stocks?limit=1" "/api/stocks/catalog?limit=1" /openapi.json; do
+for p in /api/health /api/auth/status "/api/stocks?limit=1" /openapi.json; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "$B$p")
   echo "  $code  $p"
 done

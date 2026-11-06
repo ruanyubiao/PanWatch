@@ -4,7 +4,7 @@ import { classifyBoard, countByBoard, isEtf, matchesBoard, onlyAShares, onlyStoc
 
 /**
  * fork 分析页的板块归类。
- * 规则必须与后端 src/modules/market/api/fork_catalog.py 的 classify_board 一致。
+ * 规则必须与后端 src/modules/market/api/fork_market.py 的 _BOARD_CASE 一致。
  */
 describe('classifyBoard', () => {
   it('按代码前缀归类沪深科创创业', () => {

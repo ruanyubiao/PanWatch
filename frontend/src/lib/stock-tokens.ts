@@ -52,7 +52,7 @@ export function looksLikeCode(token: string): boolean {
   return /^\d{5,6}$/.test(normalizeSymbol(token))
 }
 
-/** A 股代码前缀（与后端 fork_catalog.A_SHARE_PREFIXES 一致）。 */
+/** A 股代码前缀（与后端 fork_market 的 _BOARD_CASE 认的同一套前缀）。 */
 const A_SHARE_PREFIXES = ['60', '68', '00', '30', '920']
 
 /**

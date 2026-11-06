@@ -38,7 +38,6 @@ echo "--- 重启后（验证是否自愈写回）---"
 printf 'auth/status  : '; curl -s http://127.0.0.1:8000/api/auth/status; echo
 printf 'market-table : '; curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8000/api/stocks/market-table?board=all&limit=1'
 printf 'stocks       : '; curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8000/api/stocks?limit=1'
-printf 'catalog      : '; curl -s -o /dev/null -w '%{http_code}\n' 'http://127.0.0.1:8000/api/stocks/catalog?limit=1'
 $V - "$DB" <<'PYEOF'
 import sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
