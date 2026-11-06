@@ -82,15 +82,14 @@ import { SCREEN_PRESET_TEXTS_ZH, type ScreenPreset } from '@/lib/screen-presets'
 const T = SCREEN_TEXTS_ZH
 
 /**
- * 弹窗的两个 tab（用户 2026-11-05）。
+ * 弹窗的两个 tab（用户 2026-11-06 第 1 条）。
  *
- * `use`  = 选时间 + 选条件 + 执行搜索（原来整个弹窗的「执行」用途）；
- * `build` = 基础筛选 + 条件树 + 保存（原来整个弹窗的「编辑」用途）。
+ * 原来拆成「条件选股 / 新建条件」两页，实际操作要在两页之间来回跳，所以又合并回
+ * 一页 —— `build` 就是原来整页的用途（选时间 + 选/建条件 + 执行搜索 + 保存）。
  *
- * 窗口截止日只属于 `use`：它是执行搜索的时间点，不是条件的一部分 ——
- * 条件里已经含统计窗口，换截止日不该改条件。
+ * `list` 是新增的「条件列表」：表格列出全部已保存条件，操作列可编辑 / 复制 / 删除。
  */
-type ScreenDialogTab = 'use' | 'build'
+type ScreenDialogTab = 'build' | 'list'
 
 /**
  * 统计窗口默认值（交易日）。
@@ -283,6 +282,19 @@ function BaseNumberInput({
   )
 }
 
+/** 条件列表里「分数」那一列：名字后缀解析出来的评分（`_716_491` → 71.6 / 45.8）。 */
+function scoreText(scores?: number[]): string {
+  if (!scores || scores.length === 0) return SCREEN_PRESET_TEXTS_ZH.scoreNone
+  return scores.map(value => value.toFixed(1)).join(' / ')
+}
+
+/** `2026-11-06T10:00:05` → `2026-11-06 10:00`；认不出来就原样显示。 */
+function savedAtText(raw?: string | null): string {
+  if (!raw) return SCREEN_PRESET_TEXTS_ZH.scoreNone
+  const text = raw.replace('T', ' ')
+  return text.length >= 16 ? text.slice(0, 16) : text
+}
+
 export function ScreenStocksDialog({
   open,
   onOpenChange,
@@ -300,28 +312,17 @@ export function ScreenStocksDialog({
   initialRequest?: ScreenRequest | null
   asof?: string | null
   onResult: (response: ScreenResponse, request: ScreenRequest) => void
-  /**
-   * 从「已保存条件」的「编辑」打开时传名字。传了的话：顶部一行「正在编辑已保存条件」，
-   * 底部「保存」变成「覆盖保存」、「删除」可用。
-   */
+  /** 打开时正在编辑哪条已保存条件（传了：保存会覆盖它、删除可用）。 */
   presetName?: string | null
-  /** 标题下那个「选股条件」下拉的全部选项（用户 2026-11-04 第 1 条）。 */
+  /** 「条件列表」里要展示的全部条件。 */
   presets?: ScreenPreset[]
-  /**
-   * 在下拉里选了一个条件 / 点了叉叉。
-   *
-   * 内容替换由页面负责：页面把 `initialRequest` 换成那个条件的请求，弹窗的
-   * `useEffect` 就把草稿整个重置成它；传 `null` = 清空选择，草稿回到「新增条件」。
-   * 这样「选中即编辑」不需要第二个编辑按钮。
-   */
+  /** 编辑对象变了（选中 / 清空 / 复制）时通知页面，页面据此记住「正在改哪一条」。 */
   onSelectPreset?: (name: string | null) => void
   onDeletePreset?: (name: string) => void
   /**
-   * 底部「保存」：把**当前草稿**交出去（用户第 5 条要求保存按钮放进弹窗）。
+   * 底部「保存」：把**当前草稿**交出去。
    *
-   * ``name`` 有值 = 覆盖这个已保存条件（页面直接写文件，不再问名字）；
-   * ``null`` = 还没保存过 → 页面弹「输入文件名」的小窗。
-   * 保存的是草稿而不是上一轮的结果，所以不需要先跑一次选股。
+   * ``name`` 有值 = 覆盖这个已保存条件；``null`` = 还没保存过 → 页面弹「输入名字」。
    */
   onSavePreset?: (request: ScreenRequest, name: string | null) => void
 }) {
@@ -329,23 +330,17 @@ export function ScreenStocksDialog({
   const askConfirm = useConfirm()
   const [form, setForm] = useState<DraftForm>(() => toDraft(initialRequest ?? null))
   /**
-   * 「条件选股」tab 自己的草稿与选中项（用户 2026-11-05 晚）。
+   * 正在编辑的已保存条件（用户 2026-11-06 第 1 条：两个 tab 合并成一个）。
    *
-   * 两个 tab 的下拉**互不相干**：这一侧选中的是「要搜哪一条」，那一侧选中的是
-   * 「要改哪一条」。原来两份下拉共用页面传下来的 presetName，于是在这边挑一条
-   * 准备搜索，切到「新建条件」就显示成「正在编辑已保存条件「x」」——两个 tab
-   * 互相改写，读起来像在打架。
-   *
-   * 初始化只在挂载时跑一次：Radix 的 DialogContent 关掉即卸载，所以每次打开都是
-   * 干净的一份；打开期间页面因为别处选中条件而改写 initialRequest，也不会把这边
-   * 的选择冲掉。
+   * 合并后只有一份草稿，所以「正在改哪一条」也只剩一个 —— 选中即编辑，清空即新建，
+   * 复制则把内容装进草稿但**不算已保存**（editingName = null）。
    */
-  const [useForm, setUseForm] = useState<DraftForm>(() => toDraft(initialRequest ?? null))
-  const [usePickName, setUsePickName] = useState<string | null>(presetName ?? null)
+  const [editingName, setEditingName] = useState<string | null>(presetName ?? null)
   /**
-   * 默认落在「条件选股」那个 tab：打开弹窗的第一件事通常是选条件执行搜索。
+   * 默认落在「新建条件」：合并后这里是唯一能干活的页面（选时间 → 选/建条件 → 搜），
+   * 「条件列表」是管理入口。
    */
-  const [tab, setTab] = useState<ScreenDialogTab>('use')
+  const [tab, setTab] = useState<ScreenDialogTab>('build')
   const [issues, setIssues] = useState<ValidationIssue[]>([])
   const [submitted, setSubmitted] = useState(false)
   const [submitting, setSubmitting] = useState(false)
@@ -353,7 +348,7 @@ export function ScreenStocksDialog({
   const abortRef = useRef<AbortController | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
 
-  // 每次打开都用最新的 initialRequest（「修改条件」要把上次的请求原样带回）
+  // 每次打开都按最新的 initialRequest 重置草稿（「修改条件」要把上次的请求原样带回）
   useEffect(() => {
     if (open) {
       setForm(toDraft(initialRequest ?? null))
@@ -365,14 +360,18 @@ export function ScreenStocksDialog({
   }, [open, initialRequest])
 
   /**
-   * 「回到条件选股」只在**打开**这一刻做一次（用户 2026-11-05）。
+   * 「正在改哪一条」只跟着页面的 presetName 走，**不重置草稿**。
    *
-   * 原来它和上面那个 effect 写在一起，依赖里有 initialRequest：于是在「新建条件」
-   * 里选一条已保存条件，页面换掉 initialRequest，tab 就被拽回「条件选股」——
-   * 正在编辑的人被弹走。两个 tab 现在各管各的，谁选条件都不该让另一个动。
+   * 合并成一个 tab 之后，选中条件 → 弹窗自己装内容 → 通知页面 → 页面回传名字。
+   * 如果这件写进上面那个 effect，回传一次就把刚装好的草稿又冲掉了。
    */
   useEffect(() => {
-    if (open) setTab('use')
+    setEditingName(presetName ?? null)
+  }, [presetName])
+
+  /** 每次打开都回到「新建条件」tab（列表只是管理入口，不该记住上次停在哪）。 */
+  useEffect(() => {
+    if (open) setTab('build')
   }, [open])
 
   const request = useMemo(() => toRequest(form), [form])
@@ -385,54 +384,45 @@ export function ScreenStocksDialog({
     () => formatScopedRule(form.rule, request.trading_days, request),
     [form.rule, request],
   )
-  /** 「条件选股」tab 的请求：和上面那份编辑草稿完全独立（见 useForm 的注释）。 */
-  const useRequest = useMemo(() => toRequest(useForm), [useForm])
-  const useIssues = useMemo(() => validateScreenRequest(useRequest), [useRequest])
-  const usePreview = useMemo(
-    () => formatScopedRule(useForm.rule, useRequest.trading_days, useRequest),
-    [useForm.rule, useRequest],
-  )
-  /** 报错清单按 tab 取：两个 tab 校验的是各自那份草稿。 */
-  const shownIssues = submitted ? (tab === 'use' ? useIssues : liveIssues) : issues
+  const shownIssues = submitted ? liveIssues : issues
 
   /**
-   * 「条件选股」tab 里选中一条已保存条件：**只**换这一侧的草稿，不碰编辑草稿。
-   * 页面那边的 presetName 也不会动 —— 那一个是「正在编辑哪一条」。
+   * 把某条已保存条件装进草稿。
+   *
+   * ``mode='edit'``  = 接着改它（保存覆盖原条件、删除可用）；
+   * ``mode='copy'``  = 复制成新条件（内容一样但**没保存过**，保存时问新名字）。
    */
-  const handlePickUsePreset = useCallback(
-    (name: string | null) => {
-      setUsePickName(name)
-      setSubmitted(false)
-      setIssues([])
-      setError(null)
-      if (!name) {
-        setUseForm(toDraft(null))
-        return
-      }
+  const applyPreset = useCallback(
+    (name: string, mode: 'edit' | 'copy') => {
       const preset = presets.find(item => item.name === name)
       if (!preset) return
-      setUseForm(toDraft({ ...preset.request, rule: fillDefaultParams(preset.request.rule) }))
+      setForm(toDraft({ ...preset.request, rule: fillDefaultParams(preset.request.rule) }))
+      setIssues([])
+      setSubmitted(false)
+      setError(null)
+      const nextName = mode === 'edit' ? name : null
+      setEditingName(nextName)
+      onSelectPreset?.(nextName)
+      setTab('build')
+      if (mode === 'copy') toast(SCREEN_PRESET_TEXTS_ZH.copied(name), 'success')
     },
-    [presets],
+    [onSelectPreset, presets, toast],
   )
+
+  /** 清空选择 = 回到「新增条件」（内容也清掉，不留下上一条的残渣）。 */
+  const clearPreset = useCallback(() => {
+    setForm(toDraft(null))
+    setEditingName(null)
+    setIssues([])
+    setSubmitted(false)
+    setError(null)
+    onSelectPreset?.(null)
+  }, [onSelectPreset])
+
   const conflict = useMemo(() => findConflictGroup(form.rule), [form.rule])
   const bars = useMemo(() => requiredBarsOf(request), [request])
   const conditions = countConditions(form.rule)
   const depth = treeDepth(form.rule)
-  /**
-   * 底部那行统计跟着**当前 tab 的草稿**走。
-   *
-   * 两份草稿已经分开，如果这里还用编辑草稿的条数，在「条件选股」里就会显示
-   * 另一边编了几条 —— 数字和上面的预览对不上。
-   */
-  const footerStats = useMemo(() => {
-    if (tab !== 'use') return { bars, conditions, depth }
-    return {
-      bars: requiredBarsOf(useRequest),
-      conditions: countConditions(useForm.rule),
-      depth: treeDepth(useForm.rule),
-    }
-  }, [tab, bars, conditions, depth, useRequest, useForm.rule])
   /**
    * 条件参数校验用的窗口：窗口留空时按上限 250 算。
    *
@@ -520,17 +510,17 @@ export function ScreenStocksDialog({
 
   const handleSubmit = async () => {
     setSubmitted(true)
-    setIssues(useIssues)
-    if (useIssues.length > 0) {
+    setIssues(liveIssues)
+    if (liveIssues.length > 0) {
       // 焦点移到第一处错误：字段用 data-screen-field 标记，节点用 data-node-id
-      const first = useIssues[0]
+      const first = liveIssues[0]
       const selector = first.nodeId ? `[data-node-id="${first.nodeId}"]` : `[data-screen-field="${first.path}"]`
       window.setTimeout(() => {
         document.querySelector<HTMLElement>(selector)?.focus?.()
       }, 0)
       return
     }
-    const payload = toApiRequest(useRequest)
+    const payload = toApiRequest(request)
     const controller = new AbortController()
     abortRef.current = controller
     const timer = window.setTimeout(() => controller.abort(), 60000)
@@ -558,10 +548,10 @@ export function ScreenStocksDialog({
   }
 
   /**
-   * 底部「保存」（第 5 条）：保存的是**当前草稿**，不要求先跑一次选股。
+   * 底部「保存」：保存的是**当前草稿**，不要求先跑一次选股。
    *
    * 草稿不合法时**不落盘**（同一套校验、同样标红字段），否则会存下一个跑不通的
-   * 条件；合法就交给页面 —— 有名字（从已保存条件打开）直接覆盖，没名字弹输入框。
+   * 条件；合法就交给页面 —— 有名字（正在编辑已保存条件）直接覆盖，没名字弹输入框。
    */
   const handleSave = () => {
     setSubmitted(true)
@@ -574,57 +564,46 @@ export function ScreenStocksDialog({
       }, 0)
       return
     }
-    onSavePreset?.(toApiRequest(request), presetName)
+    onSavePreset?.(toApiRequest(request), editingName)
   }
 
   const formDisabled = submitting
 
-  /**
-   * 规则预览块：两个 tab 都要有。
-   *
-   * 「条件选股」那一侧要看到选中条件的完整规则，「新建条件」那一侧要边改边看，
-   * 所以抽成一块、两处渲染。Radix 的 TabsContent 会把非激活内容卸载，
-   * 同一时刻 DOM 里只有一个预览框。
-   */
-  const previewBlockOf = (text: string) => (
+  /** 规则预览块。 */
+  const previewBlock = (
     <div className="space-y-1">
       <div className="text-[11px] text-muted-foreground">{T.previewTitle}</div>
       <div
         className="rounded-md border border-dashed border-border px-2 py-1.5 font-mono text-[11px] text-foreground"
         data-fork-screen-preview
       >
-        {text}
+        {preview}
       </div>
     </div>
   )
 
   /**
-   * 「选择条件」下拉：两个 tab 各渲染一份，**各自独立**（用户 2026-11-05）。
+   * 「选择条件」下拉（合并后只剩这一份）。
    *
-   * 控件抽成一个函数、由调用方传进 value / onPick：这一侧换的是「要搜哪一条」，
-   * 那一侧换的是「要改哪一条」，两份状态互不读写。
+   * × 与下拉箭头完全重合，鼠标移上去箭头变 ×（用户 2026-11-04 的效果）：
+   * 不透明底色盖住箭头；onPointerDown 拦住 Radix 的展开；tabIndex=-1 不给键盘
+   * 用户留隐藏的 Tab 停靠点。
    */
-  const presetPickerBlock = (
-    variant: 'use' | 'build',
-    value: string | null,
-    onPick: (name: string | null) => void,
-  ) => (
-    <div className="rounded-lg border border-border/60 p-3" data-fork-screen-preset-picker={variant}>
-      <div className="mb-2 text-[12px] font-medium text-foreground">
-        {variant === 'build' ? T.buildConditionTitle : T.useConditionTitle}
-      </div>
+  const presetPicker = (
+    <div className="rounded-lg border border-border/60 p-3" data-fork-screen-preset-picker="build">
+      <div className="mb-2 text-[12px] font-medium text-foreground">{T.buildConditionTitle}</div>
       <div className="group/preset relative w-[240px]">
         <Select
           // 换选中项就重挂一次：Radix 的 value 从 undefined 变字符串时会被判成
           // 「受控/非受控切换」，同一实例上会打警告。
-          key={value ?? 'none'}
-          value={value ?? undefined}
+          key={editingName ?? 'none'}
+          value={editingName ?? undefined}
           disabled={presets.length === 0}
-          onValueChange={next => onPick(next)}
+          onValueChange={next => applyPreset(next, 'edit')}
         >
           <SelectTrigger
             className="h-7 w-[240px] text-[12px]"
-            data-fork-preset-select={variant}
+            data-fork-preset-select="build"
             aria-label={SCREEN_PRESET_TEXTS_ZH.pickerLabel}
             title={
               presets.length === 0
@@ -654,13 +633,7 @@ export function ScreenStocksDialog({
             ))}
           </SelectContent>
         </Select>
-        {/*
-          × 与下拉箭头完全重合（right-4 + h-4/w-4 == 箭头那个 16px 盒子），
-          不透明底色把箭头盖住，视觉上就是「鼠标移上去箭头变 ×」。
-          - onPointerDown 必须拦：否则 Radix 会当成「点了触发器」直接展开下拉
-          - tabIndex=-1：键盘用户走下拉列表，不给这个隐藏按钮留 Tab 停靠点
-        */}
-        {value && (
+        {editingName && (
           <button
             type="button"
             data-fork-preset-clear
@@ -674,16 +647,14 @@ export function ScreenStocksDialog({
             }}
             onClick={event => {
               event.stopPropagation()
-              onPick(null)
+              clearPreset()
             }}
           >
             <X className="h-3.5 w-3.5" />
           </button>
         )}
       </div>
-      <div className="mt-1 text-[11px] text-muted-foreground">
-        {variant === 'build' ? T.buildConditionHint : T.useHint}
-      </div>
+      <div className="mt-1 text-[11px] text-muted-foreground">{T.buildConditionHint}</div>
     </div>
   )
 
@@ -709,170 +680,115 @@ export function ScreenStocksDialog({
       >
         <DialogHeader>
           <DialogTitle>{T.title}</DialogTitle>
-          {/*
-            提示不再放弹窗顶部，而是各自落在 tab 里（用户 2026-11-05 第 1 条）：
-            两个 tab 要说的话不同 —— 顶部那一条在「新建条件」上会被读成「这里是在筛选」。
-            这里只留屏幕阅读器文本，Radix 的 aria-describedby 继续指向它。
-          */}
           <DialogDescription className="sr-only">{T.description}</DialogDescription>
         </DialogHeader>
 
-        <Tabs value={tab} onValueChange={value => setTab(value === 'build' ? 'build' : 'use')}>
+        <Tabs value={tab} onValueChange={value => setTab(value === 'list' ? 'list' : 'build')}>
           <TabsList className="mb-1" data-fork-screen-tabs>
-            <TabsTrigger value="use" data-fork-screen-tab="use">
-              {T.tabUse}
-            </TabsTrigger>
             <TabsTrigger value="build" data-fork-screen-tab="build">
               {T.tabBuild}
             </TabsTrigger>
+            <TabsTrigger value="list" data-fork-screen-tab="list">
+              {T.tabList}
+            </TabsTrigger>
           </TabsList>
 
-          {/* 条件选股：选时间 → 选条件 → 预览 → 执行搜索 */}
-          <TabsContent value="use" className="mt-2">
-            {/* 顶部提示搬进 tab（用户 2026-11-05 第 1 条）：正在编辑某条已保存条件时
-                换成那一句 —— 「改完点开始选股」只在这个 tab 说得通。 */}
-            <div className="mb-2 text-[11px] text-muted-foreground" data-fork-screen-hint="use">
-              {T.description}
-            </div>
-
-        <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
-          {/* 窗口截止日：独立区域，放在基础筛选之前（用户 2026-11-04 第 1 条）。
-              不勾「启用」= 库里最新交易日；勾上后从这天往前数「统计窗口」个交易日。
-              非交易日（周末/长假）由后端落到 ≤ 它的最大交易日，所以这里不拦。
-              这一份草稿属于本 tab（useForm）：「新建条件」那边改窗口不会动这里。 */}
-          <div className="rounded-lg border border-border/60 p-3" data-fork-screen-asof>
-            <div className="mb-2 text-[12px] font-medium text-foreground">{T.useTimeTitle}</div>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                type="date"
-                aria-label={T.asofLabel}
-                data-screen-field="asof"
-                value={useForm.asofText}
-                disabled={!useForm.asofEnabled}
-                onChange={event =>
-                  setUseForm(current => ({ ...current, asofText: event.target.value }))
-                }
-                className="h-7 rounded-md border border-input bg-background px-2 text-[12px] text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              />
-              <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5 accent-primary"
-                  checked={useForm.asofEnabled}
-                  aria-label={T.asofEnable}
-                  data-screen-field="asof_enabled"
-                  onChange={event => {
-                    const enabled = event.target.checked
-                    // 勾上时给一个能直接改的起点：优先当前数据日期，其次今天
-                    const fallback = asof ?? new Date().toISOString().slice(0, 10)
-                    setUseForm(current => ({
-                      ...current,
-                      asofEnabled: enabled,
-                      asofText: enabled ? current.asofText || fallback : '',
-                    }))
-                  }}
-                />
-                {T.asofEnable}
-              </label>
-              <span className="text-[11px] text-muted-foreground">{T.asofHint}</span>
-            </div>
-          </div>
-
-              {presetPickerBlock('use', usePickName, handlePickUsePreset)}
-
-              {/* 预览上方点名「现在要搜的是哪一条」：只认这一侧下拉选的那条 */}
-              <div className="text-[11px] text-muted-foreground" data-fork-screen-current-preset>
-                {T.currentCondition(usePickName)}
-              </div>
-              {previewBlockOf(usePreview)}
-            </fieldset>
-          </TabsContent>
-
-          {/* 新建条件：基础筛选 + 条件树 + 预览 + 保存/删除 */}
+          {/* 新建条件：选时间 → 选/建条件 → 预览 → 保存 / 开始选股（合并后的单页） */}
           <TabsContent value="build" className="mt-2">
+            <div className="mb-2 text-[11px] text-muted-foreground" data-fork-screen-hint="build">
+              {T.buildHint}
+              {editingName ? (
+                <div className="mt-0.5">{SCREEN_PRESET_TEXTS_ZH.editingPreset(editingName)}</div>
+              ) : null}
+            </div>
+
             <fieldset disabled={formDisabled} className="space-y-3 disabled:opacity-60">
-              {/* 提示区（用户 2026-11-05 第 1 条）：这个 tab 讲的是「怎么建 / 怎么改」，
-                  正在编辑某条已保存条件时再补一句改完怎么验证。 */}
-              <div className="text-[11px] text-muted-foreground" data-fork-screen-hint="build">
-                {T.buildHint}
-                {presetName ? <div className="mt-0.5">{SCREEN_PRESET_TEXTS_ZH.editingPreset(presetName)}</div> : null}
+              {/* 窗口截止日：独立区域，放在最上面。不勾「启用」= 库里最新交易日；
+                  勾上后从这天往前数「统计窗口」个交易日。非交易日由后端落到 ≤ 它的
+                  最大交易日，所以这里不拦。 */}
+              <div className="rounded-lg border border-border/60 p-3" data-fork-screen-asof>
+                <div className="mb-2 text-[12px] font-medium text-foreground">{T.useTimeTitle}</div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="date"
+                    aria-label={T.asofLabel}
+                    data-screen-field="asof"
+                    value={form.asofText}
+                    disabled={!form.asofEnabled}
+                    onChange={event =>
+                      setForm(current => ({ ...current, asofText: event.target.value }))
+                    }
+                    className="h-7 rounded-md border border-input bg-background px-2 text-[12px] text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                  <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 accent-primary"
+                      checked={form.asofEnabled}
+                      aria-label={T.asofEnable}
+                      data-screen-field="asof_enabled"
+                      onChange={event => {
+                        const enabled = event.target.checked
+                        // 勾上时给一个能直接改的起点：优先当前数据日期，其次今天
+                        const fallback = asof ?? new Date().toISOString().slice(0, 10)
+                        setForm(current => ({
+                          ...current,
+                          asofEnabled: enabled,
+                          asofText: enabled ? current.asofText || fallback : '',
+                        }))
+                      }}
+                    />
+                    {T.asofEnable}
+                  </label>
+                  <span className="text-[11px] text-muted-foreground">{T.asofHint}</span>
+                </div>
               </div>
 
-              {presetPickerBlock('build', presetName, next => onSelectPreset?.(next))}
+              {presetPicker}
 
-          {/* 基础筛选：先在 MySQL 里过滤，和条件树是「且」。统计窗口 / 市场在这里，
-              但预览里会作为条件显示（用户 2026-11-04 第 2 条）。 */}
-          <div className="rounded-lg border border-border/60 bg-accent/10 p-3" data-fork-screen-base>
-            <div className="mb-2 flex items-baseline gap-2">
-              <span className="text-[12px] font-medium text-foreground">{T.baseTitle}</span>
-              <span className="text-[10px] text-muted-foreground">{T.baseHint}</span>
-            </div>
-            <div className="space-y-2">
-              {/* 统计窗口：标题与控件同一行（用户反馈） */}
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.tradingDays}</span>
-                <BaseNumberInput
-                  screenField="trading_days"
-                  ariaLabel={T.tradingDays}
-                  text={form.daysText}
-                  min={MIN_TRADING_DAYS}
-                  max={MAX_TRADING_DAYS}
-                  allowEmpty
-                  className="w-20"
-                  onText={next => setForm(current => ({ ...current, daysText: next }))}
-                />
-                <span className="text-[11px] text-muted-foreground">{T.tradingDaysSuffix}</span>
-              </div>
-            </div>
+              {/* 基础筛选：先在 MySQL 里过滤，和条件树是「且」。统计窗口 / 市场在这里，
+                  但预览里会作为条件显示（用户 2026-11-04 第 2 条）。 */}
+              <div className="rounded-lg border border-border/60 bg-accent/10 p-3" data-fork-screen-base>
+                <div className="mb-2 flex items-baseline gap-2">
+                  <span className="text-[12px] font-medium text-foreground">{T.baseTitle}</span>
+                  <span className="text-[10px] text-muted-foreground">{T.baseHint}</span>
+                </div>
+                <div className="space-y-2">
+                  {/* 统计窗口：标题与控件同一行（用户反馈） */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.tradingDays}</span>
+                    <BaseNumberInput
+                      screenField="trading_days"
+                      ariaLabel={T.tradingDays}
+                      text={form.daysText}
+                      min={MIN_TRADING_DAYS}
+                      max={MAX_TRADING_DAYS}
+                      allowEmpty
+                      className="w-20"
+                      onText={next => setForm(current => ({ ...current, daysText: next }))}
+                    />
+                    <span className="text-[11px] text-muted-foreground">{T.tradingDaysSuffix}</span>
+                  </div>
+                </div>
 
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.market}</span>
-              <div className="flex flex-wrap items-center gap-1" role="group" aria-label={T.market}>
-                <button
-                  type="button"
-                  aria-pressed={allSelected ? true : noneSelected ? false : 'mixed'}
-                  aria-label={T.marketAll}
-                  data-fork-screen-market-all
-                  onClick={() =>
-                    setForm(current => ({
-                      ...current,
-                      // 「全部」只能选中，不能取消（要取消就逐个点掉其他市场）
-                      marketAll: true,
-                      markets: [...SCREEN_MARKETS],
-                    }))
-                  }
-                  className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ${
-                    allSelected
-                      ? 'border-primary/60 bg-primary/10 text-primary'
-                      : 'border-border text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  <span
-                    className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] border border-current/60 text-[8px] leading-none"
-                    aria-hidden
-                  >
-                    {allSelected ? '✓' : noneSelected ? '' : '–'}
-                  </span>
-                  {T.marketAll}
-                </button>
-                {SCREEN_MARKETS.map(market => {
-                  const label = {
-                    sh: '上证',
-                    sz: '深证',
-                    cyb: '创业',
-                    kcb: '科创',
-                  }[market]
-                  // 「全部」选中时，其他四个一律显示为未选中（radio 组语义）
-                  const selected = !form.marketAll && form.markets.includes(market)
-                  return (
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="w-24 shrink-0 text-[11px] text-muted-foreground">{T.market}</span>
+                  <div className="flex flex-wrap items-center gap-1" role="group" aria-label={T.market}>
                     <button
-                      key={market}
                       type="button"
-                      aria-pressed={selected}
-                      data-fork-screen-market={market}
-                      onClick={() => toggleMarket(market)}
+                      aria-pressed={allSelected ? true : noneSelected ? false : 'mixed'}
+                      aria-label={T.marketAll}
+                      data-fork-screen-market-all
+                      onClick={() =>
+                        setForm(current => ({
+                          ...current,
+                          // 「全部」只能选中，不能取消（要取消就逐个点掉其他市场）
+                          marketAll: true,
+                          markets: [...SCREEN_MARKETS],
+                        }))
+                      }
                       className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ${
-                        selected
+                        allSelected
                           ? 'border-primary/60 bg-primary/10 text-primary'
                           : 'border-border text-muted-foreground hover:text-foreground'
                       }`}
@@ -881,107 +797,204 @@ export function ScreenStocksDialog({
                         className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] border border-current/60 text-[8px] leading-none"
                         aria-hidden
                       >
-                        {selected ? '✓' : ''}
+                        {allSelected ? '✓' : noneSelected ? '' : '–'}
                       </span>
-                      {label}
+                      {T.marketAll}
                     </button>
-                  )
-                })}
+                    {SCREEN_MARKETS.map(market => {
+                      const label = {
+                        sh: '上证',
+                        sz: '深证',
+                        cyb: '创业',
+                        kcb: '科创',
+                      }[market]
+                      // 「全部」选中时，其他四个一律显示为未选中（radio 组语义）
+                      const selected = !form.marketAll && form.markets.includes(market)
+                      return (
+                        <button
+                          key={market}
+                          type="button"
+                          aria-pressed={selected}
+                          data-fork-screen-market={market}
+                          onClick={() => toggleMarket(market)}
+                          className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] transition-colors ${
+                            selected
+                              ? 'border-primary/60 bg-primary/10 text-primary'
+                              : 'border-border text-muted-foreground hover:text-foreground'
+                          }`}
+                        >
+                          <span
+                            className="flex h-2.5 w-2.5 items-center justify-center rounded-[2px] border border-current/60 text-[8px] leading-none"
+                            aria-hidden
+                          >
+                            {selected ? '✓' : ''}
+                          </span>
+                          {label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {/* ST / *ST 跟在市场按钮后面，留一点间隔；不再单独占一行、也没有自己的标题 */}
+                  <div className="ml-3 flex items-center gap-1.5">
+                    <Switch
+                      checked={form.includeSt}
+                      aria-label={T.includeSt}
+                      data-screen-field="include_st"
+                      onCheckedChange={checked => setForm(current => ({ ...current, includeSt: checked }))}
+                    />
+                    <span className="text-[11px] text-muted-foreground">{T.includeSt}</span>
+                  </div>
+                </div>
               </div>
-              {/* ST / *ST 跟在市场按钮后面，留一点间隔；不再单独占一行、也没有自己的标题 */}
-              <div className="ml-3 flex items-center gap-1.5">
-                <Switch
-                  checked={form.includeSt}
-                  aria-label={T.includeSt}
-                  data-screen-field="include_st"
-                  onCheckedChange={checked => setForm(current => ({ ...current, includeSt: checked }))}
+
+              {/* 条件树 */}
+              <div className="rounded-lg border border-border/60 p-3">
+                <div className="mb-1 text-[12px] font-medium text-foreground">{T.ruleTitle}</div>
+                <ScreenConditionGroup
+                  node={form.rule}
+                  depth={1}
+                  isRoot
+                  tradingDays={effectiveDays}
+                  handlers={handlers}
+                  issues={shownIssues}
+                  submitted={submitted}
                 />
-                <span className="text-[11px] text-muted-foreground">{T.includeSt}</span>
               </div>
-            </div>
-          </div>
 
-          {/* 条件树 */}
-          <div className="rounded-lg border border-border/60 p-3">
-            <div className="mb-1 text-[12px] font-medium text-foreground">{T.ruleTitle}</div>
-            <ScreenConditionGroup
-              node={form.rule}
-              depth={1}
-              isRoot
-              tradingDays={effectiveDays}
-              handlers={handlers}
-              issues={shownIssues}
-              submitted={submitted}
-            />
-          </div>
-
-          {previewBlockOf(preview)}
-          {conflict ? <div className="text-[11px] text-muted-foreground">{T.conflictHint}</div> : null}
+              {previewBlock}
+              {conflict ? <div className="text-[11px] text-muted-foreground">{T.conflictHint}</div> : null}
             </fieldset>
+          </TabsContent>
+
+          {/* 条件列表：全部已保存条件（名字 / 分数 / 创建时间 / 操作） */}
+          <TabsContent value="list" className="mt-2">
+            <div className="text-[11px] text-muted-foreground" data-fork-screen-hint="list">
+              {T.listHint}
+            </div>
+            <div className="mt-2 flex items-center justify-between">
+              <span className="text-[11px] text-muted-foreground" data-fork-preset-count>
+                {T.listCount(presets.length)}
+              </span>
+            </div>
+            <div className="mt-2 max-h-[46vh] overflow-auto scrollbar rounded-md border border-border/60">
+              <table className="w-full border-collapse text-[12px]" data-fork-preset-table>
+                <thead className="sticky top-0 z-10 bg-card text-[11px] text-muted-foreground">
+                  <tr>
+                    <th className="px-2 py-1.5 text-left font-normal">{T.listColName}</th>
+                    <th className="w-36 px-2 py-1.5 text-left font-normal">{T.listColScore}</th>
+                    <th className="w-40 px-2 py-1.5 text-left font-normal">{T.listColSavedAt}</th>
+                    <th className="w-32 px-2 py-1.5 text-right font-normal">{T.listColActions}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {presets.map(preset => (
+                    <tr
+                      key={preset.name}
+                      data-fork-preset-row={preset.name}
+                      className="border-t border-border/40 hover:bg-accent/20"
+                    >
+                      <td
+                        className="px-2 py-1.5 text-foreground"
+                        title={formatRule(preset.request.rule, preset.request.trading_days)}
+                      >
+                        {preset.name}
+                      </td>
+                      <td className="px-2 py-1.5 text-muted-foreground" data-fork-preset-score>
+                        {scoreText(preset.scores)}
+                      </td>
+                      <td className="px-2 py-1.5 text-muted-foreground" data-fork-preset-savedat>
+                        {savedAtText(preset.saved_at)}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1.5 text-right">
+                        <button
+                          type="button"
+                          className="px-1 text-[11px] text-primary hover:underline"
+                          data-fork-preset-edit={preset.name}
+                          onClick={() => applyPreset(preset.name, 'edit')}
+                        >
+                          {T.listEdit}
+                        </button>
+                        <button
+                          type="button"
+                          className="px-1 text-[11px] text-primary hover:underline"
+                          data-fork-preset-copy={preset.name}
+                          onClick={() => applyPreset(preset.name, 'copy')}
+                        >
+                          {T.listCopy}
+                        </button>
+                        <button
+                          type="button"
+                          className="px-1 text-[11px] text-destructive hover:underline disabled:opacity-40"
+                          data-fork-preset-delete={preset.name}
+                          disabled={!onDeletePreset}
+                          onClick={() => onDeletePreset?.(preset.name)}
+                        >
+                          {T.listDelete}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {presets.length === 0 ? (
+                <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">
+                  {T.listEmpty}
+                </div>
+              ) : null}
+            </div>
           </TabsContent>
         </Tabs>
 
-        {shownIssues.length > 0 ? (
+        {tab === 'build' && shownIssues.length > 0 ? (
           <div className="rounded-md border border-destructive/50 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive" data-fork-screen-issues>
             {T.issueSummary(shownIssues.length)}
             {shownIssues.map(issue => (issue.nodeId ? `（${issue.nodeId}）` : '') + issue.message).join('；')}
           </div>
         ) : null}
 
-        {error ? (
+        {tab === 'build' && error ? (
           <div className="rounded-md border border-destructive/50 bg-destructive/10 px-2 py-1.5 text-[11px] text-destructive" data-fork-screen-error>
             {error}
           </div>
         ) : null}
 
-        {/* 最后一行按钮与上面的预览/报错之间留出间距并加分隔线 ——
-            用户反馈「条件选股的最后按钮行和上面 UI 贴在一起了」。
-            第 5 条（2026-10-20 晚）：删除按钮**一直在**（没保存过时禁用），
-            它后面是「保存」（已保存过则变成「覆盖保存」），最后才是「开始选股」；
-            「取消」文字按钮去掉 —— 右上角有 X。 */}
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
-          <div className="text-[10px] text-muted-foreground" data-fork-screen-meta>
-            {asof
-              ? T.footerMeta(asof, footerStats.bars, footerStats.conditions, footerStats.depth)
-              : T.footerMetaNoAsOf(footerStats.bars, footerStats.conditions, footerStats.depth)}
-          </div>
-          <div className="flex items-center gap-1.5">
-            {/* 两个 tab 的动作不同（用户 2026-11-05）：
-                「新建条件」= 删除 / 保存；「条件选股」= 执行搜索。
-                执行搜索用当前草稿（可能是在另一个 tab 刚改过的未保存条件）。 */}
-            {tab === 'build' ? (
-              <>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  className="h-7 px-2 text-[12px] disabled:opacity-40"
-                  disabled={!presetName || submitting || !onDeletePreset}
-                  title={presetName ? undefined : SCREEN_PRESET_TEXTS_ZH.deleteDisabled}
-                  onClick={() => {
-                    if (presetName && onDeletePreset) onDeletePreset(presetName)
-                  }}
-                  data-fork-screen-delete-preset
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  {SCREEN_PRESET_TEXTS_ZH.delete}
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  className="h-7 px-2 text-[12px]"
-                  disabled={submitting || !onSavePreset}
-                  onClick={() => void handleSave()}
-                  data-fork-screen-save-preset
-                >
-                  <Save className="h-3.5 w-3.5" />
-                  {/* 文案永远是「保存」：覆盖保存时行为仍是覆盖，只是不再换词 ——
-                      同一个按钮一会儿叫保存一会儿叫覆盖保存，看着像两个功能。 */}
-                  {SCREEN_PRESET_TEXTS_ZH.dialogSave}
-                </Button>
-              </>
-            ) : (
+        {/* 最后一行按钮与上面的预览/报错之间留出间距并加分隔线。
+            合并后三个动作同屏：删除（没保存过就禁用）/ 保存 / 开始选股。 */}
+        {tab === 'build' ? (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-3">
+            <div className="text-[10px] text-muted-foreground" data-fork-screen-meta>
+              {asof
+                ? T.footerMeta(asof, bars, conditions, depth)
+                : T.footerMetaNoAsOf(bars, conditions, depth)}
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="h-7 px-2 text-[12px] disabled:opacity-40"
+                disabled={!editingName || submitting || !onDeletePreset}
+                title={editingName ? undefined : SCREEN_PRESET_TEXTS_ZH.deleteDisabled}
+                onClick={() => {
+                  if (editingName && onDeletePreset) onDeletePreset(editingName)
+                }}
+                data-fork-screen-delete-preset
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {SCREEN_PRESET_TEXTS_ZH.delete}
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="h-7 px-2 text-[12px]"
+                disabled={submitting || !onSavePreset}
+                onClick={() => void handleSave()}
+                data-fork-screen-save-preset
+              >
+                <Save className="h-3.5 w-3.5" />
+                {SCREEN_PRESET_TEXTS_ZH.dialogSave}
+              </Button>
               <Button
                 type="button"
                 size="sm"
@@ -993,9 +1006,9 @@ export function ScreenStocksDialog({
                 {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Filter className="h-3.5 w-3.5" />}
                 {submitting ? T.submitting : T.submit}
               </Button>
-            )}
+            </div>
           </div>
-        </div>
+        ) : null}
       </DialogContent>
     </Dialog>
   )

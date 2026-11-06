@@ -55,6 +55,24 @@ def _suppress_notifications(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _memory_preset_store():
+    """已保存条件一律用内存实现，单测不连 MySQL（用户 2026-11-06 第 3 条）。
+
+    存储改成 MySQL 之后，如果这里不注入，任何碰到 ``presets`` 的用例都会去连
+    真实库 —— 本机多半没配，结果是「一批用例变 skipped」，看起来像功能没做。
+    """
+    from src.modules.market.fork_screen import presets
+    from tests.preset_store_memory import MemoryPresetStore
+
+    store = MemoryPresetStore()
+    presets.set_store(store)  # type: ignore[arg-type]
+    try:
+        yield store
+    finally:
+        presets.set_store(None)
+
+
+@pytest.fixture(autouse=True)
 def _mock_stock_link_platform(monkeypatch):
     """避免 stock_link 模块访问数据库读取平台设置。"""
     monkeypatch.setattr(

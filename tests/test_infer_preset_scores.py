@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from src.modules.market.fork_infer import search
+from src.modules.market.fork_screen import presets as presets_mod
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -52,79 +53,70 @@ def test_自带数字的旧名字不会被当成已带后缀():
 
 
 # ---------------------------------------------------------------- 调度器改名
-def _preset(dir_: Path, name: str, rule: dict | None = None) -> Path:
-    dir_.mkdir(parents=True, exist_ok=True)
-    path = dir_ / f"{name}.json"
-    path.write_text(json.dumps({"name": name, "request": {"rule": rule or {"type": "group"},
-                                                          "trading_days": 30}}),
-                    encoding="utf-8")
-    return path
+def _seed(name: str, rule: dict | None = None) -> None:
+    """往条件库（单测里是内存实现）里塞一条条件。"""
+    presets_mod.save(
+        name,
+        {"rule": rule or {"type": "group"}, "trading_days": 30},
+        overwrite=True,
+    )
 
 
-def test_轮次跑完后把基础条件名补上评分(tmp_path, monkeypatch):
+def test_轮次跑完后把基础条件名补上评分():
     scheduler = _load("scheduler_scores", "scripts/infer_scheduler.py")
-    presets = tmp_path / "presets"
-    monkeypatch.setattr(scheduler, "PRESET_DIR", str(presets))
-    _preset(presets, "r11050610", {"type": "group", "id": "keep-me"})
+    _seed("r11050610", {"type": "group", "id": "keep-me"})
     state = {"starts": [{"run_id": "run-1", "preset": "r11050610"}]}
     runs = [{"run_id": "run-1", "status": "done",
              "score_train": 71.6, "score_test": 49.1}]
 
     scheduler.rename_preset_with_scores(runs, state)
 
-    assert not (presets / "r11050610.json").exists()
-    renamed = presets / "r11050610_716_491.json"
-    assert renamed.exists()
-    body = json.loads(renamed.read_text(encoding="utf-8"))
-    assert body["name"] == "r11050610_716_491"
+    assert not presets_mod.exists("r11050610")
+    renamed = presets_mod.load("r11050610_716_491")
+    assert renamed["name"] == "r11050610_716_491"
     # 规则内容不能被动到
-    assert body["request"]["rule"] == {"type": "group", "id": "keep-me"}
+    assert renamed["request"]["rule"] == {"type": "group", "id": "keep-me"}
+    assert renamed["scores"] == (71.6, 49.1)
     assert state["renamed"]["run-1"] == "r11050610_716_491"
 
 
-def test_没有评分就不改名(tmp_path, monkeypatch):
+def test_没有评分就不改名():
     scheduler = _load("scheduler_scores2", "scripts/infer_scheduler.py")
-    presets = tmp_path / "presets"
-    monkeypatch.setattr(scheduler, "PRESET_DIR", str(presets))
-    _preset(presets, "r11050610")
+    _seed("r11050610")
     state = {"starts": [{"run_id": "run-1", "preset": "r11050610"}]}
 
     scheduler.rename_preset_with_scores([{"run_id": "run-1", "status": "done"}], state)
 
-    assert (presets / "r11050610.json").exists()
+    assert presets_mod.exists("r11050610")
     assert "renamed" not in state
 
 
-def test_改名是幂等的(tmp_path, monkeypatch):
+def test_改名是幂等的():
     scheduler = _load("scheduler_scores3", "scripts/infer_scheduler.py")
-    presets = tmp_path / "presets"
-    monkeypatch.setattr(scheduler, "PRESET_DIR", str(presets))
-    _preset(presets, "e11051525")
+    _seed("e11051525")
     state = {"starts": [{"run_id": "run-1", "preset": "e11051525"}]}
     runs = [{"run_id": "run-1", "status": "done", "score_train": 52.0, "score_test": 61.0}]
 
     scheduler.rename_preset_with_scores(runs, state)
     scheduler.rename_preset_with_scores(runs, state)
 
-    names = sorted(path.stem for path in presets.glob("*.json"))
+    names = sorted(item["name"] for item in presets_mod.list_all())
     assert names == ["e11051525_520_610"]
 
 
 # ---------------------------------------------------------------- 一次性迁移
 def test_迁移脚本给已有条件补分数(tmp_path, monkeypatch):
     script = _load("preset_scores", "scripts/preset_scores.py")
-    preset_dir = tmp_path / "presets"
     infer_dir = tmp_path / "infer_runs"
     analysis_dir = tmp_path / "analysis_runs"
     for path in (infer_dir, analysis_dir):
         path.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(script, "PRESET_DIR", preset_dir)
     monkeypatch.setattr(script, "INFER_DIR", infer_dir)
     monkeypatch.setattr(script, "ANALYSIS_DIR", analysis_dir)
 
-    _preset(preset_dir, "r11050610")
-    _preset(preset_dir, "base_1")          # 没有评分记录，保持原名
-    _preset(preset_dir, "e11051525_716_491")  # 已带后缀，跳过
+    _seed("r11050610")
+    _seed("base_1")            # 没有评分记录，保持原名
+    _seed("e11051525_716_491")  # 已带后缀，跳过
     run = infer_dir / "20261105-061033-27hz"
     run.mkdir()
     (run / "meta.json").write_text(json.dumps({
@@ -146,7 +138,7 @@ def test_迁移脚本给已有条件补分数(tmp_path, monkeypatch):
 
     script.apply(todo)
 
-    names = sorted(path.stem for path in preset_dir.glob("*.json"))
+    names = sorted(item["name"] for item in presets_mod.list_all())
     assert names == ["base_1_550", "e11051525_716_491", "r11050610_716_491"]
 
 
