@@ -2,8 +2,6 @@ import { lazy } from 'react'
 
 export const pageLoaders = {
   login: () => import('@/pages/Login'),
-  // fork：专用首页 —— 只保留「收盘复盘」+ 交易日历，上游 Dashboard 不挂路由
-  forkDashboard: () => import('@/pages/ForkDashboard'),
   // fork：分析页 —— A 股全市场行情表（读本机 MySQL），挂在 /analysis
   forkAnalysis: () => import('@/pages/ForkAnalysis'),
   // fork：数据分析完整报告（/analysis/report/:runId，弹窗里「查看完整报告」开在新标签页）
@@ -29,8 +27,6 @@ export type RouteKey = keyof typeof pageLoaders
 
 export const routePages = {
   LoginPage: lazy(pageLoaders.login),
-  // fork：专用首页
-  ForkDashboardPage: lazy(pageLoaders.forkDashboard),
   // fork：分析页
   ForkAnalysisPage: lazy(pageLoaders.forkAnalysis),
   ForkAnalysisReportPage: lazy(pageLoaders.forkAnalysisReport),
@@ -52,8 +48,7 @@ export const routePages = {
 
 const routeMatchers: Array<{ key: RouteKey; matches: (pathname: string) => boolean }> = [
   { key: 'login', matches: pathname => pathname === '/login' },
-  // fork："/" 指向专用首页（上游 Dashboard 不挂路由）
-  { key: 'forkDashboard', matches: pathname => pathname === '/' },
+  { key: 'dashboard', matches: pathname => pathname === '/' },
   { key: 'gettingStarted', matches: pathname => pathname === '/getting-started' },
   { key: 'stocks', matches: pathname => pathname === '/portfolio' },
   // fork: /analysis 预加载的是分析页（不是上游 Stocks）
