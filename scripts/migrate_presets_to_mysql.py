@@ -25,7 +25,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if os.environ.get("PANWATCH_ROOT"):
     ROOT = Path(os.environ["PANWATCH_ROOT"])
-sys.path.insert(0, str(ROOT))
+
+
+def _ensure_src_on_path() -> None:
+    """源码根进 ``sys.path``（服务器上脚本在 ``/opt/PanWatch/scripts``、源码在 ``app/``）。"""
+    for base in (ROOT, ROOT / "app"):
+        if (base / "src").is_dir() and str(base) not in sys.path:
+            sys.path.insert(0, str(base))
+
+
+_ensure_src_on_path()
 
 from src.modules.market.fork_screen import preset_store  # noqa: E402
 
