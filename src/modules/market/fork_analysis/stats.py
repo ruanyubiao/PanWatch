@@ -62,7 +62,7 @@ HIST_EDGES = tuple(range(-50, 101, 5))
 #: v7 = 分组增加「相对随机」超额
 #: v8 = 双口径（按日/按笔）+ 成本敏感性 + 入场假设 + 组合模拟 + 因子归因 + 体检
 #: v9 = 归因改日聚类稳健标准误（改统计方法必须 +1，否则读到旧缓存）
-CACHE_VERSION = 9
+CACHE_VERSION = 10
 
 
 def forward_cost() -> float:

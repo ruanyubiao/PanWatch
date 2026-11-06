@@ -1,80 +1,66 @@
-"""条件评分（0–100）：把一个条件的统计结果压成「一眼能看懂的分」。
+"""条件评分（0–100）：把一条选股条件压成「一眼能看懂的分」。
 
-为什么要有这一层
-----------------
-用户 2026-10-24 的原话：*「你输出的一大堆数据，我是看不懂，所以加了评分系统…我看最终的评分，
-这样可以直接一眼看出好不好」*。所以分数不是装饰，它必须满足三个条件：
+评分规则（用户 2026-11-06 定，一句话能背下来）
+------------------------------------------------
 
-1. **有锚点**：50 = 和随机买入完全一样；60 = 及格线（能拿去用、不亏）；
-   85+ = 优秀。分数高低能直接对应「敢不敢用」，而不是一堆需要解释的 pp。
-2. **保守**：只用**置信下界**算分，不用点估计。样本少、波动大的条件得不到高分
-   —— 否则「命中 3 次全胜」会顶到 90 分，而它其实什么都不是。
-3. **可复算**：每个分数都能由「下界 + 一致性 + 惩罚」三项还原，不存在黑箱。
-
-评分公式（写死在这里，报告里逐项列出）
---------------------------------------
 ::
 
-    分 = 50 + 优势分(0–40) + 稳健分(0–10) − 负超额扣分(0–20)
-    然后按「样本/容量/成本/收益」四条硬门槛封顶
+    分 = 50 + 5 × 超额下限(pp)      然后截到 0–100
 
-* 优势分 = 40 × clip(下界 / 8pp, 0, 1) ^ 0.85
-  下界 2pp → 约 +12 分（62 分，及格）；下界 5pp → 约 +27 分（77 分，良好）；
-  下界 8pp 及以上 → 满分 40。下界 ≤ 0 → 0 分。
-* 稳健分：三个一致性各占一档（周期间 4 分、年度间 3 分、分层面 3 分），
-  按「正超额的比例」给分 —— 只在某一个周期亮、某一年亮、某一类股票亮，
-  都拿不到满分。
-* 负超额扣分：最优周期仍然是负的时候按幅度扣（3pp → −12 分），
-  这样「全程跑输」的条件会落到 40 分以下（明确不可用）。
-* 硬门槛（封顶 55，即「不能及格」）：样本 < 300 笔；有效独立样本 < 30；
-  平均每天不到 0.5 个信号（挑不出来）；成本升到 0.4% 后超额转负；
-  期望收益为负。
+* **50 分 = 和同日随机买入完全一样**，这是真正的零点。
+* **每多 5 分 = 多 1 个百分点**；60 分 = 比随机好 2pp（及格），
+  70 分 = 好 4pp，85 分 = 好 7pp，100 分 = 好 10pp 及以上封顶。
+* 用**下限**而不是点估计：下限 = 超额 − 1.96 × Newey–West 标准误（滞后 = 持有期）。
+  连续两天命中同一只股票时窗口重叠 29 天，在 NW 里只算一个独立片段 ——
+  用户要的「把重叠问题考虑进去，结果直接给分数」就是这一行。
 
-两段式评分
-----------
-推理段（训练集）和测试段各算一次，公式相同。测试分另外加一条**衰减惩罚**：
-测试段的下界比推理段低 5pp 以上时扣分（最多 8 分），因为那说明条件被训练段
-「喂」出来的，换个时段就失效。两个分都过 60 才算真正可用。
+为什么不用「所有股票各打一分再平均」
+------------------------------------
+分数回答的是「照这个条件买一笔」的期望优势，所以是**每笔信号合并**的均值，
+不是先给每只股票打分再平均（后者在命中数少的日子会被个别股票主导）。
+
+为什么用最高收盘盈利而不是最高价
+--------------------------------
+盘中最高价要求卖在最高点，没人做得到；而且基准组 5 日内摸到买入价上方的概率
+本来就 97%，这个指标测的是波动率不是选股能力。收盘口径允许为负 ——
+整段都在亏时，最大值天生就是「亏最少的那一天」。
+
+两段评分
+--------
+搜索段（训练集）和验算段（样本外）各算一次，公式相同。搜索段的分数天生偏高
+（搜索就是在这上面挑的），所以要看的永远是**验算段**那个数。
 """
 
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Optional, Sequence
 
-#: 及格线：60 分。低于它一律不建议直接用于实盘。
+#: 及格线：60 分 = 比随机好 2 个百分点。低于它不建议直接用于实盘。
 PASS_SCORE = 60.0
 
-#: 满分 100 的构成
+#: 分数锚点：50 = 与随机买入相同
 BASE = 50.0
-EDGE_MAX = 40.0
-ROBUST_MAX = 10.0
-NEG_MAX = 20.0
+#: 每 1pp 超额值多少分
+PER_PP = 5.0
 
-#: 优势分曲线的参考点：下界 8pp = 满分
-EDGE_FULL_PP = 8.0
-EDGE_CURVE_POWER = 0.85
-
-#: 硬门槛（不满足 → 最高 55 分）
+#: 硬门槛（不满足 → 最高 55 分，即「判不了，不能及格」）
 MIN_EVENTS = 300
 MIN_EFFECTIVE = 30
 MIN_SIGNALS_PER_DAY = 0.5
 STRESS_COST = 0.004
 
-#: 个股档（用户 2026-11-03 第 4 条）：一个条件可能只对某几只股票有效。
-#: 个股样本天然少（一只股票几年也就几十次信号），所以门槛另算：
-#: 8 次信号才能评分，15 次以下最高 75 分，25 次以下最高 88 分 ——
-#: 5 战 5 胜不该拿到 100 分，但 20 次里赢 17 次确实可能是真信号。
+#: 个股档：一只股票几年也就几十次信号，门槛另算
 STOCK_MIN_EVENTS = 8
 STOCK_MIN_EFFECTIVE = 2
 STOCK_CAP_8 = 75.0
 STOCK_CAP_25 = 88.0
 
-#: 评级
+#: 评级（阈值按「分数 = 50 + 5pp」换算：60 = +2pp，70 = +4pp，85 = +7pp）
 GRADES: tuple[tuple[float, str, str], ...] = (
     (85.0, "A", "优秀：超额大且稳，可以进实盘观察"),
     (70.0, "B", "良好：有超额、方向一致，小仓位可用"),
-    (60.0, "C", "及格：勉强能用于特定场景，需盯盘"),
+    (60.0, "C", "及格：比随机买入好 2pp 以上，可以拿去用"),
     (45.0, "D", "存疑：没有可确认的优势，不建议使用"),
     (0.0, "E", "不可用：显著跑输随机买入，应重做条件"),
 )
@@ -95,10 +81,10 @@ def _clip(value: float, low: float, high: float) -> float:
 
 
 def lower_bound(row: dict[str, Any], z: float = 1.96) -> Optional[float]:
-    """一个周期的超额置信下界（pp）。没有 t 值时按 1/3 折减，宁可保守。
+    """一个周期的超额下限（pp）。
 
-    显式给了 ``lower_pp`` 就直接用它：个股评分用 Wilson 下界（n 常常不到 20，
-    正态近似会把「8 次里赢 7 次」算成一个过窄的区间）。
+    优先用调用方算好的 ``lower_pp``（Newey–West，或个股的 Wilson 下界）；
+    只有点估计和 t 值时按 ``excess − z × |excess/t|`` 反推，宁可保守。
     """
     explicit = row.get("lower_pp")
     if explicit is not None:
@@ -114,7 +100,7 @@ def lower_bound(row: dict[str, Any], z: float = 1.96) -> Optional[float]:
 
 
 def best_horizon(windows: Sequence[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """按超额点估计挑最优周期（与旧报告一致，便于对照）。"""
+    """按超额点估计挑最优周期（明细展示用）。"""
     usable = [row for row in windows if row.get("excess_pp") is not None]
     if not usable:
         return None
@@ -122,12 +108,19 @@ def best_horizon(windows: Sequence[dict[str, Any]]) -> Optional[dict[str, Any]]:
 
 
 def best_horizon_by_lower(windows: Sequence[dict[str, Any]]) -> Optional[dict[str, Any]]:
-    """按置信下界挑最优周期（评分用这个：点估计高但样本小的周期不该赢）。"""
+    """按下限挑最优周期（评分用这个：点估计高但样本小的周期不该赢）。"""
     scored = [(lower_bound(row), row) for row in windows]
     scored = [(value, row) for value, row in scored if value is not None]
     if not scored:
         return None
     return max(scored, key=lambda item: item[0])[1]
+
+
+def score_from_lower(lower_pp: Optional[float]) -> Optional[float]:
+    """用户那一条公式本身：50 + 5 × 下限，截到 0–100。"""
+    if lower_pp is None:
+        return None
+    return round(_clip(BASE + PER_PP * float(lower_pp), 0.0, 100.0), 1)
 
 
 def score_segment(
@@ -146,27 +139,28 @@ def score_segment(
     参数
     ----
     windows
-        每个周期一行：``window / n / excess_pp / t / expectancy / payoff``。
+        每个周期一行：``window / n / excess_pp / lower_pp(可选) / n_eff / expectancy``。
+        新口径下 ``excess_pp`` 是「窗口内最高收盘盈利」的超额，不是胜率超额。
     events
-        有效事件数（扣掉不可验证的）。
+        有效事件数（已剔除不可验证的）。
     days
-        这段里「有信号」的交易日数（算每天信号数用）。
+        这段里有信号的交易日数（算「每天几个信号」用）。
     year_excess / layer_excess
-        分年、分层面的超额（pp），只用来算一致性，不参与优势分。
+        分年、分层面的超额，只进报告，不参与分数（分数只有一条公式）。
     stress_excess
-        成本抬到 0.4% 后、最优周期的超额（pp）。缺省表示没算。
+        成本抬到 0.4% 后最优周期的超额，用来做硬门槛。
     reference
-        另一段（推理段）的评分结果；给测试段打分时传进来算衰减惩罚。
+        另一段的评分结果；保留参数以兼容调用方，不再产生衰减惩罚
+        （两段分数并排显示，高低一眼就能看出，不用再折算）。
     profile
-        ``condition``（默认，整条条件）或 ``stock``（单只股票）。
-        个股的样本规模小两个数量级，用条件的门槛会把所有个股都压到 55 分以下，
-        所以两道门槛另算（见 ``STOCK_MIN_EVENTS`` / ``STOCK_CAP_*``）。
+        ``condition``（整条条件）或 ``stock``（单只股票，门槛另算）。
     """
     if not windows:
         return {
             "score": None, "grade": "-", "grade_text": "没有可评分的周期",
             "components": {}, "caps": ["没有周期数据"], "best_window": None,
-            "lower_pp": None, "excess_pp": None, "events": events, "days": days,
+            "lower_pp": None, "excess_pp": None, "n_eff": None,
+            "events": events, "days": days,
         }
 
     best = best_horizon_by_lower(windows) or best_horizon(windows)
@@ -176,58 +170,21 @@ def score_segment(
         return {
             "score": None, "grade": "-", "grade_text": "没有对照组，无法评分",
             "components": {}, "caps": ["缺少同日基准"], "best_window": None,
-            "lower_pp": None, "excess_pp": None, "events": events, "days": days,
+            "lower_pp": None, "excess_pp": None, "n_eff": None,
+            "events": events, "days": days,
         }
     lower = lower_bound(best)
     excess = best.get("excess_pp")
+    n_eff = best.get("n_eff")
 
-    components: dict[str, Any] = {}
     caps: list[str] = []
+    score = score_from_lower(lower)
+    if score is None:
+        score = BASE
 
-    # ---- 优势分
-    edge_points = 0.0
-    if lower is not None and lower > 0:
-        edge_points = EDGE_MAX * (min(1.0, lower / EDGE_FULL_PP) ** EDGE_CURVE_POWER)
-    components["edge"] = round(edge_points, 1)
-
-    # ---- 稳健分（三项一致性）
-    def share(values: Sequence[Optional[float]]) -> Optional[float]:
-        picked = [float(v) for v in values if v is not None]
-        if not picked:
-            return None
-        return sum(1 for v in picked if v > 0) / len(picked)
-
-    horizon_share = share([row.get("excess_pp") for row in windows])
-    year_share = share(year_excess)
-    layer_share = share(layer_excess)
-    robust = 4.0 * (horizon_share or 0.0) + 3.0 * (year_share or 0.0) + 3.0 * (layer_share or 0.0)
-    components["robust"] = round(robust, 1)
-    components["horizon_share"] = round(horizon_share or 0.0, 3)
-    components["year_share"] = round(year_share, 3) if year_share is not None else None
-    components["layer_share"] = round(layer_share, 3) if layer_share is not None else None
-
-    # ---- 负超额扣分
-    negative = 0.0
-    if excess is not None and excess < 0:
-        negative = min(NEG_MAX, abs(float(excess)) * 4.0)
-    components["negative"] = -round(negative, 1)
-
-    score = BASE + edge_points + robust - negative
-
-    # ---- 衰减惩罚（只对测试段）
-    decay = 0.0
-    if reference is not None and reference.get("lower_pp") is not None and lower is not None:
-        drop = float(reference["lower_pp"]) - float(lower)
-        if drop > 5.0:
-            decay = min(8.0, (drop - 5.0) * 1.0)
-    components["decay"] = -round(decay, 1)
-    score -= decay
-
-    # ---- 硬门槛
+    # ---- 硬门槛：不满足就封顶 55（「判不了」，而不是「略差一点」）
     cap = 100.0
     if profile == "stock":
-        # 个股档：门槛按个股样本规模另算，且不要求「每天至少 0.5 个信号」
-        # （一只股票一年命中的十几天根本凑不出这个数）。
         if events < STOCK_MIN_EVENTS:
             cap = min(cap, STOCK_CAP_8)
             caps.append(f"个股有效样本 {events} 笔 < {STOCK_MIN_EVENTS}，不足以评分")
@@ -237,18 +194,16 @@ def score_segment(
         elif events < 25:
             cap = min(cap, STOCK_CAP_25)
             caps.append(f"个股有效样本 {events} 笔 < 25，最高 {STOCK_CAP_25:.0f} 分")
-        n_eff = best.get("n_eff")
         if n_eff is not None and n_eff < STOCK_MIN_EFFECTIVE:
             cap = min(cap, STOCK_CAP_8)
-            caps.append(f"个股独立样本 {n_eff} < {STOCK_MIN_EFFECTIVE}")
+            caps.append(f"个股独立片段 {n_eff} < {STOCK_MIN_EFFECTIVE}")
     else:
         if events < MIN_EVENTS:
             cap = min(cap, PASS_SCORE - 5)
             caps.append(f"有效样本 {events} 笔 < {MIN_EVENTS}")
-        n_eff = best.get("n_eff")
         if n_eff is not None and n_eff < MIN_EFFECTIVE:
             cap = min(cap, PASS_SCORE - 5)
-            caps.append(f"独立样本 {n_eff} < {MIN_EFFECTIVE}（重叠窗口太多）")
+            caps.append(f"独立片段 {n_eff} < {MIN_EFFECTIVE}（重叠窗口太多）")
         if days and events / max(1, days) < MIN_SIGNALS_PER_DAY:
             cap = min(cap, PASS_SCORE - 5)
             caps.append("平均每天不足 0.5 个信号，实际挑不出来")
@@ -258,7 +213,7 @@ def score_segment(
     expectancy = best.get("expectancy")
     if expectancy is not None and expectancy < 0:
         cap = min(cap, PASS_SCORE - 5)
-        caps.append("最优周期的期望收益为负（赢的次数多但亏得更重）")
+        caps.append("平均最高盈利为负（买进去平均是亏的）")
 
     score = round(_clip(score, 0.0, cap), 1)
     letter, text = grade_of(score)
@@ -266,11 +221,16 @@ def score_segment(
         "score": score,
         "grade": letter,
         "grade_text": text,
-        "components": components,
+        "components": {
+            "base": BASE,
+            "edge": round(PER_PP * float(lower), 1) if lower is not None else 0.0,
+            "cap": cap if cap < 100.0 else None,
+        },
         "caps": caps,
         "best_window": best.get("window"),
         "lower_pp": None if lower is None else round(lower, 2),
         "excess_pp": None if excess is None else round(float(excess), 2),
+        "n_eff": n_eff,
         "events": events,
         "days": days,
     }
