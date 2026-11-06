@@ -1853,6 +1853,9 @@ export default function StocksPage() {
         market="CN"
         hasPosition={false}
         hideSourceLine
+        /* 列标题已经写着「指标」，技术面徽章只留结论（买入 / 回避 / 观望），
+           否则读成「指标 · 买入」（用户反馈）。AI 徽章的 AI 角标不受影响。 */
+        hideTechnicalPrefix
       />
     )
   }
