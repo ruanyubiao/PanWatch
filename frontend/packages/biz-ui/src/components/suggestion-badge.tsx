@@ -90,6 +90,15 @@ interface SuggestionBadgeProps {
    * 那里传 true。弹窗里的来源信息不受影响。
    */
   hideSourceLine?: boolean
+  /**
+   * 是否隐藏技术面徽章前面的「指标 · 」前缀。
+   *
+   * 默认 false = 保持上游行为不变（持仓 / 自选页仍然是「指标 · 买入」，
+   * 那里没有列标题说明这颗徽章是什么）。fork 分析页的「指标」列里，
+   * 列标题已经写了「指标」，前缀会让徽章读成「指标 · 买入」——
+   * 用户反馈只要「买入」，那一处传 true。
+   */
+  hideTechnicalPrefix?: boolean
 }
 
 // 格式化建议时间（自动转换为本地时区，只显示时:分）
@@ -148,6 +157,7 @@ export function SuggestionBadge({
   hasPosition = false,
   showTechnicalCompanion = true,
   hideSourceLine = false,
+  hideTechnicalPrefix = false,
 }: SuggestionBadgeProps) {
   const { t, i18n } = useTranslation('bizUi')
   const tr = (key: string, options?: Record<string, unknown>) =>
@@ -167,6 +177,9 @@ export function SuggestionBadge({
   const technicalLabel = (tech: ReturnType<typeof buildKlineSuggestion> | null) => tech
     ? localizedAction(tech.action, tech.action_label)
     : tr('technicalPending')
+  /** 技术面徽章文案：「指标 · 买入」或（hideTechnicalPrefix）只留「买入」。 */
+  const technicalCompanionLabel = (tech: ReturnType<typeof buildKlineSuggestion> | null) =>
+    hideTechnicalPrefix ? technicalLabel(tech) : `${tr('technicalShort')} · ${technicalLabel(tech)}`
   const [dialogOpen, setDialogOpen] = useState(false)
   const [klineDialogOpen, setKlineDialogOpen] = useState(false)
   const onDialogOpenChange = (open: boolean) => {
@@ -210,7 +223,7 @@ export function SuggestionBadge({
               />
               {isAI && showTechnicalCompanion && (
                 <TechnicalBadge
-                  label={`${tr('technicalShort')} · ${technicalLabel(tech)}`}
+                  label={technicalCompanionLabel(tech)}
                   tone={tech ? technicalToneFromSuggestionAction(tech.action, tech.action_label) : 'neutral'}
                   size="lg"
                   onClick={(e) => { e.stopPropagation(); setKlineDialogOpen(true) }}
@@ -404,7 +417,7 @@ export function SuggestionBadge({
               const tech = kline ? buildKlineSuggestion(kline as any, hasPosition, klineTr) : null
               return (
                 <TechnicalBadge
-                  label={`${tr('technicalShort')} · ${technicalLabel(tech)}`}
+                  label={technicalCompanionLabel(tech)}
                   tone={tech ? technicalToneFromSuggestionAction(tech.action, tech.action_label) : 'neutral'}
                   size="md"
                   onClick={(e) => { e.stopPropagation(); setKlineDialogOpen(true) }}
