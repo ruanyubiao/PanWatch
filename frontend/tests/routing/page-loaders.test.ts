@@ -11,6 +11,8 @@ describe('route page loaders', () => {
     'forkAnalysisReport',
       // fork: 任务详情独立页（/analysis/task/:kind/:runId）
       'forkAnalysisTask',
+      // fork: 深度分析2（/dsa2/:symbol，DSA 风格决策报告）
+      'forkDsa2',
       'dashboard',
       'gettingStarted',
       'stocks',
