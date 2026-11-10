@@ -2,7 +2,7 @@
  * 「深度分析2」独立页（/dsa2/:symbol）—— 从分析页那颗 BrainCircuit 按钮在新窗口打开。
  *
  * 界面按 daily_stock_analysis 的报告页复刻，只保留截图里红框那一块：
- *   头部（名称/价格/涨跌/代码/市场阶段/时间 + 重新分析/分享）
+ *   头部（名称/价格/涨跌/代码/市场阶段/时间 + 重新分析）
  *   核心洞察 → 数据缺口提示 → 操作建议 + 趋势预测 → 板块联动 → 策略点位四卡
  *   右栏：市场情绪（恐慌贪婪指数环）
  *
@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { AlertTriangle, Loader2, RefreshCw, Share2, Sparkles, Target, TrendingUp, Zap } from 'lucide-react'
+import { AlertTriangle, Loader2, RefreshCw, Sparkles, Target, TrendingUp, Zap } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { marketSignTextClass } from '@/lib/market-colors'
 import {
@@ -33,8 +33,6 @@ export const DSA2_TEXTS_ZH = {
   runningHint: '取数 + 大模型分析，通常 1~3 分钟。可以关掉这个窗口，稍后从原页面再打开会读到同一份结果。',
   elapsed: (seconds: number) => `已用 ${seconds} 秒`,
   retry: '重新分析',
-  share: '分享',
-  shared: '链接已复制',
   coreInsight: '核心洞察',
   advice: '操作建议',
   trend: '趋势预测',
@@ -227,10 +225,6 @@ export default function ForkDsa2Page() {
     return 'text-slate-200'
   }, [summary.trend_prediction])
 
-  const onShare = useCallback(() => {
-    navigator.clipboard?.writeText(window.location.href).catch(() => undefined)
-  }, [])
-
   return (
     <div className="min-h-screen bg-[#05080f] px-4 py-6 text-slate-200 md:px-8" data-dsa2-page={symbol}>
       <div className="mx-auto flex max-w-6xl flex-col gap-5">
@@ -268,15 +262,6 @@ export default function ForkDsa2Page() {
                 <RefreshCw className="mr-1 h-3.5 w-3.5" />
               )}
               {text.retry}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10"
-              onClick={onShare}
-            >
-              <Share2 className="mr-1 h-3.5 w-3.5" />
-              {text.share}
             </Button>
           </div>
         </header>
