@@ -2094,6 +2094,9 @@ export default function StocksPage() {
     klineIndicator: stockT('stocksPage.messages.klineIndicator'),
     relatedNews: stockT('stocksPage.messages.relatedNews'),
     deepAnalysis: stockT('stocksPage.messages.deepAnalysis'),
+    // fork：深度分析2（DSA 风格决策报告，新窗口）。文案写死在这里而不是 i18n 资源里：
+    // 这个功能只有中文界面在用，放进 locales 要同时维护 zh/en 两份 key。
+    dsaAnalysis: '深度分析2',
     detail: stockT('stocksPage.messages.detail'),
     follow: '关注',
     unfollow: '取消关注',
@@ -3038,6 +3041,11 @@ export default function StocksPage() {
                     onOpenKline={() => openKlineDialog(stock.symbol, stock.market, stock.name, false)}
                     onOpenNews={() => openNewsDialog(stock.name)}
                     onDeepAnalysis={() => openDeepAnalysis(stock.id, stock.symbol, stock.name)}
+                    onDsaAnalysis={() => {
+                      // fork：深度分析2 —— 新窗口打开 DSA 风格决策报告，页面自己起任务/轮询
+                      const url = `/dsa2/${encodeURIComponent(stock.symbol)}?name=${encodeURIComponent(stock.name || '')}`
+                      window.open(url, '_blank', 'noopener,noreferrer')
+                    }}
                     alertPanel={(
                       <StockPriceAlertPanel
                         mode="icon"
