@@ -1,5 +1,5 @@
 import type { HTMLAttributes, ReactNode } from 'react'
-import { BarChart3, Brain, ExternalLink, Loader2, Newspaper, Plus, X } from 'lucide-react'
+import { BarChart3, Brain, BrainCircuit, ExternalLink, Loader2, Newspaper, Plus, X } from 'lucide-react'
 import { Badge } from '@panwatch/base-ui/components/ui/badge'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { SuggestionBadge, type KlineSummary, type SuggestionInfo } from '@panwatch/biz-ui/components/suggestion-badge'
@@ -41,6 +41,8 @@ export interface StockRichCardTexts {
   klineIndicator: string
   relatedNews: string
   deepAnalysis: string
+  /** fork：深度分析2（DSA 风格决策报告，新窗口） */
+  dsaAnalysis: string
   detail: string
   follow: string
   unfollow: string
@@ -75,6 +77,8 @@ export interface StockRichCardProps {
   onOpenNews: () => void
   /** 省略表示没有股票记录，按钮置灰 */
   onDeepAnalysis?: () => void
+  /** fork：深度分析2（DSA 风格报告，调用方开新窗口）。省略则不渲染该按钮 */
+  onDsaAnalysis?: () => void
   /** 价格预警图标（上游组件，需要 stockId/缓存摘要），省略则不渲染该图标 */
   alertPanel?: ReactNode
   /** 未关注时的 + */
@@ -112,6 +116,7 @@ export function StockRichCard({
   onOpenKline,
   onOpenNews,
   onDeepAnalysis,
+  onDsaAnalysis,
   alertPanel,
   onFollow,
   onUnfollow,
@@ -231,6 +236,20 @@ export function StockRichCard({
           >
             <Brain className="w-3.5 h-3.5" />
           </Button>
+          {/* fork：深度分析2 —— DSA 风格决策报告，点开是新窗口（不发请求，不阻塞当前页） */}
+          {onDsaAnalysis ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-7 w-7 hover:text-primary"
+              title={texts.dsaAnalysis}
+              aria-label={texts.dsaAnalysis}
+              data-fork-dsa2-trigger="1"
+              onClick={() => onDsaAnalysis()}
+            >
+              <BrainCircuit className="w-3.5 h-3.5" />
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="icon"

@@ -26,6 +26,8 @@ const {
   ForkAnalysisPage,
   ForkAnalysisReportPage,
   ForkAnalysisTaskPage,
+  // fork：深度分析2（DSA 风格决策报告，新窗口）
+  ForkDsa2Page,
   GettingStartedPage,
   OpportunitiesPage,
   StocksPage,
@@ -156,7 +158,9 @@ function App() {
   // fork：独立页面（完整报告 / 任务详情）不显示任何导航与返回（用户 2026-10-22 第 7 条、2026-11-05）
   const bareReport =
     location.pathname.startsWith('/analysis/report/') ||
-    location.pathname.startsWith('/analysis/task/')
+    location.pathname.startsWith('/analysis/task/') ||
+    // fork：深度分析2 是新窗口里的独立页（无导航、无侧栏）
+    location.pathname.startsWith('/dsa2/')
 
   // 登录页面不显示导航
   if (location.pathname === '/login') {
@@ -348,6 +352,8 @@ function App() {
               <Route path="/analysis/report/:runId" element={<ForkAnalysisReportPage />} />
               {/* fork：任务详情独立页（历史任务点一行，在新窗口打开；无导航、无返回） */}
               <Route path="/analysis/task/:kind/:runId" element={<ForkAnalysisTaskPage />} />
+              {/* fork：深度分析2（DSA 风格决策报告，新窗口打开；无导航） */}
+              <Route path="/dsa2/:symbol" element={<ForkDsa2Page />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/evaluations" element={<EvaluationsPage />} />
               <Route path="/history" element={<HistoryPage />} />

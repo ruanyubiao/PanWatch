@@ -30,6 +30,7 @@ from src.modules.automation.api import agents, suggestions, templates
 from src.modules.market.api import (
     discovery,
     fork_analysis,
+    fork_dsa,
     fork_infer,
     fork_market,
     fork_screen,
@@ -96,6 +97,12 @@ app.include_router(
 # 逻辑在 src/modules/market/fork_infer/，接口在 api/fork_infer.py。
 app.include_router(
     fork_infer.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
+)
+# fork: DSA 风格决策报告（分析页「深度分析2」新窗口）。数据=本机 MySQL + 东财公开
+# 接口，模型=库里已配置的 AI service；路径 /api/stocks/dsa/*。
+# 业务逻辑在 src/modules/market/fork_dsa/。
+app.include_router(
+    fork_dsa.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
 )
 app.include_router(
     quotes.router, prefix="/api/quotes", tags=["quotes"], dependencies=protected
