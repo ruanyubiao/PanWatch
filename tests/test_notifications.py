@@ -20,6 +20,9 @@ from src.platform.tasking.contracts import TaskEventType, TaskStatus
 
 @pytest.fixture
 def db():
+    # ResearchRun & co. 定义在 platform.persistence.models 之外：不在建表前导入它们，
+    # create_all() 就会缺 research_runs，本文件单独跑必挂、全量跑却因为别的文件先导入而通过。
+    from src.modules.research.orchestration import models as _research_models  # noqa: F401
     engine = create_engine('sqlite://', connect_args={'check_same_thread': False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     with sessionmaker(bind=engine)() as session:
@@ -185,6 +188,10 @@ def test_agent_result_idempotent_and_failure_episode_toasts(db, monkeypatch):
 def test_price_hit_survives_delivery_failure_and_repeated_scan_deduplicates(db, monkeypatch):
     import asyncio
     from src.modules.market import price_alert_engine
+    # 去重键是「UTC 分钟桶」：两次扫描若跨过整分钟，就理应各提醒一次，
+    # 于是这个用例会在机器繁忙时随机变红。把扫描时钟钉死，让它只测去重本身。
+    clock = datetime(2026, 11, 11, 6, 0, 10, tzinfo=timezone.utc)
+    monkeypatch.setattr(price_alert_engine, '_utc_now', lambda: clock)
     stock = Stock(symbol='601238', name='Example', market='CN'); db.add(stock); db.flush()
     rule = PriceAlertRule(stock_id=stock.id, name='Trigger', market_hours_mode='always', cooldown_minutes=0,
                           max_triggers_per_day=0, condition_group={'op':'and','items':[{'type':'price','op':'>=','value':5}]})
@@ -209,7 +216,30 @@ def test_price_hit_survives_delivery_failure_and_repeated_scan_deduplicates(db, 
     with pytest.raises(LookupError): NotificationService(db).target(notice['id'])
 
 
+def test_price_hit_rearms_once_the_minute_bucket_moves(db, monkeypatch):
+    """同一分钟桶内只提醒一次；进入下一个分钟桶才允许再次提醒（时间全部钉死）。"""
+    import asyncio
+    from src.modules.market import price_alert_engine
+    stock = Stock(symbol='601318', name='Bucket', market='CN'); db.add(stock); db.flush()
+    rule = PriceAlertRule(stock_id=stock.id, name='Bucket', market_hours_mode='always', cooldown_minutes=0,
+                          max_triggers_per_day=0, condition_group={'op':'and','items':[{'type':'price','op':'>=','value':5}]})
+    db.add(rule); db.commit()
+    clock = {'now': datetime(2026, 11, 11, 6, 0, 10, tzinfo=timezone.utc)}
+    monkeypatch.setattr(price_alert_engine, '_utc_now', lambda: clock['now'])
+    monkeypatch.setattr(price_alert_engine, 'SessionLocal', sessionmaker(bind=db.bind))
+    monkeypatch.setattr('src.platform.scheduling.trading_calendar.is_trading_day', lambda *args: True)
+    engine = price_alert_engine.PriceAlertEngine()
+    monkeypatch.setattr(engine, '_fetch_quotes_map', AsyncMock(return_value={('CN','601318'):{'current_price':6}}))
+    assert asyncio.run(engine.scan_once())['triggered'] == 1
+    assert asyncio.run(engine.scan_once())['triggered'] == 0
+    clock['now'] = clock['now'] + timedelta(seconds=61)
+    assert asyncio.run(engine.scan_once())['triggered'] == 1
+    db.expire_all()
+    assert db.query(PriceAlertHit).count() == 2
+
+
 def test_three_sources_share_one_inbox(db):
+    stamp = datetime(2026, 11, 11, 6, 0, tzinfo=timezone.utc)
     repository = AssistantRepository(db)
     conversation = repository.create_conversation(stock_symbol=None, stock_market=None, initial_context=None)
     task = repository.create_task(conversation_id=conversation.id, user_message_id=None, context={})
@@ -217,11 +247,14 @@ def test_three_sources_share_one_inbox(db):
     run = AgentRun(agent_name='daily_report', status='success', trace_id='report'); db.add(run); db.flush(); agent_result(db, run)
     stock = Stock(symbol='X', name='Example', market='US'); db.add(stock); db.flush()
     rule = PriceAlertRule(stock_id=stock.id); db.add(rule); db.flush()
-    hit = PriceAlertHit(rule_id=rule.id, stock_id=stock.id, trigger_bucket='test', trigger_snapshot={}); db.add(hit); db.flush(); price_hit(db, hit, rule)
+    hit = PriceAlertHit(rule_id=rule.id, stock_id=stock.id, trigger_bucket='202611110600', trigger_time=stamp,
+                        trigger_snapshot={}); db.add(hit); db.flush(); price_hit(db, hit, rule)
     db.commit()
     service = NotificationService(db)
     assert {item['source'] for item in service.list()['items']} == {'assistant','market','agent'}
     assert all(len(service.list(source=source)['items']) == 1 for source in ['assistant','market','agent'])
+    # 价格提醒的时间戳来自命中本身，不受运行时时钟影响。
+    assert service.list(source='market')['items'][0]['occurred_at'] == stamp
 
 
 def test_http_validation_and_authentication_surface(db):
