@@ -12,17 +12,18 @@
 模块清单（页面「数据源」面板）
 ------------------------------
 ``MODULE_CATALOG`` 是**唯一真相**：页面按它逐行显示每个模块的来源与状态。
-状态三档：
+状态两档（外加接口失败的降级）：
 
 - ``ok``           已接入且本次取到
-- ``unavailable``  已接入但本次没取到（接口超时 / 当日无数据）
-- ``unconfigured`` 本页不使用（需要付费源或第三方 apikey），页面显示「未配置」
+- ``empty``        已接入，但这只票本来就没有这类数据（无覆盖 / 未上榜）
+- ``unavailable``  已接入但本次没取到（接口超时），页面折叠成一行，不逐条报警
 
-为什么要把「未配置」也列出来
-----------------------------
-用户口径是「凡是需要外部 apikey 的模块，先用已有的替换，没有的就显示未配置」。
-**显示成一行「未配置」比静默省略更诚实**：否则用户会以为报告已经覆盖了研报与
-社交情绪，把「没查」当成「查过且没有」。
+为什么清单里没有「需要 apikey 的模块」
+--------------------------------------
+用户口径是「凡是需要外部 apikey 的模块，先用免费的替代，替代不了就别在页面上
+留一堆取数失败」。因此研报、社交情绪、北向资金都已换成免 key 的公开源（东财研报
+中心 + F10 预测、东财人气榜、东财沪深港通），**清单里根本不存在「未配置」这一档**：
+显示它只会让人以为报告没覆盖，而结论并不依赖那些源。
 """
 
 from __future__ import annotations
@@ -78,10 +79,10 @@ MODULE_CATALOG: tuple[dict[str, Any], ...] = (
     },
     {
         "key": "popularity",
-        "label": "社交情绪（东财股吧人气替代）",
-        "source": "东财人气榜（免 key）",
+        "label": "讨论热度（东财人气榜）",
+        "source": "东财人气榜（公开数据）",
         "requires_key": False,
-        "note": "雪球 / Reddit 需第三方 apikey，本页用东财人气排名替代",
+        "note": "用东财人气排名衡量讨论热度，不依赖任何第三方账号",
     },
     {
         "key": "northbound",
@@ -89,25 +90,31 @@ MODULE_CATALOG: tuple[dict[str, Any], ...] = (
         "source": "东财沪深港通 · 季度持股 + 每日十大成交活跃股（免 key）",
         "requires_key": False,
         "empty_label": "无披露记录",
-        "note": "个股每日北向净买额自 2024-08-19 起交易所不再披露（港交所：持股明细改为季度），"
-        "本页改用「季度持股快照」看外资还剩多少，并用「十大成交活跃股」补当日活跃度",
+        "note": "个股每日北向净买额自 2024-08-19 起交易所不再披露，"
+        "本页用「季度持股快照」看外资持仓，用「十大成交活跃股」看当日活跃度",
     },
 )
 
 
 def module_status(availability: dict[str, Any]) -> list[dict[str, Any]]:
-    """把「本次取数结果」映射成页面要的行（status: ok / empty / unavailable / unconfigured）。
+    """把「本次取数结果」映射成页面要的行（status: ok / empty / unavailable）。
 
     ``availability[key]`` 三态：``True`` 取到、``"empty"`` 接入了但这只票没有数据
     （例如没有任何机构覆盖、没进北向活跃榜）、``False``/缺失 接口失败。
+
+    **不再输出「未配置」行**（用户口径）：需要 apikey 或付费源的模块在
+    ``MODULE_CATALOG`` 里就没有条目，缺的那些已经用免费源替代了。面板上出现
+    「未配置 / 需 apikey」只会让人以为报告没覆盖，而实际结论并不依赖那些源。
+    旧报告（升级前生成、payload 里还带 unconfigured）由前端同样过滤掉。
     """
     rows: list[dict[str, Any]] = []
     for module in MODULE_CATALOG:
         key = module["key"]
         got = availability.get(key)
         if not module.get("source"):
-            status = "unconfigured"
-        elif got is True:
+            # 没有可用来源的模块不进清单：不显示、不占一行、也不进数据缺口
+            continue
+        if got is True:
             status = "ok"
         elif got == "empty":
             status = "empty"
