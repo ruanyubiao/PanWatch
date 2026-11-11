@@ -24,6 +24,8 @@ import {
   getDsaLatest,
   getDsaReport,
   type DsaReportRow,
+  type DsaSource,
+  type DsaSourceStatus,
 } from '@/lib/dsa-api'
 
 export const DSA2_TEXTS_ZH = {
@@ -53,6 +55,11 @@ export const DSA2_TEXTS_ZH = {
   riskTitle: '风险提示',
   asof: (date: string) => `行情日期 ${date}`,
   dataSources: (sources: string) => `数据源：${sources}`,
+  sourcesTitle: '数据源',
+  sourcesSubtitle: '本页不含任何需要 apikey 的数据源',
+  sourceOk: '已接入',
+  sourceUnavailable: '本次未取到',
+  sourceUnconfigured: '未配置',
   failed: '分析失败',
   empty: '还没有分析结果',
   start: '开始分析',
@@ -122,6 +129,48 @@ function SniperCard({ label, value, tone }: { label: string; value?: string | nu
       <div className="text-xs text-slate-400">{label}</div>
       <div className={`mt-2 text-sm leading-relaxed ${tone}`}>{value || DSA2_TEXTS_ZH.noValue}</div>
     </div>
+  )
+}
+
+/** 数据源面板：逐行列出「这个字段是从哪来的 / 有没有配上」。 */
+function SourcePanel({ sources }: { sources: DsaSource[] }) {
+  const text = DSA2_TEXTS_ZH
+  const toneOf = (status: DsaSourceStatus) =>
+    status === 'ok'
+      ? 'text-emerald-300'
+      : status === 'unavailable'
+        ? 'text-amber-300'
+        : 'text-slate-500'
+  const labelOf = (status: DsaSourceStatus) =>
+    status === 'ok' ? text.sourceOk : status === 'unavailable' ? text.sourceUnavailable : text.sourceUnconfigured
+  const dotOf = (status: DsaSourceStatus) =>
+    status === 'ok' ? 'bg-emerald-400' : status === 'unavailable' ? 'bg-amber-400' : 'bg-slate-600'
+
+  return (
+    <section className={`${CARD} p-4`} data-dsa2-sources>
+      <h2 className="text-sm font-medium text-cyan-300">{text.sourcesTitle}</h2>
+      <div className="mt-1 text-[11px] text-slate-500">{text.sourcesSubtitle}</div>
+      <ul className="mt-3 flex flex-col gap-1.5">
+        {sources.map(item => (
+          <li
+            key={item.key}
+            className="flex items-start justify-between gap-2 text-[11px]"
+            data-dsa2-source={item.key}
+            data-dsa2-source-status={item.status}
+          >
+            <span className="flex min-w-0 items-start gap-1.5">
+              <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${dotOf(item.status)}`} />
+              <span className="min-w-0">
+                <span className="text-slate-300">{item.label}</span>
+                {item.source ? <span className="block text-slate-500">{item.source}</span> : null}
+                {!item.source && item.note ? <span className="block text-slate-600">{item.note}</span> : null}
+              </span>
+            </span>
+            <span className={`shrink-0 ${toneOf(item.status)}`}>{labelOf(item.status)}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }
 
@@ -210,6 +259,8 @@ export default function ForkDsa2Page() {
   const changeTone = marketSignTextClass(meta.change_pct)
   const limitations = details.limitations ?? []
   const sectors = details.sectors ?? []
+  // 数据源清单：老报告没有这一项 → 空数组，面板整块不渲染（不显示一堆假的「未配置」）
+  const sources = details.sources ?? []
 
   const adviceTone = useMemo(() => {
     const advice = summary.operation_advice || ''
@@ -402,6 +453,8 @@ export default function ForkDsa2Page() {
                   <SentimentRing score={summary.sentiment_score} label={summary.sentiment_label} />
                 </div>
               </section>
+
+              {sources.length ? <SourcePanel sources={sources} /> : null}
 
               <section className={`${CARD} p-4 text-[11px] leading-relaxed text-slate-500`}>
                 <div>

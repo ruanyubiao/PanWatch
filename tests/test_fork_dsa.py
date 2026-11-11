@@ -17,7 +17,7 @@ from fastapi import HTTPException
 
 from src.modules.market.api import fork_dsa
 from src.modules.market.fork_dsa import prompt as prompt_mod
-from src.modules.market.fork_dsa import schema, service, store
+from src.modules.market.fork_dsa import schema, service, sources, store
 
 
 # ── 代码归一化 ───────────────────────────────────────────────────────────
@@ -270,3 +270,147 @@ def test_start_reuses_running_task(monkeypatch):
     assert first["id"] == second["id"]
     running = store.running("600004")
     assert running is not None and running["id"] == first["id"]
+
+
+# ── 免 key 数据面（公告 / 两融 / 财联社） ────────────────────────────
+
+
+def test_module_status_marks_paid_sources_as_unconfigured():
+    """需要 apikey 的模块必须显式标 unconfigured —— 页面据此显示「未配置」"""
+    rows = {r["key"]: r for r in sources.module_status({"market": True, "news": True})}
+    assert rows["market"]["status"] == "ok"
+    assert rows["news"]["status"] == "ok"
+    assert rows["boards"]["status"] == "unavailable"  # 接了但本次没取到
+    assert rows["research"]["status"] == "unconfigured"
+    assert rows["research"]["requires_key"] is True
+    assert rows["research"]["source"] is None
+    assert rows["northbound"]["status"] == "unconfigured"
+
+
+def test_module_status_covers_every_connected_module():
+    """每个「有来源」的模块都能被 availability 打开成 ok，不会漏配 key"""
+    connected = [r["key"] for r in sources.module_status({}) if r["status"] != "unconfigured"]
+    rows = {r["key"]: r for r in sources.module_status({k: True for k in connected})}
+    assert all(rows[k]["status"] == "ok" for k in connected)
+    assert "margin" in connected and "announcements" in connected and "flash" in connected
+
+
+def test_announcements_classify_and_shape(monkeypatch):
+    """公告：事件分类 + 标题为空的行被丢掉"""
+    payload = {
+        "data": {
+            "list": [
+                {"title": "兆新股份:2026年第三次临时股东大会决议公告", "notice_date": "2026-11-08 00:00:00", "art_code": "AN1"},
+                {"title": "", "notice_date": "2026-11-07 00:00:00", "art_code": "AN2"},
+                {"title": "兆新股份:关于股东减持计划的预披露公告", "notice_date": "2026-11-06 00:00:00", "art_code": "AN3"},
+            ]
+        }
+    }
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: payload)
+    result = sources.load_announcements("002256")
+    assert result["available"] is True
+    assert [x["event"] for x in result["items"]] == ["公司治理", "减持"]
+    assert result["items"][0]["date"] == "2026-11-08"
+
+
+def test_announcements_failure_is_reported_not_raised(monkeypatch):
+    def boom(*args, **kwargs):
+        raise RuntimeError("东财超时")
+
+    monkeypatch.setattr(sources, "_get_json", boom)
+    result = sources.load_announcements("002256")
+    assert result["available"] is False
+    assert "东财超时" in result["reason"]
+
+
+def test_margin_not_a_target_is_normal_not_crash(monkeypatch):
+    """不在两融标的里是正常情况，不能当异常抛出去"""
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"result": {"data": []}})
+    result = sources.load_margin("002256")
+    assert result["available"] is False
+    assert "两融" in result["reason"]
+
+
+def test_flash_news_prefers_items_mentioning_the_stock(monkeypatch):
+    payload = {
+        "data": {
+            "roll_data": [
+                {"title": "两市成交额萎缩", "level": "A", "ctime": 1762600000},
+                {"title": "兆新股份中标光伏项目", "level": "C", "ctime": 1762600100, "stock_list": "002256"},
+            ]
+        }
+    }
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: payload)
+    result = sources.load_flash_news("兆新股份")
+    assert result["mode"] == "stock"
+    assert [x["title"] for x in result["items"]] == ["兆新股份中标光伏项目"]
+
+
+def test_flash_news_falls_back_to_market_context(monkeypatch):
+    """提到不到这只票时只能给大盘背景（mode=market），提示词据此禁止写成个股消息"""
+    payload = {"data": {"roll_data": [{"title": "央行开展逆回购", "level": "A", "ctime": 1762600000}]}}
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: payload)
+    result = sources.load_flash_news("兆新股份")
+    assert result["mode"] == "market"
+    assert result["items"][0]["title"] == "央行开展逆回购"
+
+
+def test_prompt_carries_new_sections_and_marks_missing():
+    text = prompt_mod.build_user_prompt(
+        snapshot=_snapshot(),
+        phase={"phase": "postmarket", "label": "盘后", "market_local_time": "x", "calendar": "db"},
+        boards={"available": True, "tags": ["银行"]},
+        flow={"available": True, "latest": {"main_net": -1.0e7, "main_net_pct": -0.8}},
+        news={"available": True, "items": [{"date": "2026-11-10", "title": "新闻", "summary": "s"}]},
+        limitations=[],
+        announcements={"available": True, "items": [{"date": "2026-11-08", "event": "减持", "title": "股东减持"}]},
+        margin={"available": True, "date": "2026-11-10", "financing_balance": 3.13e8, "lending_balance": 1000},
+        flash={"available": True, "mode": "market", "items": [{"time": "11-10 09:30", "level": "A", "title": "央行逆回购"}]},
+    )
+    assert "## 公司公告" in text and "股东减持" in text
+    assert "## 融资融券" in text and "3.13亿" in text
+    assert "## 7×24 快讯" in text and "未提及本股" in text
+
+
+def test_worker_records_source_panel(monkeypatch):
+    """数据源清单要落进 details.sources，页面才有得渲染"""
+    monkeypatch.setattr(
+        service,
+        "_collect",
+        lambda symbol, name: {
+            "snapshot": _snapshot(),
+            "boards": {"available": True, "tags": ["银行"]},
+            "flow": {"available": True, "latest": {"main_net": -1.0e7, "main_net_pct": -0.8}},
+            "news": {"available": True, "items": []},
+            "announcements": {"available": True, "items": []},
+            "margin": {"available": False, "reason": "不是两融标的"},
+            "flash": {"available": True, "mode": "market", "items": []},
+            "phase": {"phase": "postmarket", "label": "盘后", "market_local_time": "x", "calendar": "db"},
+            "limitations": [],
+            "sources": sources.module_status({"market": True, "boards": True, "margin": False}),
+        },
+    )
+    monkeypatch.setattr(service, "_run_model", lambda collected, *, db, model_id: (dict(_raw_report()), "fake/model"))
+    row_id = store.create("600005", "浦发银行")
+    service._worker("600005", "浦发银行", None, row_id)
+    report = store.get(row_id)["report"]
+    panel = {row["key"]: row for row in report["details"]["sources"]}
+    assert panel["boards"]["status"] == "ok"
+    assert panel["margin"]["status"] == "unavailable"
+    assert panel["research"]["status"] == "unconfigured"
+    assert report["details"]["announcements"]["available"] is True
+
+
+def test_flash_news_tolerates_list_stock_list(monkeypatch):
+    """线上财联社的 stock_list 是列表（不是逗号串）—— 曾经在这里抛过 AttributeError"""
+    payload = {
+        "data": {
+            "roll_data": [
+                {"title": "兆新股份中标", "level": "B", "ctime": 1762600000, "stock_list": [{"StockID": "002256"}]}
+            ]
+        }
+    }
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: payload)
+    result = sources.load_flash_news("兆新股份")
+    assert result["available"] is True
+    assert result["items"][0]["stocks"] == ["002256"]

@@ -127,4 +127,38 @@ describe('深度分析2 页面', () => {
     expect(screen.getByText(/行情库炸了/)).toBeTruthy()
     expect(screen.getAllByText('重新分析').length).toBeGreaterThan(0)
   })
+
+  it('数据源面板：逐行标「已接入 / 未配置」，需要 apikey 的模块不会假装有数据', async () => {
+    latest.mockResolvedValue({
+      id: 11,
+      symbol: '002256',
+      status: 'done',
+      model_used: 'test/model',
+      created_at: '2026-10-19T16:34:58',
+      report: {
+        ...report,
+        details: {
+          ...report.details,
+          sources: [
+            { key: 'market', label: '行情 / 均线 / 技术指标', source: '本机行情库 MySQL', status: 'ok' },
+            { key: 'announcements', label: '公司公告', source: '东财公告接口', status: 'unavailable' },
+            { key: 'research', label: '研报 / 机构评级', source: null, requires_key: true, status: 'unconfigured' },
+          ],
+        },
+      },
+    })
+    renderPage()
+    expect(await screen.findByText('数据源')).toBeTruthy()
+    expect(screen.getByText('已接入')).toBeTruthy()
+    expect(screen.getByText('本次未取到')).toBeTruthy()
+    expect(screen.getByText('未配置')).toBeTruthy()
+    const research = document.querySelector('[data-dsa2-source="research"]')
+    expect(research?.getAttribute('data-dsa2-source-status')).toBe('unconfigured')
+  })
+
+  it('老报告没有数据源清单时不渲染面板（不留一堆假的未配置）', async () => {
+    renderPage()
+    expect(await screen.findByText('兆新股份')).toBeTruthy()
+    expect(document.querySelector('[data-dsa2-sources]')).toBeNull()
+  })
 })

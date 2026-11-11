@@ -19,7 +19,7 @@ import logging
 import threading
 from typing import Any, Optional
 
-from . import data, prompt as prompt_mod, schema, store
+from . import data, prompt as prompt_mod, schema, sources, store
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,20 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
     if not news.get("available"):
         limitations.append("新闻面未纳入（东财新闻搜索无结果或不可用）")
 
+    # 消息面 / 杠杆面：全部免费免 key（财联社用网页签名，不是账号密钥）。
+    # 每一块都是尽力而为，取不到就进 limitations，绝不用空字符串冒充「已查」。
+    announcements = sources.load_announcements(symbol)
+    if not announcements.get("available"):
+        limitations.append(f"公司公告未纳入（{announcements.get('reason') or '无公告'}）")
+
+    margin = sources.load_margin(symbol)
+    if not margin.get("available"):
+        limitations.append(f"融资融券未纳入（{margin.get('reason') or '无两融数据'}）")
+
+    flash = sources.load_flash_news(snapshot.get("name") or name)
+    if not flash.get("available"):
+        limitations.append(f"7×24 快讯未纳入（{flash.get('reason') or '无快讯'}）")
+
     phase = data.market_phase()
     if phase.get("calendar") != "db":
         limitations.append("交易日历缺失，市场阶段按工作日近似")
@@ -63,8 +77,23 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
         "boards": boards,
         "flow": flow,
         "news": news,
+        "announcements": announcements,
+        "margin": margin,
+        "flash": flash,
         "phase": phase,
         "limitations": limitations,
+        # 页面「数据源」面板要的行：每个模块一条，状态 ok / unavailable / unconfigured
+        "sources": sources.module_status(
+            {
+                "market": True,
+                "boards": bool(boards.get("available")),
+                "capital_flow": bool(flow.get("available")),
+                "news": bool(news.get("available")),
+                "announcements": bool(announcements.get("available")),
+                "margin": bool(margin.get("available")),
+                "flash": bool(flash.get("available")),
+            }
+        ),
     }
 
 
@@ -81,6 +110,9 @@ def _run_model(
         flow=collected["flow"],
         news=collected["news"],
         limitations=collected["limitations"],
+        announcements=collected.get("announcements"),
+        margin=collected.get("margin"),
+        flash=collected.get("flash"),
     )
     client = get_configured_failover_client(db, model_id)
 
@@ -139,11 +171,19 @@ def _worker(symbol: str, name: Optional[str], model_id: Optional[int], report_id
         )
         report["details"]["capital_flow"] = collected["flow"]
         report["details"]["news"] = collected["news"]
+        report["details"]["announcements"] = collected.get("announcements") or {"available": False}
+        report["details"]["margin"] = collected.get("margin") or {"available": False}
+        report["details"]["flash"] = collected.get("flash") or {"available": False}
+        # 数据源面板（页面渲染用）。历史报告没有这一项，前端要能容忍缺失。
+        report["details"]["sources"] = collected.get("sources") or sources.module_status({})
         report["details"]["data_sources"] = [
             "本机行情库（日线/均线/技术指标）",
             "东财板块归属",
             "东财主力资金流",
             "东财新闻搜索",
+            "东财公司公告",
+            "东财融资融券",
+            "财联社 7×24 快讯",
         ]
         store.finish(report_id, report, model_label)
     except Exception as exc:  # noqa: BLE001 - 任何失败都要落成 failed，不能留 running

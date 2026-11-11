@@ -510,6 +510,12 @@ export default function StocksPage() {
   const [stockQuery, setStockQuery] = useState('')
   /* fork：除板块以外的三组筛选（状态/涨跌/市值），见 lib/market-filters.ts */
   const [marketFilters, setMarketFilters] = useState<MarketTableFilters>(EMPTY_MARKET_FILTERS)
+  /**
+   * fork：「关注」开关（2026-11-11）。选中后表格只显示已关注（自选）的股票。
+   * 与五组筛选分开存：它不是一个「档位」，而是**数据范围**的切换，所以不塞进
+   * ``MarketTableFilters``（那个结构被条件选股弹窗复用，塞进去会串味）。
+   */
+  const [followedOnly, setFollowedOnly] = useState(false)
   /* fork：筛选行右端那三项元信息 —— 数据时间/版本/提交时间全部来自
      /stocks/market-meta（数据时间＝行情库最后一次同步，不是页面载入时刻） */
   const [buildMeta, setBuildMeta] = useState<BuildMeta | null>(null)
@@ -2165,13 +2171,23 @@ export default function StocksPage() {
       </Button>
       {/* 已保存条件的下拉已搬进条件选股弹窗（用户 2026-11-04 第 1 条），
           旁边的「编辑」按钮一并去掉 —— 选中即编辑。 */}
+      {/* fork：「添加股票」从第二行搬到「条件选股」后面（用户 2026-11-11 指定）。
+          它和「条件选股」都是「往列表里加东西」的动作，放在一起比夹在刷新与搜索框之间好找。 */}
+      <Button
+        data-tour="add-stock"
+        size="sm"
+        className="h-7 px-2 text-[12px]"
+        onClick={() => setShowBatchAdd(true)}
+      >
+        <Plus className="h-3.5 w-3.5" /> {FORK_ANALYSIS_TEXTS_ZH.addStock}
+      </Button>
     </div>
   )
 
   /** 第一行右侧：数据同步时间 / 代码版本 / 代码提交时间（原先是筛选行的 trailing）。 */
   const tableToolbarMeta = <BuildMetaStrip build={buildMeta} />
 
-  /** 第二行左端：「刷新」「添加股票」+ 50px + 搜索框（原来和条件选股挤在同一行）。 */
+  /** 第二行左端：「刷新」+ 50px + 搜索框（「添加股票」已搬到「条件选股」后面）。 */
   const tableToolbarLeading = (
     <div className="flex items-center" style={{ columnGap: TOOLBAR_GAP_PX }}>
       <div className="flex items-center gap-1.5">
@@ -2185,14 +2201,6 @@ export default function StocksPage() {
         >
           <RefreshCw className={`h-3.5 w-3.5 ${tableLoading ? 'animate-spin' : ''}`} />
           {stockT('stocksPage.messages.refreshed')}
-        </Button>
-        <Button
-          data-tour="add-stock"
-          size="sm"
-          className="h-7 px-2 text-[12px]"
-          onClick={() => setShowBatchAdd(true)}
-        >
-          <Plus className="h-3.5 w-3.5" /> {FORK_ANALYSIS_TEXTS_ZH.addStock}
         </Button>
       </div>
       <div className="w-[260px] shrink-0">
@@ -2912,6 +2920,7 @@ export default function StocksPage() {
               board={stockListFilter}
               query={stockQuery}
               filters={marketFilters}
+              followedOnly={followedOnly}
               existingSymbols={watchSymbolSet}
               onCounts={setMarketCounts}
               onAdd={handleQuickAdd}
@@ -2934,6 +2943,8 @@ export default function StocksPage() {
                   counts={boardCounts}
                   filters={marketFilters}
                   onFiltersChange={setMarketFilters}
+                  followedOnly={followedOnly}
+                  onFollowedOnlyChange={setFollowedOnly}
                   indicatorOptions={indicatorFilterOptions}
                 />
               }

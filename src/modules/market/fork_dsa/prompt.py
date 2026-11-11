@@ -132,7 +132,11 @@ SYSTEM_PROMPT = """你是一位A股投资分析师，负责生成专业的【决
 
 def _money(value: Optional[float]) -> str:
     """元 → 亿/万，保留两位。数据缺失给「未纳入」。"""
-    if value is None:
+    if value is None or value == "":
+        return "未纳入"
+    try:
+        value = float(value)  # 东财有时给字符串
+    except (TypeError, ValueError):
         return "未纳入"
     if abs(value) >= 1e8:
         return f"{value / 1e8:.2f}亿"
@@ -174,6 +178,9 @@ def build_user_prompt(
     flow: dict[str, Any],
     news: dict[str, Any],
     limitations: list[str],
+    announcements: Optional[dict[str, Any]] = None,
+    margin: Optional[dict[str, Any]] = None,
+    flash: Optional[dict[str, Any]] = None,
 ) -> str:
     """把取到的数据拼成事实表。缺什么，就在「数据缺口」里点名。"""
     name = snapshot.get("name") or snapshot.get("code")
@@ -255,6 +262,42 @@ def build_user_prompt(
             lines.append(f"- [{item.get('date')}] {item.get('title')}｜{item.get('summary')}")
     else:
         lines.append(f"- 未纳入（{news.get('reason') or '没有搜到相关新闻'}）")
+
+    ann = announcements or {}
+    lines += ["", "## 公司公告（来源：东财公告接口）"]
+    if ann.get("available"):
+        for item in (ann.get("items") or [])[:8]:
+            lines.append(f"- [{item.get('date')}]（{item.get('event')}）{item.get('title')}")
+    else:
+        lines.append(f"- 未纳入（{ann.get('reason') or '公告未取到'}）")
+
+    mg = margin or {}
+    lines += ["", "## 融资融券（来源：东财数据中心，单位：元）"]
+    if mg.get("available"):
+        lines.append(
+            f"- {mg.get('date')} 融资余额 {_money(mg.get('financing_balance'))}，"
+            f"当日融资买入 {_money(mg.get('financing_buy'))}"
+        )
+        lines.append(
+            f"- 融券余额 {_money(mg.get('lending_balance'))}，"
+            f"两融余额合计 {_money(mg.get('total_balance'))}"
+        )
+    else:
+        lines.append(f"- 未纳入（{mg.get('reason') or '两融未取到'}）")
+
+    fl = flash or {}
+    lines += ["", "## 7×24 快讯（来源：财联社）"]
+    if fl.get("available"):
+        if fl.get("mode") == "stock":
+            lines.append("- 以下快讯提到了本股：")
+        else:
+            lines.append(
+                "- 以下为大盘/行业快讯，**未提及本股**：只能当市场背景，不得写成这只票的消息"
+            )
+        for item in (fl.get("items") or [])[:6]:
+            lines.append(f"- [{item.get('time')}][{item.get('level')}级] {item.get('title')}")
+    else:
+        lines.append(f"- 未纳入（{fl.get('reason') or '快讯未取到'}）")
 
     lines += ["", "## 数据缺口（必须写进报告，不得当作“已确认无风险”）"]
     if limitations:

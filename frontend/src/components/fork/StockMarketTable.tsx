@@ -341,8 +341,10 @@ interface StockMarketTableProps {
   query: string
   /** 状态/涨跌/市值三组筛选（板块由 board 传，见 lib/market-filters.ts） */
   filters?: MarketTableFilters
-  /** 已在自选里的代码集合（决定操作列是 + 还是 X） */
+  /** 已在自选里的代码集合（决定操作列是 + 还是 X，也用于「关注」开关的过滤） */
   existingSymbols: Set<string>
+  /** 只看已关注（自选）的股票。由筛选行那颗开关控制，默认 false。 */
+  followedOnly?: boolean
   onCounts?: (counts: MarketBoardCounts) => void
   onAdd: (row: MarketRow) => Promise<void> | void
   onRemove: (row: MarketRow) => void
@@ -403,6 +405,7 @@ export function StockMarketTable({
   board,
   query,
   filters,
+  followedOnly = false,
   existingSymbols,
   onCounts,
   onAdd,
@@ -473,10 +476,24 @@ export function StockMarketTable({
   const activeFilters = filters ?? EMPTY_MARKET_FILTERS
   // 选股结果（fork）：非 null 时替代内部全量参与后续所有计算
   const displayRows = sourceRows ?? rows
+  /**
+   * 「关注」开关：先按自选集合切一刀，再做板块/搜索/五组筛选。
+   *
+   * 放在最前面（而不是塞进 filterMarketRows）的理由：那条纯函数服务的是「条件选股」
+   * 的五组档位，自选集合是页面级的运行时状态，不该让纯函数去认识它。切在入口处，
+   * 计数、排序、分页全部自动跟着变，不需要各处再判断一次。
+   */
+  const scopedRows = useMemo(
+    () =>
+      followedOnly
+        ? displayRows.filter(row => existingSymbols.has(row.code) || existingSymbols.has(row.symbol))
+        : displayRows,
+    [displayRows, followedOnly, existingSymbols],
+  )
   // 全量（5000 余行）过滤 → 排序 → 再切片：排序是「对所有数据」的排序，不是只排当前页
   const filtered = useMemo(
-    () => filterMarketRows(displayRows, board, query, activeFilters, getRowAction),
-    [displayRows, board, query, activeFilters, getRowAction],
+    () => filterMarketRows(scopedRows, board, query, activeFilters, getRowAction),
+    [scopedRows, board, query, activeFilters, getRowAction],
   )
   const sorted = useMemo(
     () => (sort ? [...filtered].sort((a, b) => compareRows(a, b, sort)) : filtered),
@@ -489,10 +506,10 @@ export function StockMarketTable({
     [sorted, safePage, pageSize],
   )
 
-  // 换板块 / 改筛选 / 改搜索 / 换每页条数 → 回第一页（否则会停在一个不存在的页码上）
+  // 换板块 / 改筛选 / 改搜索 / 换每页条数 / 切「关注」→ 回第一页（否则会停在一个不存在的页码上）
   useEffect(() => {
     setPage(1)
-  }, [board, query, pageSize, activeFilters, sourceRows])
+  }, [board, query, pageSize, activeFilters, sourceRows, followedOnly])
 
   // 板块计数跟着「当前数据源」走：选股结果生效时数的是结果集，
   // 退出选股（sourceRows 变回 null）再数回全量 —— 界面上的计数与列表口径因此一致。
