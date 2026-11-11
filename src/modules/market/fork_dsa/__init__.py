@@ -15,9 +15,11 @@ JSON 的字段名对齐那套实现，界面按它的报告页复刻，但**数�
 模块划分：:
 
     data.py     取数（MySQL 快照 + 东财板块/资金流/新闻）
+    sources.py  免 key 消息面（公告 / 两融 / 财联社 / 研报 / 龙虎榜 / 北向活跃股）
     prompt.py   DSA 的 SYSTEM_PROMPT 与用户提示词拼装
     schema.py   报告解析与归一化（LLM JSON → 五段结构）
-    store.py    报告落 SQLite（``data/dsa_reports.db``）
+    store.py    报告落 SQLite（``data/dsa_reports.db``）＋队列状态机
+    queue.py    串行 FIFO 队列（单消费者线程，与 PanWatch 分析队列独立）
     service.py  串起来：取数 → 调用模型 → 解析 → 落库
     api         HTTP 入口（``src/modules/market/api/fork_dsa.py``）
 

@@ -22,6 +22,20 @@ from src.modules.market.fork_dsa import prompt as prompt_mod
 from src.modules.market.fork_dsa import schema, service, sources, store
 
 
+@pytest.fixture(autouse=True)
+def _clean_queue():
+    """每个用例前清空队列里的活跃行。
+
+    ``store`` 落在同一个临时库里，上一个用例留下的 queued/running 会污染
+    「队列顺序」「pending 计数」这类断言；已完成的历史报告不动。
+    """
+    store.init()
+    with store._connect() as conn:
+        conn.execute("DELETE FROM dsa_reports WHERE status IN ('queued','running')")
+    yield
+
+
+
 
 # ── 代码归一化 ───────────────────────────────────────────────────────────
 
@@ -207,18 +221,27 @@ def test_prompt_marks_missing_sections_explicitly():
 
 
 def test_store_lifecycle():
-    """create → finish → latest 读得回来，失败落 failed"""
+    """入队 → 认领 → 完成；started_at 在认领时写下，finish 不会改它"""
     row_id = store.create("600000", "浦发银行")
-    running = store.latest("600000")
-    assert running and running["status"] == "running"
+    queued = store.latest("600000")
+    assert queued and queued["status"] == "queued"
+    assert queued["started_at"] is None  # 还没开跑，「已用时间」的起点为空
+
+    assert store.mark_running(row_id) is True
+    running = store.get(row_id)
+    assert running["status"] == "running" and running["started_at"]
+    started_at = running["started_at"]
 
     store.finish(row_id, {"meta": {"stock_name": "浦发银行"}}, "test/model")
     done = store.latest("600000")
     assert done and done["status"] == "done"
     assert done["report"]["meta"]["stock_name"] == "浦发银行"
     assert done["model_used"] == "test/model"
+    # 计时起点不能被完成时间覆盖（否则页面刷新后「已用」会跳）
+    assert done["started_at"] == started_at
 
     failed_id = store.create("600001", "X")
+    store.mark_running(failed_id)
     store.fail(failed_id, "boom")
     assert store.get(failed_id)["status"] == "failed"
     assert store.latest_done("600001") is None
@@ -265,14 +288,92 @@ def test_worker_success_writes_report(monkeypatch):
     assert report["summary"]["operation_advice"] == "观望"
 
 
-def test_start_reuses_running_task(monkeypatch):
-    """同一只票连点两次不重复起任务（不重复烧 token）"""
-    monkeypatch.setattr(service.threading, "Thread", lambda **kw: type("T", (), {"start": lambda self: None})())
+def test_start_enqueues_and_reuses_active(monkeypatch):
+    """同一只票连点两次不重复入队（不重复烧 token），返回带队列位次"""
+    monkeypatch.setattr(service.queue, "ensure_started", lambda: None)
     first = service.start("600004", "Z")
     second = service.start("600004", "Z")
     assert first["id"] == second["id"]
-    running = store.running("600004")
-    assert running is not None and running["id"] == first["id"]
+    assert first["status"] == "queued"  # 单消费者队列：入队时还没开跑
+    assert first["queue_position"] == 0
+
+
+# ── 深度分析2 自有队列（串行 FIFO，与 PanWatch 分析队列无关）──────────────
+
+
+def test_queue_is_fifo_with_running_first(monkeypatch):
+    """队列列表：运行中的永远排第一，其余按入队先后（用户口径）"""
+    monkeypatch.setattr(service.queue, "ensure_started", lambda: None)
+    a = service.start("600010", "A")
+    b = service.start("600011", "B")
+    c = service.start("600012", "C")
+    assert [row["symbol"] for row in service.queue_list()] == ["600010", "600011", "600012"]
+
+    store.mark_running(b["id"])
+    rows = service.queue_list()
+    assert rows[0]["symbol"] == "600011" and rows[0]["queue_position"] == 0
+    assert [row["symbol"] for row in rows[1:]] == ["600010", "600012"]
+    # 位次含「正在跑的那个」：a 前面只有 b（1），c 前面有 b + a（2）
+    assert rows[1]["queue_position"] == 1
+    assert rows[2]["queue_position"] == 2
+
+
+def test_queue_delete_removes_queued_and_cancels_running(monkeypatch):
+    """排队中删除 = 删行；运行中删除 = 标 cancelled，迟到的结果必须丢弃"""
+    monkeypatch.setattr(service.queue, "ensure_started", lambda: None)
+    queued = service.start("600020", "D")
+    running = service.start("600021", "E")
+
+    assert service.cancel(queued["id"]) == "deleted"
+    assert store.get(queued["id"]) is None
+
+    store.mark_running(running["id"])
+    assert service.cancel(running["id"]) == "cancelled"
+    store.finish(running["id"], {"meta": {}}, "x")  # 线程回来时才发现被取消
+    assert store.get(running["id"])["status"] == "cancelled"
+    assert service.cancel(running["id"]) is None  # 已不在队列，接口据此报 404
+
+
+def test_worker_skips_job_deleted_while_queued(monkeypatch):
+    """排队期间被删掉的任务不能再偷偷开跑（不烧一次 token）"""
+    calls = {"n": 0}
+
+    def spy(*args, **kwargs):
+        calls["n"] += 1
+        return {}
+
+    monkeypatch.setattr(service, "_collect", spy)
+    row_id = store.create("600030", "F")
+    store.cancel(row_id)
+    service._worker("600030", "F", None, row_id)
+    assert calls["n"] == 0
+
+
+def test_recover_requeues_interrupted_running(monkeypatch):
+    """进程重启后遗留的 running 退回 queued，队列接着跑（任务不丢）"""
+    row_id = store.create("600040", "G")
+    store.mark_running(row_id)
+    assert store.recover_stale() >= 1
+    row = store.get(row_id)
+    assert row["status"] == "queued" and row["started_at"] is None
+
+
+def test_queue_endpoint_lists_running_first_and_deletes(monkeypatch):
+    """/dsa/queue 契约：running 单独给出、pending 计数；删除后再点删除报 404"""
+    monkeypatch.setattr(service.queue, "ensure_started", lambda: None)
+    a = service.start("600050", "H")
+    b = service.start("600051", "I")
+    store.mark_running(a["id"])
+
+    body = fork_dsa.get_queue()
+    assert body["items"][0]["id"] == a["id"]
+    assert body["running"]["id"] == a["id"]
+    assert body["pending"] == 1
+
+    assert fork_dsa.delete_queue_item(b["id"])["outcome"] == "deleted"
+    with pytest.raises(HTTPException) as exc:
+        fork_dsa.delete_queue_item(b["id"])
+    assert exc.value.status_code == 404
 
 
 # ── 免 key 数据面（公告 / 两融 / 财联社） ────────────────────────────
@@ -289,9 +390,21 @@ def test_module_status_marks_unavailable_sources_without_key():
         assert rows[key]["status"] == "unavailable"
         assert rows[key]["requires_key"] is False
         assert rows[key]["source"]
-    # 北向：交易所停止披露，本页确实不接
-    assert rows["northbound"]["status"] == "unconfigured"
-    assert "停止披露" in (rows["northbound"]["note"] or "")
+    # 北向：改用仍每日公布的「十大成交活跃股」（免费、免 key），不再标「未配置」
+    assert rows["northbound"]["status"] == "unavailable"  # 接了，但这只票本次没上榜
+    assert rows["northbound"]["requires_key"] is False
+    assert rows["northbound"]["source"]
+    assert "不再披露" in (rows["northbound"]["note"] or "")
+
+
+def test_module_status_distinguishes_empty_from_failure():
+    """「没上榜 / 无覆盖」是 empty，不是「本次未取到」——两者含义完全不同"""
+    rows = {r["key"]: r for r in sources.module_status({"research": "empty", "northbound": "empty"})}
+    assert rows["research"]["status"] == "empty"
+    assert rows["northbound"]["status"] == "empty"
+    assert rows["northbound"]["empty_label"] == "未上榜"
+    # 接口坏了仍然是 unavailable
+    assert {r["key"]: r for r in sources.module_status({"research": False})}["research"]["status"] == "unavailable"
 
 
 
@@ -579,7 +692,63 @@ def test_research_without_coverage_is_explained_not_faked(monkeypatch):
     monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"hits": 0, "data": []})
     got = sources.load_research("002256")
     assert got["available"] is False
+    assert got.get("empty") is True  # 面板据此显示「无覆盖」，而不是「本次未取到」
     assert "无机构研报覆盖" in got["reason"]
+
+
+def test_research_marks_stale_coverage(monkeypatch):
+    """三年窗口里只有一篇老研报：要带出「距今天数」，模型才不会当成最新观点"""
+    monkeypatch.setattr(
+        sources,
+        "_get_json",
+        lambda *a, **kw: {
+            "hits": 1,
+            "data": [
+                {
+                    "publishDate": "2024-10-30 00:00:00.000",
+                    "orgSName": "中航证券",
+                    "title": "2024年三季报点评",
+                    "emRatingName": "增持",
+                    "indvAimPriceT": "",
+                }
+            ],
+        },
+    )
+    got = sources.load_research("600877")
+    assert got["available"] is True
+    assert got["newest_age_days"] and got["newest_age_days"] > 180
+
+
+def test_northbound_uses_top10_active_list(monkeypatch):
+    """北向改用「十大成交活跃股」：给出外资成交额与占比，并写明不推断净买方向"""
+    payload = {
+        "result": {
+            "data": [
+                {
+                    "TRADE_DATE": "2026-11-10 00:00:00",
+                    "RANK": 4,
+                    "DEAL_AMT": 883196743,
+                    "DEAL_AMOUNT": 3316078848.94,
+                    "MUTUAL_RATIO": 26.63,
+                    "CHANGE_RATE": -0.41,
+                    "CLOSE_PRICE": 1439,
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: payload)
+    got = sources.load_northbound("600519")
+    assert got["available"] is True and got["appearances"] == 1
+    assert got["latest"]["northbound_deal"] == 883196743
+    assert got["latest"]["ratio"] == 26.63
+
+
+def test_northbound_absent_is_empty_not_configured(monkeypatch):
+    """没进前十是正常结果：标 empty，不能写成「外资在卖出」"""
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"result": {"data": []}})
+    got = sources.load_northbound("002256")
+    assert got["available"] is False and got["empty"] is True
+    assert "没有进入北向十大成交活跃股" in got["reason"]
 
 
 def test_billboard_keeps_net_buy_and_reason(monkeypatch):

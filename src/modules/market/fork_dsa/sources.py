@@ -62,23 +62,32 @@ MODULE_CATALOG: tuple[dict[str, Any], ...] = (
     },
     {
         "key": "northbound",
-        "label": "北向资金",
-        "source": None,
+        "label": "北向资金（十大成交活跃股）",
+        "source": "东财沪深港通 · 每日十大成交活跃股（免 key）",
         "requires_key": False,
-        "note": "交易所 2024-08 起停止披露每日北向净买额（实测接口返回空），本页用两融 + 主力资金 + 龙虎榜替代",
+        "empty_label": "未上榜",
+        "note": "个股每日北向净买额自 2024-08-19 起交易所不再披露（港交所：持股明细改为季度），"
+        "本页改用仍每日公布的「北向十大成交活跃股」看外资是否在积极买卖这只票",
     },
 )
 
 
-def module_status(availability: dict[str, bool]) -> list[dict[str, Any]]:
-    """把「本次取数结果」映射成页面要的行（status: ok / unavailable / unconfigured）。"""
+def module_status(availability: dict[str, Any]) -> list[dict[str, Any]]:
+    """把「本次取数结果」映射成页面要的行（status: ok / empty / unavailable / unconfigured）。
+
+    ``availability[key]`` 三态：``True`` 取到、``"empty"`` 接入了但这只票没有数据
+    （例如没有任何机构覆盖、没进北向活跃榜）、``False``/缺失 接口失败。
+    """
     rows: list[dict[str, Any]] = []
     for module in MODULE_CATALOG:
         key = module["key"]
+        got = availability.get(key)
         if not module.get("source"):
             status = "unconfigured"
-        elif availability.get(key):
+        elif got is True:
             status = "ok"
+        elif got == "empty":
+            status = "empty"
         else:
             status = "unavailable"
         rows.append(
@@ -89,6 +98,7 @@ def module_status(availability: dict[str, bool]) -> list[dict[str, Any]]:
                 "requires_key": bool(module.get("requires_key")),
                 "status": status,
                 "note": module.get("note"),
+                "empty_label": module.get("empty_label"),
             }
         )
     return rows
@@ -345,13 +355,18 @@ def _float(value: Any) -> Optional[float]:
 
 
 def load_research(code: str, limit: int = 5) -> dict[str, Any]:
-    """近一年机构研报与评级（东财研报中心 ``reportapi``，免费、无 key）。
+    """机构研报与评级（东财研报中心 ``reportapi``，免费、无 key）。
 
-    小盘股常年没有机构覆盖是**常态**（不是接口坏了），所以「零条」返回
-    ``available=False`` 并把原因写成「近一年无机构研报覆盖」，提示词据此**不得**
-    写成「机构一致看好」。目标价字段（``indvAimPriceT``）经常为空，空就不写。
+    窗口取**近三年**而不是近一年：小盘股的覆盖很稀疏（实测 600877 电科芯片全库只有
+    2024 年一篇中航证券的点评，近一年窗口里 hits=0，页面就显示「本次未获取到」——
+    看起来像接口坏了）。放宽到三年后这篇能进来，同时把「距今天数」一起返回，提示词
+    与页面据此标明「最新一篇已是 N 个月前」，不会被当成新观点。
+
+    零覆盖（三年内一篇都没有）返回 ``available=False, empty=True``：这是「这只票没有
+    卖方覆盖」的**事实**，与接口故障是两回事，页面显示「无覆盖」而不是「未配置」。
     """
     today = _dt.date.today()
+    begin = today - _dt.timedelta(days=365 * 3)
     params = {
         "industryCode": "*",
         "pageSize": max(1, min(limit, 20)),
@@ -359,7 +374,7 @@ def load_research(code: str, limit: int = 5) -> dict[str, Any]:
         "pageNo": 1,
         "qType": 0,
         "code": code,
-        "beginTime": (today - _dt.timedelta(days=365)).isoformat(),
+        "beginTime": begin.isoformat(),
         "endTime": today.isoformat(),
     }
     try:
@@ -374,7 +389,7 @@ def load_research(code: str, limit: int = 5) -> dict[str, Any]:
 
     rows = (payload or {}).get("data") or []
     if not rows:
-        return {"available": False, "reason": "近一年无机构研报覆盖"}
+        return {"available": False, "empty": True, "reason": "近三年无机构研报覆盖"}
 
     items = []
     ratings: dict[str, int] = {}
@@ -394,12 +409,23 @@ def load_research(code: str, limit: int = 5) -> dict[str, Any]:
                 "pe_next_year": _float(row.get("predictNextYearPe")),
             }
         )
+    # 最新一篇距今多久：模型很容易把三年前的点评当成「最新观点」，这个数字直接给它。
+    newest_age = _days_since(items[0]["date"], today) if items else None
     return {
         "available": True,
+        "window_years": 3,
         "hits": (payload or {}).get("hits") or len(items),
         "items": items,
         "ratings": ratings,
+        "newest_age_days": newest_age,
     }
+
+
+def _days_since(value: str, today: _dt.date) -> Optional[int]:
+    try:
+        return (today - _dt.date.fromisoformat(value[:10])).days
+    except (TypeError, ValueError):
+        return None
 
 
 # ── 龙虎榜（免 key）─────────────────────────────────────────────────────
@@ -438,7 +464,7 @@ def load_billboard(code: str, limit: int = 5) -> dict[str, Any]:
 
     rows = ((payload or {}).get("result") or {}).get("data") or []
     if not rows:
-        return {"available": False, "reason": "近一年没有上过龙虎榜"}
+        return {"available": False, "empty": True, "reason": "近一年没有上过龙虎榜"}
 
     items = [
         {
@@ -454,6 +480,75 @@ def load_billboard(code: str, limit: int = 5) -> dict[str, Any]:
         for row in rows
     ]
     return {"available": True, "items": items}
+
+
+# ── 北向资金：十大成交活跃股（替代「已停止披露的每日净买额」）─────────────
+
+
+def load_northbound(code: str, limit: int = 10, lookback_days: int = 60) -> dict[str, Any]:
+    """北向活跃度（东财 ``RPT_MUTUAL_TOP10DEAL``，免费、免 key、**每日更新**）。
+
+    为什么不是「北向净买额」
+    ------------------------
+    港交所明示：自 2024-08-19 起沪深港通北向**持股明细改为按季度披露**，逐日个股
+    净买额也随之停止——这个字段在免费源里已经不存在了，不是接入问题。但「北向十大
+    成交活跃股」仍然每个交易日公布（含北向成交额、占该股成交额比例、当日排名），
+    足以回答「外资这几天有没有在积极买卖这只票」。
+
+    「近 N 个交易日没进过前十」是**正常结果**，返回 ``available=False, empty=True``：
+    中小盘进前十很难，页面显示「未上榜」，提示词据此不得推断「外资在流出」。
+    """
+    today = _dt.date.today()
+    begin = today - _dt.timedelta(days=lookback_days)
+    try:
+        payload = _get_json(
+            "https://datacenter-web.eastmoney.com/api/data/v1/get",
+            {
+                "reportName": "RPT_MUTUAL_TOP10DEAL",
+                "columns": "SECURITY_CODE,SECURITY_NAME,TRADE_DATE,DEAL_AMT,DEAL_AMOUNT,"
+                "MUTUAL_RATIO,RANK,CHANGE_RATE,CLOSE_PRICE",
+                "pageNumber": 1,
+                "pageSize": max(1, min(limit, 30)),
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": -1,
+                "source": "WEB",
+                "client": "WEB",
+                "filter": f'(SECURITY_CODE="{code}")(TRADE_DATE>=\'{begin.isoformat()}\')',
+            },
+            referer="https://data.eastmoney.com/hsgt/top10.html",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("取北向活跃股失败 %s：%s", code, exc)
+        return {"available": False, "reason": f"北向活跃股接口不可用：{exc}"}
+
+    rows = ((payload or {}).get("result") or {}).get("data") or []
+    if not rows:
+        return {
+            "available": False,
+            "empty": True,
+            "reason": f"近 {lookback_days} 天没有进入北向十大成交活跃股",
+            "note": "个股每日北向净买额自 2024-08-19 起不再披露；未上榜不代表外资在卖出",
+        }
+
+    items = [
+        {
+            "date": str(row.get("TRADE_DATE") or "")[:10],
+            "rank": row.get("RANK"),
+            # DEAL_AMT = 北向当日成交额（买+卖），DEAL_AMOUNT = 该股当日总成交额
+            "northbound_deal": row.get("DEAL_AMT"),
+            "stock_deal": row.get("DEAL_AMOUNT"),
+            "ratio": row.get("MUTUAL_RATIO"),
+            "change_pct": row.get("CHANGE_RATE"),
+            "close": row.get("CLOSE_PRICE"),
+        }
+        for row in rows
+    ]
+    return {
+        "available": True,
+        "appearances": len(items),
+        "latest": items[0],
+        "items": items,
+    }
 
 
 # ── 人气排名（替代社交情绪）──────────────────────────────────────────────

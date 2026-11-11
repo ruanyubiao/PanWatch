@@ -48,14 +48,22 @@ const report = {
 const latest = vi.fn()
 const getReport = vi.fn()
 const analyze = vi.fn()
+const getQueue = vi.fn()
 
-vi.mock('@/lib/dsa-api', () => ({
-  DSA_POLL_MS: 999999,
-  getDsaLatest: (...args: unknown[]) => latest(...args),
-  getDsaReport: (...args: unknown[]) => getReport(...args),
-  analyzeDsa: (...args: unknown[]) => analyze(...args),
-  getDsaHistory: vi.fn(),
-}))
+vi.mock('@/lib/dsa-api', async () => {
+  // 纯格式化/计时函数保留真实实现（本文件要钉的正是显示口径），只把网络调用换成 mock。
+  const actual = await vi.importActual<typeof import('@/lib/dsa-api')>('@/lib/dsa-api')
+  return {
+    ...actual,
+    DSA_POLL_MS: 999999,
+    getDsaLatest: (...args: unknown[]) => latest(...args),
+    getDsaReport: (...args: unknown[]) => getReport(...args),
+    analyzeDsa: (...args: unknown[]) => analyze(...args),
+    getDsaQueue: (...args: unknown[]) => getQueue(...args),
+    deleteDsaQueueItem: vi.fn(),
+    getDsaHistory: vi.fn(),
+  }
+})
 
 function renderPage() {
   return render(

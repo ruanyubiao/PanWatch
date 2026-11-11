@@ -184,6 +184,7 @@ def build_user_prompt(
     research: Optional[dict[str, Any]] = None,
     billboard: Optional[dict[str, Any]] = None,
     popularity: Optional[dict[str, Any]] = None,
+    northbound: Optional[dict[str, Any]] = None,
 ) -> str:
     """把取到的数据拼成事实表。缺什么，就在「数据缺口」里点名。"""
     name = snapshot.get("name") or snapshot.get("code")
@@ -303,9 +304,14 @@ def build_user_prompt(
         lines.append(f"- 未纳入（{fl.get('reason') or '快讯未取到'}）")
 
     rs = research or {}
-    lines += ["", "## 机构研报与评级（来源：东财研报中心，近一年）"]
+    lines += ["", "## 机构研报与评级（来源：东财研报中心，近三年）"]
     if rs.get("available"):
-        lines.append(f"- 近一年研报数：{rs.get('hits')}")
+        lines.append(f"- 近三年研报数：{rs.get('hits')}")
+        age = rs.get("newest_age_days")
+        if isinstance(age, int):
+            # 三年窗口里可能只有一篇很旧的：必须把「多久以前」明说，否则模型会当成最新观点
+            months = max(1, round(age / 30))
+            lines.append(f"- 最新一篇发布于约 {months} 个月前（{age} 天前）")
         if rs.get("ratings"):
             dist = "、".join(f"{k} {v} 篇" for k, v in rs["ratings"].items())
             lines.append(f"- 评级分布：{dist}")
@@ -321,8 +327,32 @@ def build_user_prompt(
                 f"《{item.get('title')}》评级：{item.get('rating') or '未给出'}{tail}"
             )
         lines.append("- 研报是卖方观点，只能当情绪与预期参考，不得当成价格依据。")
+        if isinstance(age, int) and age > 180:
+            lines.append(
+                "- **最新研报已是半年前**：只能说明当时的观点，不得写成「近期机构看好/上调评级」。"
+            )
     else:
         lines.append(f"- 未纳入（{rs.get('reason') or '研报未取到'}）")
+        lines.append("- 零覆盖不等于利空，不得据此推断「机构不看好」。")
+
+    nb = northbound or {}
+    lines += ["", "## 北向资金（来源：东财沪深港通十大成交活跃股，每日更新）"]
+    lines.append(
+        "- 口径：个股每日北向净买额自 2024-08-19 起交易所不再披露（持股明细改为季度），"
+        "这里用仍每日公布的「十大成交活跃股」看外资活跃度。"
+    )
+    if nb.get("available"):
+        lines.append(f"- 近 60 天进入前十 {nb.get('appearances')} 次")
+        for item in (nb.get("items") or [])[:5]:
+            lines.append(
+                f"- [{item.get('date')}] 排名第 {item.get('rank')}，"
+                f"北向成交 {_money(item.get('northbound_deal'))}，"
+                f"占该股成交 {_num(item.get('ratio'))}%，当日涨跌 {_num(item.get('change_pct'))}%"
+            )
+        lines.append("- 只说明外资在这只票上交易活跃，**不能推断净买入方向**。")
+    else:
+        lines.append(f"- 未纳入（{nb.get('reason') or '无北向活跃数据'}）")
+        lines.append("- 「没进前十」是正常结果，**不得**写成「外资在流出/北向资金撤离」。")
 
     bb = billboard or {}
     lines += ["", "## 龙虎榜（来源：东财数据中心，单位：元）"]
