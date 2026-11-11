@@ -289,7 +289,7 @@ def load_margin(code: str) -> dict[str, Any]:
             "available": False,
             "is_target": False,
             "empty": True,
-            "reason": f"该股不在两融标的名单（东财两融明细全历史无记录，截至 {asof}）",
+            "reason": f"东财两融明细全历史无记录（截至 {asof}），判定为从未纳入标的名单",
         }
 
     row = rows[0]
