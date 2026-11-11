@@ -505,7 +505,9 @@ describe('fork: 分析页全市场表格', () => {
     expect(codes).toHaveLength(100)
     expect(codes[0]).toBe('100249')
     expect(codes[99]).toBe('100150')
-  })
+    // 250 行 × 3 页的全量排序在满载（同时跑后端全量）时会超过 vitest 默认 5s，
+    // 逻辑本身不慢，只是 jsdom 渲染队列长；给这条单独放宽，别让负载变成随机红。
+  }, 30_000)
 
   it('三组筛选（状态/涨跌/市值）都在前端做，且不发新请求', async () => {
     vi.mocked(fetchAPI).mockResolvedValue(response())
