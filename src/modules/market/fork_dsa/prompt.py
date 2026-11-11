@@ -286,6 +286,14 @@ def build_user_prompt(
             f"- 融券余额 {_money(mg.get('lending_balance'))}，"
             f"两融余额合计 {_money(mg.get('total_balance'))}"
         )
+        if mg.get("note"):
+            lines.append(f"- 口径提示：{mg['note']}")
+    elif mg.get("is_target") is False:
+        # 已核实的「不是标的」：模型不得写成「杠杆资金为零/没有杠杆需求」
+        lines.append(f"- **该股不是两融标的**：{mg.get('reason')}")
+        lines.append(
+            "- 因此两融数据**不存在**，不是「两融余额为 0」，也不得据此推断杠杆资金态度。"
+        )
     else:
         lines.append(f"- 未纳入（{mg.get('reason') or '两融未取到'}）")
 
@@ -304,9 +312,11 @@ def build_user_prompt(
         lines.append(f"- 未纳入（{fl.get('reason') or '快讯未取到'}）")
 
     rs = research or {}
-    lines += ["", "## 机构研报与评级（来源：东财研报中心，近三年）"]
+    lines += ["", "## 机构研报与评级（来源：东财研报中心，近三年；零覆盖时用 F10 机构预测兜底）"]
     if rs.get("available"):
         lines.append(f"- 近三年研报数：{rs.get('hits')}")
+        if not rs.get("hits"):
+            lines.append("- 研报库近三年没有任何券商发布报告（无文章 ≠ 无观点，下面用机构评级统计补齐）")
         age = rs.get("newest_age_days")
         if isinstance(age, int):
             # 三年窗口里可能只有一篇很旧的：必须把「多久以前」明说，否则模型会当成最新观点
@@ -315,6 +325,24 @@ def build_user_prompt(
         if rs.get("ratings"):
             dist = "、".join(f"{k} {v} 篇" for k, v in rs["ratings"].items())
             lines.append(f"- 评级分布：{dist}")
+        fc = rs.get("forecast")
+        if fc:
+            lines.append(f"- 机构评级统计（口径：{fc.get('window')}）：")
+            lines.append(
+                f"- 给出评级的机构 {fc.get('org_num')} 家，综合评级 {fc.get('rating') or '未给出'}"
+                f"（买入 {fc.get('buy_num') or 0}／增持 {fc.get('add_num') or 0}／"
+                f"中性 {fc.get('neutral_num') or 0}／减持 {fc.get('reduce_num') or 0}／卖出 {fc.get('sale_num') or 0}）"
+            )
+            if fc.get("orgs"):
+                lines.append(f"- 覆盖机构举例：{'、'.join(fc['orgs'])}")
+            for est in (fc.get("estimates") or [])[:3]:
+                mark = "（预测）" if est.get("mark") == "E" else "（实际）"
+                lines.append(
+                    f"- {est.get('year')}{mark} 一致预期 EPS {_num(est.get('eps'))}，"
+                    f"对应 PE {_num(est.get('pe'))}"
+                )
+            if fc.get("org_num") and int(fc["org_num"] or 0) <= 3:
+                lines.append("- **覆盖机构很少（≤3 家）**：一致预期代表性弱，不得当成强共识。")
         for item in (rs.get("items") or [])[:5]:
             extra = []
             if item.get("target_price"):
@@ -336,23 +364,36 @@ def build_user_prompt(
         lines.append("- 零覆盖不等于利空，不得据此推断「机构不看好」。")
 
     nb = northbound or {}
-    lines += ["", "## 北向资金（来源：东财沪深港通十大成交活跃股，每日更新）"]
+    lines += ["", "## 北向资金（来源：东财沪深港通 · 季度持股 + 每日十大成交活跃股）"]
     lines.append(
         "- 口径：个股每日北向净买额自 2024-08-19 起交易所不再披露（持股明细改为季度），"
-        "这里用仍每日公布的「十大成交活跃股」看外资活跃度。"
+        "所以这里给的是「季度持股快照」和「是否进入每日十大成交活跃股」，"
+        "**都不是当日买卖方向**。"
     )
     if nb.get("available"):
-        lines.append(f"- 近 60 天进入前十 {nb.get('appearances')} 次")
-        for item in (nb.get("items") or [])[:5]:
+        hold = nb.get("holding") or {}
+        if hold.get("available") is not False and hold.get("date"):
             lines.append(
-                f"- [{item.get('date')}] 排名第 {item.get('rank')}，"
-                f"北向成交 {_money(item.get('northbound_deal'))}，"
-                f"占该股成交 {_num(item.get('ratio'))}%，当日涨跌 {_num(item.get('change_pct'))}%"
+                f"- 北向持股（{hold.get('date')}，季度口径）：{_money(hold.get('hold_shares'))} 股，"
+                f"市值 {_money(hold.get('hold_market_cap'))}，"
+                f"占流通股 {_num(hold.get('float_ratio'))}%（占总股本 {_num(hold.get('total_ratio'))}%）"
             )
-        lines.append("- 只说明外资在这只票上交易活跃，**不能推断净买入方向**。")
+        if nb.get("appearances"):
+            lines.append(f"- 近 60 天进入十大成交活跃股 {nb.get('appearances')} 次")
+            for item in (nb.get("items") or [])[:5]:
+                lines.append(
+                    f"- [{item.get('date')}] 排名第 {item.get('rank')}，"
+                    f"北向成交 {_money(item.get('northbound_deal'))}，"
+                    f"占该股成交 {_num(item.get('ratio'))}%，当日涨跌 {_num(item.get('change_pct'))}%"
+                )
+        elif nb.get("note"):
+            lines.append(f"- {nb.get('note')}")
+        lines.append(
+            "- 持股比例只说明外资仓位大小，活跃股只说明交易活跃：**都不能推断净买入方向**。"
+        )
     else:
-        lines.append(f"- 未纳入（{nb.get('reason') or '无北向活跃数据'}）")
-        lines.append("- 「没进前十」是正常结果，**不得**写成「外资在流出/北向资金撤离」。")
+        lines.append(f"- 未纳入（{nb.get('reason') or '无北向数据'}）")
+        lines.append("- **不得**写成「外资在流出/北向资金撤离」。")
 
     bb = billboard or {}
     lines += ["", "## 龙虎榜（来源：东财数据中心，单位：元）"]

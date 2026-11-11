@@ -145,4 +145,47 @@ describe('深度分析2 · 队列', () => {
     await waitFor(() => expect(mocks.remove).toHaveBeenCalledWith(12))
     await waitFor(() => expect(mocks.queue).toHaveBeenCalledTimes(2))
   })
+
+  it('每一项的「名称 / 代码 / 时间」压在同一行，不占两行', async () => {
+    mocks.latest.mockResolvedValue({ ...running, symbol: '600877', queue_position: 0 })
+    mocks.queue.mockResolvedValue({ items: [running, waiting], running, pending: 1 })
+
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: '队列' }))
+    const rows = await screen.findAllByRole('listitem')
+
+    // 一行 = 同一个不换行容器里同时装着名称、代码和时间
+    const line = rows[0].querySelector('[class*="whitespace-nowrap"]')
+    expect(line).toBeTruthy()
+    expect(line!.textContent).toContain('贵州茅台')
+    expect(line!.textContent).toContain('600519')
+    expect(line!.textContent).toMatch(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}/)
+
+    // 旧的「两行」结构（block 子元素）不能再出现
+    expect(rows[0].querySelectorAll('.block')).toHaveLength(0)
+    const waitLine = rows[1].querySelector('[class*="whitespace-nowrap"]')
+    expect(waitLine!.textContent).toContain('兆新股份')
+    expect(waitLine!.textContent).toContain('002256')
+    expect(waitLine!.textContent).toContain('前面 1 个')
+  })
+})
+
+describe('深度分析2 · 运行中提示文案', () => {
+  it('提示保持一句话以内（用户口径：太长）', async () => {
+    const started = new Date(Date.now() - 6_000)
+    mocks.latest.mockResolvedValue({
+      id: 21,
+      symbol: '600877',
+      name: '电科芯片',
+      status: 'running',
+      created_at: started.toISOString(),
+      started_at: started.toISOString(),
+      report: null,
+    })
+
+    renderPage()
+    const hint = await screen.findByText(/1~3 分钟/)
+    expect(hint.textContent).toBe('通常 1~3 分钟；可关掉窗口，稍后再看同一份结果。')
+    expect(hint.textContent!.length).toBeLessThan(30)
+  })
 })

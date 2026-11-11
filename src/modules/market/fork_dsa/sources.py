@@ -49,9 +49,22 @@ MODULE_CATALOG: tuple[dict[str, Any], ...] = (
     {"key": "capital_flow", "label": "主力资金流", "source": "东财公开接口", "requires_key": False},
     {"key": "news", "label": "个股新闻", "source": "东财新闻搜索", "requires_key": False},
     {"key": "announcements", "label": "公司公告", "source": "东财公告接口", "requires_key": False},
-    {"key": "margin", "label": "融资融券", "source": "东财数据中心", "requires_key": False},
+    {
+        "key": "margin",
+        "label": "融资融券",
+        "source": "东财数据中心（含标的名单判定）",
+        "requires_key": False,
+        "empty_label": "非两融标的",
+        "note": "表里零记录 ＝ 从未纳入两融标的名单，是确定结论，不是取数失败",
+    },
     {"key": "flash", "label": "7×24 快讯", "source": "财联社（网页签名，免 key）", "requires_key": False},
-    {"key": "research", "label": "研报 / 机构评级", "source": "东财研报中心（免 key）", "requires_key": False},
+    {
+        "key": "research",
+        "label": "研报 / 机构评级",
+        "source": "东财研报中心 + F10 机构预测（免 key）",
+        "requires_key": False,
+        "empty_label": "无券商覆盖",
+    },
     {"key": "billboard", "label": "龙虎榜", "source": "东财数据中心（免 key）", "requires_key": False},
     {
         "key": "popularity",
@@ -62,12 +75,12 @@ MODULE_CATALOG: tuple[dict[str, Any], ...] = (
     },
     {
         "key": "northbound",
-        "label": "北向资金（十大成交活跃股）",
-        "source": "东财沪深港通 · 每日十大成交活跃股（免 key）",
+        "label": "北向资金（季度持股 + 十大活跃股）",
+        "source": "东财沪深港通 · 季度持股 + 每日十大成交活跃股（免 key）",
         "requires_key": False,
-        "empty_label": "未上榜",
+        "empty_label": "无披露记录",
         "note": "个股每日北向净买额自 2024-08-19 起交易所不再披露（港交所：持股明细改为季度），"
-        "本页改用仍每日公布的「北向十大成交活跃股」看外资是否在积极买卖这只票",
+        "本页改用「季度持股快照」看外资还剩多少，并用「十大成交活跃股」补当日活跃度",
     },
 )
 
@@ -201,9 +214,54 @@ def classify_event(title: str) -> str:
 
 # ── 融资融券 ─────────────────────────────────────────────────────────────
 
+#: 两融明细表里最新交易日（「截至哪天」要写进结论）；进程内缓存 6 小时。
+_MARGIN_ASOF: dict[str, Any] = {"date": None, "ts": 0.0}
+_MARGIN_ASOF_TTL = 6 * 3600
+
+
+def _margin_asof(today: _dt.date) -> Optional[str]:
+    """东财两融个股明细的最新交易日 —— 用来把「截至哪天」写进「是不是标的」的结论。"""
+    now = _dt.datetime.now().timestamp()
+    if _MARGIN_ASOF["date"] and now - _MARGIN_ASOF["ts"] < _MARGIN_ASOF_TTL:
+        return _MARGIN_ASOF["date"]
+    try:
+        payload = _get_json(
+            "https://datacenter-web.eastmoney.com/api/data/v1/get",
+            {
+                "reportName": "RPTA_WEB_RZRQ_GGMX",
+                "columns": "SCODE,DATE",
+                "pageNumber": 1,
+                "pageSize": 1,
+                "sortColumns": "DATE",
+                "sortTypes": -1,
+                "source": "WEB",
+                "client": "WEB",
+            },
+            referer="https://data.eastmoney.com/rzrq/",
+        )
+        rows = ((payload or {}).get("result") or {}).get("data") or []
+        date = (rows[0].get("DATE") or "")[:10] if rows else None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("取两融最新日期失败：%s", exc)
+        date = None
+    if date:
+        _MARGIN_ASOF.update({"date": date, "ts": now})
+    return date or (today.isoformat() if not _MARGIN_ASOF["date"] else _MARGIN_ASOF["date"])
+
 
 def load_margin(code: str) -> dict[str, Any]:
-    """个股最新两融数据（东财 ``RPTA_WEB_RZRQ_GGMX``）。金额单位：元。"""
+    """个股最新两融数据（东财 ``RPTA_WEB_RZRQ_GGMX``）。金额单位：元。
+
+    「是不是两融标的」给**确定结论**，不再写「可能不是」
+    ------------------------------------------------
+    这张表**只装两融标的的逐日明细**：标的停牌只是当天没有新行，历史行仍在。所以
+    「按代码查全历史零记录」可以判定为「从未纳入两融标的」，而不是接口没取到。
+    实测 002196 方正电机：全历史 0 行，当日 4489 只标的名单里也没有它 → 确定为「否」。
+
+    反过来的边界也标出来：有历史行、但最新一行落后于全市场最新交易日（>5 天），
+    只说明「之后没有新数据」（可能停牌或已调出），不擅自断言「已调出」。
+    """
+    today = _dt.date.today()
     try:
         payload = _get_json(
             "https://datacenter-web.eastmoney.com/api/data/v1/get",
@@ -211,7 +269,7 @@ def load_margin(code: str) -> dict[str, Any]:
                 "reportName": "RPTA_WEB_RZRQ_GGMX",
                 "columns": "ALL",
                 "pageNumber": 1,
-                "pageSize": 1,
+                "pageSize": 5,
                 "sortColumns": "DATE",
                 "sortTypes": -1,
                 "source": "WEB",
@@ -222,22 +280,42 @@ def load_margin(code: str) -> dict[str, Any]:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("取两融失败 %s：%s", code, exc)
-        return {"available": False, "reason": f"两融接口不可用：{exc}"}
+        return {"available": False, "is_target": None, "reason": f"两融接口不可用：{exc}"}
 
     rows = ((payload or {}).get("result") or {}).get("data") or []
     if not rows:
-        # 不在两融标的范围内是**正常情况**（不是故障）—— 提示词据此不写入「两融为零」
-        return {"available": False, "reason": "该标的没有两融数据（可能不是两融标的）"}
+        asof = _margin_asof(today)
+        return {
+            "available": False,
+            "is_target": False,
+            "empty": True,
+            "reason": f"该股不在两融标的名单（东财两融明细全历史无记录，截至 {asof}）",
+        }
 
     row = rows[0]
-    return {
+    latest = (row.get("DATE") or "")[:10]
+    out: dict[str, Any] = {
         "available": True,
-        "date": (row.get("DATE") or "")[:10],
+        "is_target": True,
+        "date": latest,
         "financing_balance": row.get("RZYE"),
         "financing_buy": row.get("RZMRE"),
         "lending_balance": row.get("RQYE"),
         "total_balance": row.get("RZRQYE"),
     }
+    asof = _margin_asof(today)
+    if asof and latest and latest < asof:
+        try:
+            gap = (_dt.date.fromisoformat(asof) - _dt.date.fromisoformat(latest)).days
+        except ValueError:
+            gap = 0
+        if gap > 5:
+            out["stale_days"] = gap
+            out["note"] = (
+                f"最近一次两融明细是 {latest}，比全市场最新交易日 {asof} 落后 {gap} 天"
+                "（可能停牌，也可能已调出标的名单；不能断定是哪一种）"
+            )
+    return out
 
 
 # ── 财联社 7×24 快讯 ──────────────────────────────────────────────────────
@@ -351,6 +429,79 @@ def _float(value: Any) -> Optional[float]:
         return None
 
 
+def load_forecast(code: str) -> dict[str, Any]:
+    """东财 F10「机构评级 / 盈利预测」（免费、免 key）—— 研报库零覆盖时的兜底。
+
+    为什么需要它：研报库（``reportapi``）只装**已发布的研报文章**。小盘股经常是
+    「一篇报告都没有，但仍有券商在 F10 里给评级/盈利预测」。只看研报库就会得出
+    「无机构覆盖」，把「没有文章」错当成「没有券商观点」。
+
+    实测 600519：评级机构 30 家（买入 23 / 增持 7）、综合评级「买入」；
+    002196 方正电机：``pjtj``/``jgyc`` 同时为空 → 这才是真正没有券商覆盖。
+    """
+    url = (
+        "https://emweb.securities.eastmoney.com/PC_HSF10/ProfitForecast/PageAjax"
+        f"?code={_market_prefix(code)}{code}"
+    )
+    try:
+        payload = _get_json(url, {}, referer="https://emweb.securities.eastmoney.com/")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("取机构预测失败 %s：%s", code, exc)
+        return {"available": False, "reason": f"机构预测接口不可用：{exc}"}
+
+    stats = (payload or {}).get("pjtj") or []
+    detail = (payload or {}).get("jgyc") or []
+    if not stats and not detail:
+        return {
+            "available": False,
+            "empty": True,
+            "reason": "研报库与机构预测库都没有覆盖记录",
+        }
+
+    stat = stats[0] if stats else {}
+    avg = next(
+        (row for row in detail if str(row.get("ORG_NAME_ABBR") or "") == "近六月平均"),
+        None,
+    )
+    orgs = sorted(
+        {
+            str(row.get("ORG_NAME_ABBR"))
+            for row in detail
+            if row.get("ORG_NAME_ABBR") and row.get("ORG_NAME_ABBR") != "近六月平均"
+        }
+    )
+    # 盈利预测：取近六月平均那一行，按「今年/明年」给 EPS 与 PE
+    estimates = []
+    if avg:
+        for idx in (1, 2, 3):
+            year = avg.get(f"YEAR{idx}")
+            if not year:
+                continue
+            estimates.append(
+                {
+                    "year": year,
+                    "mark": avg.get(f"YEAR_MARK{idx}"),
+                    "eps": _float(avg.get(f"EPS{idx}")),
+                    "pe": _float(avg.get(f"PE{idx}")),
+                }
+            )
+    return {
+        "available": True,
+        "window": stat.get("DATE_TYPE") or "近一月",
+        "rating": stat.get("COMPRE_RATING"),
+        "score": _float(stat.get("COMPRE_RATING_NUM")),
+        "org_num": stat.get("RATING_ORG_NUM"),
+        "buy_num": stat.get("RATING_BUY_NUM"),
+        "add_num": stat.get("RATING_ADD_NUM"),
+        "neutral_num": stat.get("RATING_NEUTRAL_NUM"),
+        "reduce_num": stat.get("RATING_REDUCE_NUM"),
+        "sale_num": stat.get("RATING_SALE_NUM"),
+        "estimates": estimates,
+        "orgs": orgs[:8],
+        "org_count": len(orgs),
+    }
+
+
 # ── 研报 / 机构评级（免 key）─────────────────────────────────────────────
 
 
@@ -389,7 +540,25 @@ def load_research(code: str, limit: int = 5) -> dict[str, Any]:
 
     rows = (payload or {}).get("data") or []
     if not rows:
-        return {"available": False, "empty": True, "reason": "近三年无机构研报覆盖"}
+        # 研报库空 ≠ 没有券商观点：再看 F10 机构评级/盈利预测，两边都空才是「真无覆盖」。
+        forecast = load_forecast(code)
+        if forecast.get("available"):
+            return {
+                "available": True,
+                "window_years": 3,
+                "hits": 0,
+                "items": [],
+                "ratings": {},
+                "newest_age_days": None,
+                "forecast": forecast,
+                "channel": "机构评级统计（东财 F10）",
+                "reason": "研报库近三年无文章，改用东财 F10 的机构评级/盈利预测",
+            }
+        return {
+            "available": False,
+            "empty": True,
+            "reason": "近三年无券商覆盖（研报库 0 篇、机构预测库 0 条，已核实的空结果）",
+        }
 
     items = []
     ratings: dict[str, int] = {}
@@ -482,24 +651,80 @@ def load_billboard(code: str, limit: int = 5) -> dict[str, Any]:
     return {"available": True, "items": items}
 
 
-# ── 北向资金：十大成交活跃股（替代「已停止披露的每日净买额」）─────────────
+# ── 北向资金：季度持股 + 十大成交活跃股 ──────────────────────────────────
+
+
+def _market_prefix(code: str) -> str:
+    """6 位代码 → 交易所前缀（沪 6/9、深 0/3、北 4/8）。"""
+    if code.startswith(("6", "9")):
+        return "SH"
+    if code.startswith(("4", "8")):
+        return "BJ"
+    return "SZ"
+
+
+def load_northbound_holding(code: str) -> dict[str, Any]:
+    """北向**季度持股**（东财 ``RPT_MUTUAL_HOLDSTOCKNORTH_STA``，免费、免 key）。
+
+    2024-08-19 之后港交所把北向持股明细改成按季度披露，所以这里只有最近一个季末
+    的持股快照（实测截至 2026-09-30）。它回答的是「外资还拿着多少」，不回答
+    「昨天买了多少」。有这条，绝大多数票就不再是「未配置」。
+    """
+    try:
+        payload = _get_json(
+            "https://datacenter-web.eastmoney.com/api/data/v1/get",
+            {
+                "reportName": "RPT_MUTUAL_HOLDSTOCKNORTH_STA",
+                "columns": "ALL",
+                "pageNumber": 1,
+                "pageSize": 1,
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": -1,
+                "source": "WEB",
+                "client": "WEB",
+                "filter": f'(SECURITY_CODE="{code}")',
+            },
+            referer="https://data.eastmoney.com/hsgtcg/",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("取北向持股失败 %s：%s", code, exc)
+        return {"available": False, "reason": f"北向持股接口不可用：{exc}"}
+
+    rows = ((payload or {}).get("result") or {}).get("data") or []
+    if not rows:
+        return {"available": False, "empty": True, "reason": "没有北向持股披露记录"}
+    row = rows[0]
+    return {
+        "available": True,
+        "date": str(row.get("TRADE_DATE") or "")[:10],
+        "hold_shares": row.get("HOLD_SHARES"),
+        "hold_market_cap": row.get("HOLD_MARKET_CAP"),
+        # 占流通股比 / 占总股本比：两个都给，提示词里用的是流通股比
+        "float_ratio": row.get("FREE_SHARES_RATIO"),
+        "total_ratio": row.get("TOTAL_SHARES_RATIO"),
+        "quarterly": True,
+    }
 
 
 def load_northbound(code: str, limit: int = 10, lookback_days: int = 60) -> dict[str, Any]:
-    """北向活跃度（东财 ``RPT_MUTUAL_TOP10DEAL``，免费、免 key、**每日更新**）。
+    """北向资金：**季度持股快照** + 每日十大成交活跃股（两块都免费、免 key）。
 
     为什么不是「北向净买额」
     ------------------------
     港交所明示：自 2024-08-19 起沪深港通北向**持股明细改为按季度披露**，逐日个股
-    净买额也随之停止——这个字段在免费源里已经不存在了，不是接入问题。但「北向十大
-    成交活跃股」仍然每个交易日公布（含北向成交额、占该股成交额比例、当日排名），
-    足以回答「外资这几天有没有在积极买卖这只票」。
+    净买额也随之停止——这个字段在免费源里已经不存在了，不是接入问题。能拿到的两块：
 
-    「近 N 个交易日没进过前十」是**正常结果**，返回 ``available=False, empty=True``：
-    中小盘进前十很难，页面显示「未上榜」，提示词据此不得推断「外资在流出」。
+    1. 季度持股（``load_northbound_holding``）：外资还持有多少股、占流通股几成；
+    2. 十大成交活跃股（``RPT_MUTUAL_TOP10DEAL``）：当日北向买卖有多活跃。
+
+    合并口径：只要**持股快照**取到就算「已接入」（绝大多数票都有），十大活跃股是
+    加分项。「没进前十」不再是数据缺口，只在提示词里注明「近 60 天未进前十」。
     """
+    holding = load_northbound_holding(code)
     today = _dt.date.today()
     begin = today - _dt.timedelta(days=lookback_days)
+    items: list[dict[str, Any]] = []
+    top_error: Optional[str] = None
     try:
         payload = _get_json(
             "https://datacenter-web.eastmoney.com/api/data/v1/get",
@@ -517,37 +742,55 @@ def load_northbound(code: str, limit: int = 10, lookback_days: int = 60) -> dict
             },
             referer="https://data.eastmoney.com/hsgt/top10.html",
         )
+        rows = ((payload or {}).get("result") or {}).get("data") or []
+        items = [
+            {
+                "date": str(row.get("TRADE_DATE") or "")[:10],
+                "rank": row.get("RANK"),
+                # DEAL_AMT = 北向当日成交额（买+卖），DEAL_AMOUNT = 该股当日总成交额
+                "northbound_deal": row.get("DEAL_AMT"),
+                "stock_deal": row.get("DEAL_AMOUNT"),
+                "ratio": row.get("MUTUAL_RATIO"),
+                "change_pct": row.get("CHANGE_RATE"),
+                "close": row.get("CLOSE_PRICE"),
+            }
+            for row in rows
+        ]
     except Exception as exc:  # noqa: BLE001
         logger.warning("取北向活跃股失败 %s：%s", code, exc)
-        return {"available": False, "reason": f"北向活跃股接口不可用：{exc}"}
+        top_error = f"北向活跃股接口不可用：{exc}"
 
-    rows = ((payload or {}).get("result") or {}).get("data") or []
-    if not rows:
+    if holding.get("available"):
         return {
-            "available": False,
-            "empty": True,
-            "reason": f"近 {lookback_days} 天没有进入北向十大成交活跃股",
-            "note": "个股每日北向净买额自 2024-08-19 起不再披露；未上榜不代表外资在卖出",
+            "available": True,
+            "holding": holding,
+            "appearances": len(items),
+            "latest": items[0] if items else None,
+            "items": items,
+            "empty": not items,
+            "note": (
+                None
+                if items
+                else f"近 {lookback_days} 天没有进入北向十大成交活跃股（不影响季度持股口径）"
+            ),
+            "top_error": top_error,
         }
 
-    items = [
-        {
-            "date": str(row.get("TRADE_DATE") or "")[:10],
-            "rank": row.get("RANK"),
-            # DEAL_AMT = 北向当日成交额（买+卖），DEAL_AMOUNT = 该股当日总成交额
-            "northbound_deal": row.get("DEAL_AMT"),
-            "stock_deal": row.get("DEAL_AMOUNT"),
-            "ratio": row.get("MUTUAL_RATIO"),
-            "change_pct": row.get("CHANGE_RATE"),
-            "close": row.get("CLOSE_PRICE"),
+    if items:  # 持股快照缺失但活跃股命中（少见）
+        return {
+            "available": True,
+            "holding": None,
+            "appearances": len(items),
+            "latest": items[0],
+            "items": items,
+            "note": holding.get("reason"),
         }
-        for row in rows
-    ]
+
     return {
-        "available": True,
-        "appearances": len(items),
-        "latest": items[0],
-        "items": items,
+        "available": False,
+        "empty": True,
+        "reason": holding.get("reason") or top_error or f"近 {lookback_days} 天没有进入北向十大成交活跃股",
+        "note": "个股每日北向净买额自 2024-08-19 起不再披露；未上榜不代表外资在卖出",
     }
 
 

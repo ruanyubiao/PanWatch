@@ -398,11 +398,16 @@ def test_module_status_marks_unavailable_sources_without_key():
 
 
 def test_module_status_distinguishes_empty_from_failure():
-    """「没上榜 / 无覆盖」是 empty，不是「本次未取到」——两者含义完全不同"""
-    rows = {r["key"]: r for r in sources.module_status({"research": "empty", "northbound": "empty"})}
+    """「没上榜 / 无覆盖 / 非标的」是 empty，不是「本次未取到」——两者含义完全不同"""
+    rows = {
+        r["key"]: r
+        for r in sources.module_status({"research": "empty", "northbound": "empty", "margin": "empty"})
+    }
     assert rows["research"]["status"] == "empty"
     assert rows["northbound"]["status"] == "empty"
-    assert rows["northbound"]["empty_label"] == "未上榜"
+    assert rows["northbound"]["empty_label"] == "无披露记录"
+    assert rows["research"]["empty_label"] == "无券商覆盖"
+    assert rows["margin"]["empty_label"] == "非两融标的"
     # 接口坏了仍然是 unavailable
     assert {r["key"]: r for r in sources.module_status({"research": False})}["research"]["status"] == "unavailable"
 
@@ -445,11 +450,31 @@ def test_announcements_failure_is_reported_not_raised(monkeypatch):
 
 
 def test_margin_not_a_target_is_normal_not_crash(monkeypatch):
-    """不在两融标的里是正常情况，不能当异常抛出去"""
+    """不在两融标的里是正常情况，不能当异常抛出去，而且要给**确定结论**"""
     monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"result": {"data": []}})
-    result = sources.load_margin("002256")
+    monkeypatch.setattr(sources, "_margin_asof", lambda today: "2026-11-10")
+    result = sources.load_margin("002196")
     assert result["available"] is False
-    assert "两融" in result["reason"]
+    assert result["is_target"] is False  # 确定「不是标的」，不再是「可能不是」
+    assert result.get("empty") is True
+    assert "不在两融标的名单" in result["reason"] and "截至 2026-11-10" in result["reason"]
+
+
+def test_margin_stale_row_says_maybe_suspended_not_delisted(monkeypatch):
+    """有历史行但落后于全市场最新交易日：只说「之后没有新数据」，不擅自断定调出名单"""
+    row = {
+        "DATE": "2026-10-20 00:00:00",
+        "RZYE": 1.0e8,
+        "RZMRE": 1.0e7,
+        "RQYE": 1000,
+        "RZRQYE": 1.001e8,
+    }
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"result": {"data": [row]}})
+    monkeypatch.setattr(sources, "_margin_asof", lambda today: "2026-11-10")
+    got = sources.load_margin("600877")
+    assert got["available"] is True and got["is_target"] is True
+    assert got["stale_days"] == 21
+    assert "可能停牌" in got["note"] and "已调出" in got["note"]
 
 
 def test_flash_news_prefers_items_mentioning_the_stock(monkeypatch):
@@ -520,6 +545,53 @@ def test_worker_records_source_panel(monkeypatch):
     assert panel["margin"]["status"] == "unavailable"
     assert panel["research"]["status"] == "unavailable"  # 接了、本次没取到
     assert report["details"]["announcements"]["available"] is True
+
+
+def test_collect_states_margin_not_a_target_as_fact(monkeypatch):
+    """「非两融标的」和「无券商覆盖」要写成已核实的事实，不能混在「未纳入」里含糊过去"""
+    monkeypatch.setattr(dsa_data, "load_market_snapshot", lambda code, bars=130: _snapshot())
+    monkeypatch.setattr(dsa_data, "load_boards", lambda code: {"available": True, "tags": ["银行"]})
+    monkeypatch.setattr(dsa_data, "load_capital_flow", lambda code: {"available": True, "latest": {}})
+    monkeypatch.setattr(dsa_data, "load_news", lambda keyword: {"available": True, "items": []})
+    monkeypatch.setattr(
+        dsa_data,
+        "market_phase",
+        lambda: {"phase": "postmarket", "label": "盘后", "market_local_time": "x", "calendar": "db"},
+    )
+    monkeypatch.setattr(sources, "load_announcements", lambda code, limit=8: {"available": True, "items": []})
+    monkeypatch.setattr(
+        sources,
+        "load_margin",
+        lambda code: {
+            "available": False,
+            "is_target": False,
+            "empty": True,
+            "reason": "该股不在两融标的名单（东财两融明细全历史无记录，截至 2026-11-10）",
+        },
+    )
+    monkeypatch.setattr(sources, "load_flash_news", lambda keyword, limit=40: {"available": True, "mode": "market", "items": []})
+    monkeypatch.setattr(
+        sources,
+        "load_research",
+        lambda code, limit=5: {
+            "available": False,
+            "empty": True,
+            "reason": "近三年无券商覆盖（研报库 0 篇、机构预测库 0 条，已核实的空结果）",
+        },
+    )
+    monkeypatch.setattr(sources, "load_billboard", lambda code, limit=5: {"available": True, "items": []})
+    monkeypatch.setattr(sources, "load_popularity", lambda code: {"available": True, "rank": 88})
+    monkeypatch.setattr(sources, "load_northbound", lambda code, limit=10, lookback_days=60: {"available": True, "appearances": 0})
+
+    got = service._collect("002196", "方正电机")
+    gaps = got["limitations"]
+    margin_line = next(x for x in gaps if "融资融券" in x)
+    research_line = next(x for x in gaps if "研报" in x)
+    assert margin_line.startswith("融资融券不适用") and "不在两融标的名单" in margin_line
+    assert research_line.startswith("机构研报无覆盖") and "已核实" in research_line
+    panel = {row["key"]: row for row in got["sources"]}
+    assert panel["margin"]["status"] == "empty" and panel["margin"]["empty_label"] == "非两融标的"
+    assert panel["research"]["status"] == "empty"
 
 
 def test_flash_news_tolerates_list_stock_list(monkeypatch):
@@ -688,12 +760,86 @@ def test_research_parses_rating_and_target_price(monkeypatch):
 
 
 def test_research_without_coverage_is_explained_not_faked(monkeypatch):
-    """小盘股零研报是常态：要明说「无覆盖」，不能说成接口故障，更不能编评级"""
+    """小盘股零研报、F10 也没有机构预测：要明说「无覆盖」，不能说成接口故障，更不能编评级"""
     monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"hits": 0, "data": []})
-    got = sources.load_research("002256")
+    got = sources.load_research("002196")
     assert got["available"] is False
-    assert got.get("empty") is True  # 面板据此显示「无覆盖」，而不是「本次未取到」
-    assert "无机构研报覆盖" in got["reason"]
+    assert got.get("empty") is True  # 面板据此显示「无券商覆盖」，而不是「本次未取到」
+    assert "无券商覆盖" in got["reason"] and "机构预测库 0 条" in got["reason"]
+
+
+def test_research_falls_back_to_f10_forecast(monkeypatch):
+    """研报库空但 F10 有机构评级/盈利预测：算接入，不能直接判「无覆盖」"""
+
+    def fake_get(url, params, referer="", timeout=0):
+        if "reportapi" in url:
+            return {"hits": 0, "data": []}
+        return {
+            "pjtj": [
+                {
+                    "DATE_TYPE": "1月内",
+                    "COMPRE_RATING": "买入",
+                    "COMPRE_RATING_NUM": 4.76,
+                    "RATING_ORG_NUM": 30,
+                    "RATING_BUY_NUM": 23,
+                    "RATING_ADD_NUM": 7,
+                }
+            ],
+            "jgyc": [
+                {
+                    "ORG_NAME_ABBR": "近六月平均",
+                    "YEAR1": 2025,
+                    "YEAR_MARK1": "A",
+                    "EPS1": 65.85,
+                    "PE1": 21.85,
+                    "YEAR2": 2026,
+                    "YEAR_MARK2": "E",
+                    "EPS2": 66.83,
+                    "PE2": 21.52,
+                },
+                {"ORG_NAME_ABBR": "西南证券"},
+                {"ORG_NAME_ABBR": "中信证券"},
+            ],
+        }
+
+    monkeypatch.setattr(sources, "_get_json", fake_get)
+    got = sources.load_research("600519")
+    assert got["available"] is True and got["hits"] == 0
+    fc = got["forecast"]
+    assert fc["rating"] == "买入" and fc["org_num"] == 30
+    assert fc["org_count"] == 2 and "西南证券" in fc["orgs"]
+    assert fc["estimates"][1] == {"year": 2026, "mark": "E", "eps": 66.83, "pe": 21.52}
+
+
+def test_prompt_warns_when_forecast_coverage_is_thin(monkeypatch):
+    """只有 2 家机构给评级：提示词要写明「代表性弱」，不能当强共识"""
+    fc = {
+        "available": True,
+        "window": "1月内",
+        "rating": "增持",
+        "org_num": 2,
+        "buy_num": 1,
+        "add_num": 1,
+        "estimates": [{"year": 2026, "mark": "E", "eps": 0.5, "pe": 20.0}],
+        "orgs": ["甲证券", "乙证券"],
+    }
+    text = prompt_mod.build_user_prompt(
+        snapshot=_snapshot(),
+        phase={"phase": "postmarket", "label": "盘后", "market_local_time": "x", "calendar": "db"},
+        boards={"available": True, "tags": ["银行"]},
+        flow={"available": True, "latest": {"main_net": -1.0e7, "main_net_pct": -0.8}},
+        news={"available": True, "items": []},
+        limitations=[],
+        research={
+            "available": True,
+            "hits": 0,
+            "items": [],
+            "ratings": {},
+            "forecast": fc,
+        },
+    )
+    assert "研报库近三年没有任何券商发布报告" in text
+    assert "覆盖机构很少（≤3 家）" in text
 
 
 def test_research_marks_stale_coverage(monkeypatch):
@@ -719,11 +865,31 @@ def test_research_marks_stale_coverage(monkeypatch):
     assert got["newest_age_days"] and got["newest_age_days"] > 180
 
 
+def _northbound_fake(holding_rows=None, top_rows=None):
+    def fake_get(url, params, referer="", timeout=0):
+        if "RPT_MUTUAL_HOLDSTOCKNORTH_STA" in str(params):
+            return {"result": {"data": holding_rows or []}}
+        return {"result": {"data": top_rows or []}}
+
+    return fake_get
+
+
 def test_northbound_uses_top10_active_list(monkeypatch):
-    """北向改用「十大成交活跃股」：给出外资成交额与占比，并写明不推断净买方向"""
-    payload = {
-        "result": {
-            "data": [
+    """十大成交活跃股：给出外资成交额与占比，并写明不推断净买方向"""
+    monkeypatch.setattr(
+        sources,
+        "_get_json",
+        _northbound_fake(
+            holding_rows=[
+                {
+                    "TRADE_DATE": "2026-09-30 00:00:00",
+                    "HOLD_SHARES": 55263682,
+                    "HOLD_MARKET_CAP": 69555975438.84,
+                    "FREE_SHARES_RATIO": 4.4208,
+                    "TOTAL_SHARES_RATIO": 4.4208,
+                }
+            ],
+            top_rows=[
                 {
                     "TRADE_DATE": "2026-11-10 00:00:00",
                     "RANK": 4,
@@ -733,22 +899,47 @@ def test_northbound_uses_top10_active_list(monkeypatch):
                     "CHANGE_RATE": -0.41,
                     "CLOSE_PRICE": 1439,
                 }
-            ]
-        }
-    }
-    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: payload)
+            ],
+        ),
+    )
     got = sources.load_northbound("600519")
     assert got["available"] is True and got["appearances"] == 1
     assert got["latest"]["northbound_deal"] == 883196743
     assert got["latest"]["ratio"] == 26.63
+    assert got["holding"]["date"] == "2026-09-30"
+    assert got["holding"]["float_ratio"] == 4.4208
+    assert got["empty"] is False
+
+
+def test_northbound_holding_alone_is_still_available(monkeypatch):
+    """没进前十但有季度持股：算接入（available），只是 top10 部分标 empty"""
+    monkeypatch.setattr(
+        sources,
+        "_get_json",
+        _northbound_fake(
+            holding_rows=[
+                {
+                    "TRADE_DATE": "2026-09-30 00:00:00",
+                    "HOLD_SHARES": 4639158,
+                    "HOLD_MARKET_CAP": 46855495.8,
+                    "FREE_SHARES_RATIO": 0.9464,
+                    "TOTAL_SHARES_RATIO": 0.9356,
+                }
+            ]
+        ),
+    )
+    got = sources.load_northbound("002196")
+    assert got["available"] is True and got["appearances"] == 0
+    assert got["empty"] is True and "十大成交活跃股" in (got["note"] or "")
+    assert got["holding"]["hold_shares"] == 4639158
 
 
 def test_northbound_absent_is_empty_not_configured(monkeypatch):
-    """没进前十是正常结果：标 empty，不能写成「外资在卖出」"""
-    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"result": {"data": []}})
+    """两块都取不到才是 empty（无披露记录）：不能写成「外资在卖出」"""
+    monkeypatch.setattr(sources, "_get_json", _northbound_fake())
     got = sources.load_northbound("002256")
     assert got["available"] is False and got["empty"] is True
-    assert "没有进入北向十大成交活跃股" in got["reason"]
+    assert "持股" in got["reason"]
 
 
 def test_billboard_keeps_net_buy_and_reason(monkeypatch):
