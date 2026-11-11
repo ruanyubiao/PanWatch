@@ -30,6 +30,24 @@ def _avail(block: dict[str, Any]) -> Any:
     return "empty" if block.get("empty") else False
 
 
+def _sources_with_notes(
+    rows: list[dict[str, Any]], extras: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """给个别模块的「空结果」补上具体原因（例如龙虎榜最近一次上榜日期）。
+
+    通用文案只说明「没数据」，带上日期的具体文案才能让人一眼判断「真安静」还是
+    「没取到」。只对 ``status == "empty"`` 的行生效，ok/unavailable 不动。
+    """
+    for row in rows:
+        block = extras.get(row.get("key") or "")
+        if not block or row.get("status") != "empty":
+            continue
+        reason = block.get("reason")
+        if reason:
+            row["note"] = f"{row['note']}；{reason}" if row.get("note") else reason
+    return rows
+
+
 def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
     """取齐所有数据，返回 (snapshot, boards, flow, news, limitations)。"""
     limitations: list[str] = []
@@ -81,7 +99,13 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
 
     billboard = sources.load_billboard(symbol)
     if not billboard.get("available"):
-        limitations.append(f"龙虎榜未纳入（{billboard.get('reason') or '无上榜记录'}）")
+        reason = billboard.get("reason") or "无上榜记录"
+        if billboard.get("empty"):
+            # 接口正常但真的没上榜：这是事实，不是缺数据 —— 写法上就要区分开，
+            # 而且带上「最近一次」日期，用户/模型都能自己核对。
+            limitations.append(f"龙虎榜近一年无记录：{reason}")
+        else:
+            limitations.append(f"龙虎榜未纳入（{reason}）")
 
     popularity = sources.load_popularity(symbol)
     if not popularity.get("available"):
@@ -121,20 +145,26 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
         "phase": phase,
         "limitations": limitations,
         # 页面「数据源」面板要的行：每个模块一条，状态 ok / empty / unavailable / unconfigured
-        "sources": sources.module_status(
+        "sources": _sources_with_notes(
+            sources.module_status(
+                {
+                    "market": True,
+                    "boards": _avail(boards),
+                    "capital_flow": _avail(flow),
+                    "news": _avail(news),
+                    "announcements": _avail(announcements),
+                    "margin": _avail(margin),
+                    "flash": _avail(flash),
+                    "research": _avail(research),
+                    "billboard": _avail(billboard),
+                    "popularity": _avail(popularity),
+                    "northbound": _avail(northbound),
+                }
+            ),
             {
-                "market": True,
-                "boards": _avail(boards),
-                "capital_flow": _avail(flow),
-                "news": _avail(news),
-                "announcements": _avail(announcements),
-                "margin": _avail(margin),
-                "flash": _avail(flash),
-                "research": _avail(research),
-                "billboard": _avail(billboard),
-                "popularity": _avail(popularity),
-                "northbound": _avail(northbound),
-            }
+                # 空结果的「具体日期」比通用文案有用：页面上直接能看到最近一次上榜是哪年
+                "billboard": billboard,
+            },
         ),
     }
 

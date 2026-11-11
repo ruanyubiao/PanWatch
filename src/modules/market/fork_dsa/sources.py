@@ -68,7 +68,15 @@ MODULE_CATALOG: tuple[dict[str, Any], ...] = (
         "requires_key": False,
         "empty_label": "无券商覆盖",
     },
-    {"key": "billboard", "label": "龙虎榜", "source": "东财数据中心（免 key）", "requires_key": False},
+    {
+        "key": "billboard",
+        "label": "龙虎榜",
+        "source": "东财数据中心（免 key）",
+        "requires_key": False,
+        "empty_label": "近一年未上榜",
+        "note_empty": "接口正常、该股近一年确实没有上榜记录（已回查历史取最后一次上榜日期），"
+        "不是取数失败",
+    },
     {
         "key": "popularity",
         "label": "社交情绪（东财股吧人气替代）",
@@ -609,6 +617,33 @@ def _days_since(value: str, today: _dt.date) -> Optional[int]:
 # ── 龙虎榜（免 key）─────────────────────────────────────────────────────
 
 
+def _billboard_last_date(code: str) -> Optional[str]:
+    """历史上最后一次上榜日期（不设日期窗）。取不到就返回 None，不当成「没记录」。"""
+    try:
+        payload = _get_json(
+            "https://datacenter-web.eastmoney.com/api/data/v1/get",
+            {
+                "reportName": "RPT_DAILYBILLBOARD_DETAILS",
+                "columns": "SECURITY_CODE,TRADE_DATE",
+                "pageNumber": 1,
+                "pageSize": 1,
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": -1,
+                "source": "WEB",
+                "client": "WEB",
+                "filter": f'(SECURITY_CODE="{code}")',
+            },
+            referer="https://data.eastmoney.com/stock/lhb.html",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("回查龙虎榜历史失败 %s：%s", code, exc)
+        return None
+    rows = ((payload or {}).get("result") or {}).get("data") or []
+    if not rows:
+        return None
+    return str(rows[0].get("TRADE_DATE") or "")[:10] or None
+
+
 def load_billboard(code: str, limit: int = 5) -> dict[str, Any]:
     """个股最近上榜记录（东财数据中心 ``RPT_DAILYBILLBOARD_DETAILS``，免费）。
 
@@ -642,7 +677,26 @@ def load_billboard(code: str, limit: int = 5) -> dict[str, Any]:
 
     rows = ((payload or {}).get("result") or {}).get("data") or []
     if not rows:
-        return {"available": False, "empty": True, "reason": "近一年没有上过龙虎榜"}
+        # 「近一年没上榜」要么是这只票真安静，要么是我这一次漏了 —— 光凭空数组
+        # 分不清。补一次不带日期窗的查询，拿到历史上最后一次上榜日期，页面就能写
+        # 「接口正常、近一年确实没上榜（最近一次 2013-01-28）」，可核对、不是猜。
+        last_date = _billboard_last_date(code)
+        if last_date is None:
+            return {
+                "available": False,
+                "empty": True,
+                "verified": True,
+                "reason": "该股历史全量无上榜记录",
+            }
+        years = _days_since(last_date, _dt.date.today())
+        years_txt = f"，{years // 365} 年前" if years is not None and years >= 365 else ""
+        return {
+            "available": False,
+            "empty": True,
+            "verified": True,
+            "last_date": last_date,
+            "reason": f"近一年未上榜，最近一次 {last_date}{years_txt}",
+        }
 
     items = [
         {

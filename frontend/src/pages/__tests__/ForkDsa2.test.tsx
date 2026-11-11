@@ -173,4 +173,34 @@ describe('深度分析2 页面', () => {
     expect(await screen.findByText('兆新股份')).toBeTruthy()
     expect(document.querySelector('[data-dsa2-sources]')).toBeNull()
   })
+
+  it('空结果行显示「近一年未上榜」并带上最近一次上榜日期（不是「本次未取到」）', async () => {
+    latest.mockResolvedValue({
+      id: 12,
+      symbol: '600519',
+      status: 'done',
+      model_used: 'test/model',
+      created_at: '2026-10-19T16:34:58',
+      report: {
+        ...report,
+        details: {
+          ...report.details,
+          sources: [
+            {
+              key: 'billboard',
+              label: '龙虎榜',
+              source: '东财数据中心（免 key）',
+              status: 'empty',
+              empty_label: '近一年未上榜',
+              note: '近一年未上榜，最近一次 2013-01-28，13 年前',
+            },
+          ],
+        },
+      },
+    })
+    renderPage()
+    expect(await screen.findByText('近一年未上榜')).toBeTruthy()
+    expect(screen.getByText(/最近一次 2013-01-28/)).toBeTruthy()
+    expect(screen.queryByText('本次未取到')).toBeNull()
+  })
 })
