@@ -345,7 +345,8 @@ def build_user_prompt(
             lines.append(f"- 全市场人气排名：第 {pop.get('rank')} 名（样本：前 {pop.get('scope')} 名）")
         else:
             lines.append(
-                f"- 未进入前 {pop.get('scope')} 名：讨论热度低。**不能据此说情绪高涨**。"
+                f"- 不在当日人气榜前 {pop.get('scope')} 名（榜单只公开前 {pop.get('scope')} 名，"
+                "**不代表没有讨论，也不能据此说情绪高涨**）"
             )
     else:
         lines.append(f"- 未纳入（{pop.get('reason') or '人气榜未取到'}）")

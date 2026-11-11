@@ -423,7 +423,12 @@ def load_billboard(code: str, limit: int = 5) -> dict[str, Any]:
                 "sortTypes": -1,
                 "source": "WEB",
                 "client": "WEB",
-                "filter": f'(SECURITY_CODE="{code}")',
+                # 限定近一年：不加日期会翻出 2007 年的上榜记录，模型会把十几年前
+                # 的异动当成近期证据（实测 600519 返回 2013/2007 两条）。
+                "filter": (
+                    f'(SECURITY_CODE="{code}")(TRADE_DATE>=\''
+                    f'{(_dt.date.today() - _dt.timedelta(days=365)).isoformat()}\')'
+                ),
             },
             referer="https://data.eastmoney.com/stock/lhb.html",
         )
