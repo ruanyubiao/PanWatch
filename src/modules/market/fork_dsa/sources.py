@@ -51,26 +51,21 @@ MODULE_CATALOG: tuple[dict[str, Any], ...] = (
     {"key": "announcements", "label": "公司公告", "source": "东财公告接口", "requires_key": False},
     {"key": "margin", "label": "融资融券", "source": "东财数据中心", "requires_key": False},
     {"key": "flash", "label": "7×24 快讯", "source": "财联社（网页签名，免 key）", "requires_key": False},
+    {"key": "research", "label": "研报 / 机构评级", "source": "东财研报中心（免 key）", "requires_key": False},
+    {"key": "billboard", "label": "龙虎榜", "source": "东财数据中心（免 key）", "requires_key": False},
+    {
+        "key": "popularity",
+        "label": "社交情绪（东财股吧人气替代）",
+        "source": "东财人气榜（免 key）",
+        "requires_key": False,
+        "note": "雪球 / Reddit 需第三方 apikey，本页用东财人气排名替代",
+    },
     {
         "key": "northbound",
         "label": "北向资金",
         "source": None,
         "requires_key": False,
-        "note": "同花顺分时接口单位不稳定，未接入",
-    },
-    {
-        "key": "research",
-        "label": "研报 / 机构评级",
-        "source": None,
-        "requires_key": True,
-        "note": "需付费数据源，本页不使用",
-    },
-    {
-        "key": "social",
-        "label": "社交情绪（雪球 / Reddit 等）",
-        "source": None,
-        "requires_key": True,
-        "note": "需第三方 apikey，本页不使用",
+        "note": "交易所 2024-08 起停止披露每日北向净买额（实测接口返回空），本页用两融 + 主力资金 + 龙虎榜替代",
     },
 )
 
@@ -107,6 +102,15 @@ def _get_json(url: str, params: dict[str, Any], referer: str, timeout: int = _TI
 
     with httpx.Client(timeout=timeout, follow_redirects=True) as client:
         resp = client.get(url, params=params, headers={"User-Agent": _UA, "Referer": referer})
+        resp.raise_for_status()
+        return resp.json()
+
+
+def _post_json(url: str, body: dict[str, Any], referer: str, timeout: int = _TIMEOUT) -> Any:
+    import httpx
+
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        resp = client.post(url, json=body, headers={"User-Agent": _UA, "Referer": referer})
         resp.raise_for_status()
         return resp.json()
 
@@ -326,3 +330,159 @@ def _fmt_ctime(value: Any) -> str:
     if stamp <= 0:
         return ""
     return _dt.datetime.fromtimestamp(stamp).strftime("%m-%d %H:%M")
+
+
+def _float(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "" or value == "-":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# ── 研报 / 机构评级（免 key）─────────────────────────────────────────────
+
+
+def load_research(code: str, limit: int = 5) -> dict[str, Any]:
+    """近一年机构研报与评级（东财研报中心 ``reportapi``，免费、无 key）。
+
+    小盘股常年没有机构覆盖是**常态**（不是接口坏了），所以「零条」返回
+    ``available=False`` 并把原因写成「近一年无机构研报覆盖」，提示词据此**不得**
+    写成「机构一致看好」。目标价字段（``indvAimPriceT``）经常为空，空就不写。
+    """
+    today = _dt.date.today()
+    params = {
+        "industryCode": "*",
+        "pageSize": max(1, min(limit, 20)),
+        "industry": "*",
+        "pageNo": 1,
+        "qType": 0,
+        "code": code,
+        "beginTime": (today - _dt.timedelta(days=365)).isoformat(),
+        "endTime": today.isoformat(),
+    }
+    try:
+        payload = _get_json(
+            "https://reportapi.eastmoney.com/report/list",
+            params,
+            referer="https://data.eastmoney.com/report/",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("取研报失败 %s：%s", code, exc)
+        return {"available": False, "reason": f"研报接口不可用：{exc}"}
+
+    rows = (payload or {}).get("data") or []
+    if not rows:
+        return {"available": False, "reason": "近一年无机构研报覆盖"}
+
+    items = []
+    ratings: dict[str, int] = {}
+    for row in rows:
+        rating = str(row.get("emRatingName") or "").strip()
+        if rating:
+            ratings[rating] = ratings.get(rating, 0) + 1
+        items.append(
+            {
+                "date": str(row.get("publishDate") or "")[:10],
+                "org": row.get("orgSName") or row.get("orgName"),
+                "title": str(row.get("title") or "").strip(),
+                "rating": rating or None,
+                "rating_change": str(row.get("ratingChange") or "").strip() or None,
+                "target_price": _float(row.get("indvAimPriceT")),
+                "pe_this_year": _float(row.get("predictThisYearPe")),
+                "pe_next_year": _float(row.get("predictNextYearPe")),
+            }
+        )
+    return {
+        "available": True,
+        "hits": (payload or {}).get("hits") or len(items),
+        "items": items,
+        "ratings": ratings,
+    }
+
+
+# ── 龙虎榜（免 key）─────────────────────────────────────────────────────
+
+
+def load_billboard(code: str, limit: int = 5) -> dict[str, Any]:
+    """个股最近上榜记录（东财数据中心 ``RPT_DAILYBILLBOARD_DETAILS``，免费）。
+
+    「近一年没上过榜」是正常结果，不是故障 —— 返回 ``available=False`` 并写明原因，
+    这样模型不会把「没查」当成「查过且无异常」。
+    """
+    try:
+        payload = _get_json(
+            "https://datacenter-web.eastmoney.com/api/data/v1/get",
+            {
+                "reportName": "RPT_DAILYBILLBOARD_DETAILS",
+                "columns": "ALL",
+                "pageNumber": 1,
+                "pageSize": max(1, min(limit, 10)),
+                "sortColumns": "TRADE_DATE",
+                "sortTypes": -1,
+                "source": "WEB",
+                "client": "WEB",
+                "filter": f'(SECURITY_CODE="{code}")',
+            },
+            referer="https://data.eastmoney.com/stock/lhb.html",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("取龙虎榜失败 %s：%s", code, exc)
+        return {"available": False, "reason": f"龙虎榜接口不可用：{exc}"}
+
+    rows = ((payload or {}).get("result") or {}).get("data") or []
+    if not rows:
+        return {"available": False, "reason": "近一年没有上过龙虎榜"}
+
+    items = [
+        {
+            "date": str(row.get("TRADE_DATE") or "")[:10],
+            "reason": str(row.get("EXPLANATION") or "").strip(),
+            "note": str(row.get("EXPLAIN") or "").strip(),
+            "net_buy": row.get("BILLBOARD_NET_AMT"),
+            "buy": row.get("BILLBOARD_BUY_AMT"),
+            "sell": row.get("BILLBOARD_SELL_AMT"),
+            "change_pct": row.get("CHANGE_RATE"),
+            "d5_return": row.get("D5_CLOSE_ADJCHRATE"),
+        }
+        for row in rows
+    ]
+    return {"available": True, "items": items}
+
+
+# ── 人气排名（替代社交情绪）──────────────────────────────────────────────
+
+
+def load_popularity(code: str) -> dict[str, Any]:
+    """东财人气榜排名 —— 替代需要第三方 apikey 的雪球 / Reddit 社交情绪。
+
+    榜单接口只公开**前 100 名**（``pageNo`` 传 2 返回空，实测），也没有按代码查的入口，
+    所以只能在这一百名里找自己；找不到就写「未进入前 100」。这是真实信息（这只票
+    不在当日热门榜上），不当成失败，也不能写成「情绪高涨」。
+    """
+    symbol = ("SH" if code[:1] in ("6", "5", "9") else "SZ") + code
+    scope = 100
+    rank: Optional[int] = None
+    try:
+        payload = _post_json(
+            "https://emappdata.eastmoney.com/stockrank/getAllCurrentList",
+            {
+                "appId": "appId01",
+                "globalId": "786e4c21-70dc-435a-93bb-38",
+                "marketType": "",
+                "pageNo": 1,
+                "pageSize": scope,
+            },
+            referer="https://guba.eastmoney.com/",
+        )
+        for row in (payload or {}).get("data") or []:
+            if str(row.get("sc") or "").upper() == symbol:
+                rank = int(row.get("rk") or 0) or None
+                break
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("取人气榜失败 %s：%s", code, exc)
+        return {"available": False, "reason": f"人气榜接口不可用：{exc}"}
+
+    return {"available": True, "rank": rank, "scope": scope}
+
