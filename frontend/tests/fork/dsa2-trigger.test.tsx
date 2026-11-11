@@ -44,4 +44,12 @@ describe('深度分析2 入口', () => {
     render(<Dsa2Button symbol="600519" name="贵州茅台" label="深度分析2（DSA）" />)
     expect(screen.getByRole('button', { name: '深度分析2（DSA）' })).toBeTruthy()
   })
+
+  it('北交所标的：入口不渲染（bj 前缀 / 4xx / 8xx / 920xxx 都不给按钮）', () => {
+    for (const symbol of ['bj430047', '430047', '830799', '920992', 'bj920992', '870199']) {
+      const { container, unmount } = render(<Dsa2Button symbol={symbol} name="某北交所股" />)
+      expect(container.querySelector('[data-fork-dsa2-trigger]'), symbol).toBeNull()
+      unmount()
+    }
+  })
 })

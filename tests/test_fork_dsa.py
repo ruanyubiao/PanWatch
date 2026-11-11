@@ -50,10 +50,12 @@ def test_symbol_accepts_three_spellings():
 
 def test_symbol_rejects_beijing_and_garbage():
     """北交所与非法代码要明确报错，不是照跑"""
-    with pytest.raises(HTTPException) as bj:
-        fork_dsa._normalize_symbol("920025")
-    assert bj.value.status_code == 400
-    assert bj.value.detail["code"] == "dsa_beijing_excluded"
+    # 用户口径里说的是「bj 开头」——这里把 bj 前缀、纯数字、.BJ 后缀三种写法都钉住
+    for symbol in ("920025", "bj430047", "bj920992", "430047.BJ", "870199", "830799"):
+        with pytest.raises(HTTPException) as bj:
+            fork_dsa._normalize_symbol(symbol)
+        assert bj.value.status_code == 400, symbol
+        assert bj.value.detail["code"] == "dsa_beijing_excluded", symbol
 
     with pytest.raises(HTTPException) as bad:
         fork_dsa._normalize_symbol("60051")
