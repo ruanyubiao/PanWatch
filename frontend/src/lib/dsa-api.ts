@@ -104,3 +104,17 @@ export function getDsaHistory(symbol: string, limit = 10) {
     `/stocks/dsa/history?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
   )
 }
+
+/**
+ * 「深度分析2」页面的地址（新窗口打开用）。
+ *
+ * 页面自己会拉最新报告 / 起任务，所以这里只带代码和名称，不带 state。
+ */
+export function dsa2Path(symbol: string, name?: string | null) {
+  return `/dsa2/${encodeURIComponent(symbol)}?name=${encodeURIComponent(name || '')}`
+}
+
+/** 新窗口打开「深度分析2」：不发请求、不阻塞当前页（一次分析要调大模型）。 */
+export function openDsa2Window(symbol: string, name?: string | null) {
+  window.open(dsa2Path(symbol, name), '_blank', 'noopener,noreferrer')
+}

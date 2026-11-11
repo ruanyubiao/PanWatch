@@ -42,7 +42,7 @@ import {
  * 列宽（用户逐列指定）：市场 60 / 代码 80 / 名称 140 / 成交量 96 / 成交额 104 /
  * 换手率 84（这三列排在**总市值前面**）/ 总市值之后紧跟**状态 68**
  * （停牌 / 正常 / ST 这类 2–3 字标签）/ 指标 160 → 120（本页最新要求再减 40）/
- * 来源 200 / 操作 180 → 220（Agent 配置图标搬进操作列，多一个按钮的宽度＋间隔）；
+ * 来源 200 / 操作 180 → 220 → 252（Agent 配置图标搬进操作列，fork 的「深度分析2」再占一颗）；
  * 其余数值列只给最小列宽，宽屏时摊开剩余空间。
  *
  * 本组件只管「取数 / 筛选 / 排序 / 分页 / 表格骨架 / 列的格式」——三个富列
@@ -296,9 +296,9 @@ const COLUMNS: ColumnDef[] = [
   // 指标列：左内边距 20px，列宽 200 → 180 → 160 → 120 → 140（本轮 +20）
   { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 140, padLeft: 20 },
   { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 200 },
-  // 操作列 220：Agent 状态列整列删掉，改成操作列里一颗「A」图标
-  // （点击弹「配置监控 Agent」），把原来那一个按钮的宽度＋间隔（40px）加回来
-  { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 220 },
+  // 操作列 252：Agent 状态列整列删掉，改成操作列里一颗「A」图标；
+  // fork 的「深度分析2」再占一颗（7 颗图标 = 7×28 + 6×2 间距 + 16 内边距 ≈ 224，留余量）
+  { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 252 },
 ]
 
 /** 每个可排序列三种状态的图标（未排序灰 ↕ / 降序蓝 ↓ / 升序蓝 ↑）。 */
@@ -657,11 +657,11 @@ export function StockMarketTable({
         <div className="py-10 text-center text-[12px] text-muted-foreground">{emptyText}</div>
       ) : (
         <div className="overflow-x-auto scrollbar">
-          {/* 表格最小宽 = 各列固定宽之和 1442px（1451 − 5 列 × 1 − 成交量 1 − 成交额/总市值/换手率 3）。
+          {/* 表格最小宽 = 各列固定宽之和 1474px（1442 + 操作列加宽的 32）。
               保留 w-full：容器比 1442 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
               窄到不够就横向滚动；只有容器比 1442 还宽时 table-fixed 才会把余量按比例摊给各列——
               这是原来就有的行为（宽屏铺满），本次不动 */}
-          <table className="w-full min-w-[1442px] table-fixed text-[12px]">
+          <table className="w-full min-w-[1474px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col
