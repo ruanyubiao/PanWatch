@@ -55,7 +55,10 @@ MODULE_CATALOG: tuple[dict[str, Any], ...] = (
         "source": "东财数据中心（含标的名单判定）",
         "requires_key": False,
         "empty_label": "非两融标的",
-        "note": "表里零记录 ＝ 从未纳入两融标的名单，是确定结论，不是取数失败",
+        # 两套文案：ok 时说「是标的」，empty 时解释零记录怎么读 —— 只放一条的话
+        # 真标的也会看到「零记录 ＝ 从未纳入」，读起来像自相矛盾。
+        "note_ok": "该标的在两融标的名单内，余额为交易所披露的上一交易日数据",
+        "note_empty": "表里零记录 ＝ 从未纳入两融标的名单，是确定结论，不是取数失败",
     },
     {"key": "flash", "label": "7×24 快讯", "source": "财联社（网页签名，免 key）", "requires_key": False},
     {
@@ -103,6 +106,12 @@ def module_status(availability: dict[str, Any]) -> list[dict[str, Any]]:
             status = "empty"
         else:
             status = "unavailable"
+        # 文案可以按状态分叉（例如两融：是标的 / 非标的 说明的是相反的事实）
+        note = module.get("note")
+        if status == "ok" and module.get("note_ok"):
+            note = module["note_ok"]
+        elif status == "empty" and module.get("note_empty"):
+            note = module["note_empty"]
         rows.append(
             {
                 "key": key,
@@ -110,7 +119,7 @@ def module_status(availability: dict[str, Any]) -> list[dict[str, Any]]:
                 "source": module.get("source"),
                 "requires_key": bool(module.get("requires_key")),
                 "status": status,
-                "note": module.get("note"),
+                "note": note,
                 "empty_label": module.get("empty_label"),
             }
         )

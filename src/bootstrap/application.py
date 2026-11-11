@@ -8,6 +8,8 @@ HTTP 中间件、认证依赖和各模块 router；具体业务规则仍由 ``mo
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
+import warnings as _warnings  # fork: 屏蔽 on_event 的 DeprecationWarning（见下方队列启动注册）
+
 from src.modules.administration.api import (
     auth,
     channels,
@@ -104,6 +106,15 @@ app.include_router(
 app.include_router(
     fork_dsa.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
 )
+# fork（深度分析2）：队列消费线程随服务启动拉起 —— 否则重启前排队的任务要等到
+# 下一次有人点「分析」才会被认领。ensure_started 幂等，重复注册无副作用。
+# 用 on_event 而不是 add_event_handler：FastAPI 0.143 已移除后者；告警已在本地屏蔽，
+# 免得每次启动往 stderr 打一条 DeprecationWarning。
+from src.modules.market.fork_dsa import queue as _fork_dsa2_queue  # noqa: E402
+
+with _warnings.catch_warnings():
+    _warnings.simplefilter("ignore", DeprecationWarning)
+    app.on_event("startup")(_fork_dsa2_queue.ensure_started)
 app.include_router(
     quotes.router, prefix="/api/quotes", tags=["quotes"], dependencies=protected
 )
