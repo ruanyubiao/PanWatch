@@ -412,6 +412,34 @@ def test_module_status_distinguishes_empty_from_failure():
     assert {r["key"]: r for r in sources.module_status({"research": False})}["research"]["status"] == "unavailable"
 
 
+def test_module_status_margin_note_follows_status():
+    """两融的说明文案必须跟状态走：是标的不能印「零记录＝从未纳入」那套。
+
+    否则真标的（600519 这类）在面板上会看到自相矛盾的两句。
+    """
+    ok_note = {r["key"]: r for r in sources.module_status({"margin": True})}["margin"]["note"]
+    empty_note = {r["key"]: r for r in sources.module_status({"margin": "empty"})}["margin"]["note"]
+    assert "名单内" in ok_note
+    assert "零记录" not in ok_note
+    assert "零记录" in empty_note
+    assert ok_note != empty_note
+
+
+def test_dsa2_queue_consumer_registered_on_app_startup():
+    """队列消费线程必须在应用启动时拉起。
+
+    之前只有 POST /dsa/analyze 那条路径会 ``ensure_started``：服务重启后，重启前
+    排队的任务会一直躺着，等到下一次有人点「分析」才被认领。
+    """
+    from src.bootstrap import application
+
+    handlers = [
+        getattr(handler, "__name__", "")
+        for handler in application.app.router.on_startup
+    ]
+    assert "ensure_started" in handlers
+
+
 
 def test_module_status_covers_every_connected_module():
     """每个「有来源」的模块都能被 availability 打开成 ok，不会漏配 key"""
