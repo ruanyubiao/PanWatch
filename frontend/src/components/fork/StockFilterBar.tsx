@@ -1,5 +1,6 @@
 import { BOARD_OPTIONS, type BoardKey } from '@/lib/board-classify'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@panwatch/base-ui/components/ui/select'
+import { Switch } from '@panwatch/base-ui/components/ui/switch'
 import { MultiSelectFilter } from '@/components/fork/MultiSelectFilter'
 import {
   CAP_FILTER_OPTIONS_ZH,
@@ -53,6 +54,9 @@ const FILTER_BAR_TEXTS_ZH = {
   capAll: '全部市值',
   turnoverAll: '全部换手率',
   tradeStatusAll: '全部状态',
+  /** 组7「关注」开关的文案（放在「全部状态」后面，样式与截图那颗开关一致） */
+  followed: '关注',
+  followedHint: '只看已关注的股票（自选）',
   clear: '清空筛选',
   clearHint: '市场、指标、涨跌、市值、换手率、状态一起复位',
   indicatorHint: (label: string) => `技术面：${label}`,
@@ -65,6 +69,9 @@ export interface StockFilterBarProps {
   counts: Partial<Record<BoardKey, number>>
   filters: MarketTableFilters
   onFiltersChange: (filters: MarketTableFilters) => void
+  /** 组7「关注」开关：只显示已关注（自选）的股票。默认不选中。 */
+  followedOnly: boolean
+  onFollowedOnlyChange: (value: boolean) => void
   /** 组2 的候选动作文案（页面从 bizUi 的 kline.actions.* 取，与徽章同一套叫法） */
   indicatorOptions: { key: string; label: string }[]
   className?: string
@@ -87,13 +94,16 @@ export function StockFilterBar({
   counts,
   filters,
   onFiltersChange,
+  followedOnly,
+  onFollowedOnlyChange,
   indicatorOptions,
   className,
 }: StockFilterBarProps) {
-  /** 「清空筛选」= 市场 + 其余四组一起回到「不限」（用户要求连市场一起复位）。 */
+  /** 「清空筛选」= 市场 + 其余五组 + 关注开关一起回到「不限」（用户要求连市场一起复位）。 */
   const clearAll = () => {
     onBoardChange('all')
     onFiltersChange(EMPTY_MARKET_FILTERS)
+    onFollowedOnlyChange(false)
   }
 
   return (
@@ -192,8 +202,32 @@ export function StockFilterBar({
         menuClassName="w-[236px]"
       />
 
+      {/* 组7 关注：开关（用户 2026-11-11 指定，位置在「全部状态」后面、样式照截图）。
+          选中 = 只看已关注的股票。它不是下拉档位，所以用开关而不是第三组多选。 */}
+      <label
+        className="flex h-8 cursor-pointer select-none items-center gap-1.5"
+        title={FILTER_BAR_TEXTS_ZH.followedHint}
+      >
+        <Switch
+          checked={followedOnly}
+          onCheckedChange={onFollowedOnlyChange}
+          aria-label={FILTER_BAR_TEXTS_ZH.followed}
+          data-fork-followed-switch="1"
+          className="h-4 w-7 data-[state=checked]:bg-primary data-[state=unchecked]:bg-border [&>span]:h-3 [&>span]:w-3 [&>span]:data-[state=checked]:translate-x-[14px] [&>span]:data-[state=unchecked]:translate-x-[2px]"
+        />
+        <span
+          className={`text-[12px] ${
+            followedOnly
+              ? 'text-primary [text-shadow:0_0_6px_rgba(34,211,238,0.55)]'
+              : 'text-muted-foreground'
+          }`}
+        >
+          {FILTER_BAR_TEXTS_ZH.followed}
+        </span>
+      </label>
+
       {/* 清空筛选（含市场）——紧跟在下拉菜单后面，只在真有筛选生效时出现 */}
-      {hasAnyFilterActive(board, filters) && (
+      {hasAnyFilterActive(board, filters) || followedOnly ? (
         <button
           type="button"
           onClick={clearAll}
@@ -202,7 +236,7 @@ export function StockFilterBar({
         >
           {FILTER_BAR_TEXTS_ZH.clear}
         </button>
-      )}
+      ) : null}
     </div>
   )
 }

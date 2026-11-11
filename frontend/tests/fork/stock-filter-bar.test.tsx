@@ -30,6 +30,7 @@ const COUNTS = { all: 5577, sh: 1632, sz: 1421, cyb: 1369, kcb: 605, st: 201 }
 function renderBar(over: Partial<React.ComponentProps<typeof StockFilterBar>> = {}) {
   const onBoardChange = vi.fn()
   const onFiltersChange = vi.fn()
+  const onFollowedOnlyChange = vi.fn()
   render(
     <StockFilterBar
       board="all"
@@ -37,11 +38,13 @@ function renderBar(over: Partial<React.ComponentProps<typeof StockFilterBar>> = 
       counts={COUNTS}
       filters={EMPTY_MARKET_FILTERS}
       onFiltersChange={onFiltersChange}
+      followedOnly={false}
+      onFollowedOnlyChange={onFollowedOnlyChange}
       indicatorOptions={INDICATOR_OPTIONS}
       {...over}
     />,
   )
-  return { onBoardChange, onFiltersChange }
+  return { onBoardChange, onFiltersChange, onFollowedOnlyChange }
 }
 
 afterEach(() => cleanup())
@@ -243,5 +246,40 @@ describe('fork: 分析页筛选行', () => {
     renderBar()
     const bar = screen.getByLabelText('全部市场').parentElement as HTMLElement
     expect(bar.querySelectorAll('[data-fork-build-meta]')).toHaveLength(0)
+  })
+})
+
+describe('fork: 「关注」开关（2026-11-11）', () => {
+  it('默认不选中，文案是「关注」，位置在「全部状态」后面', () => {
+    renderBar()
+    const toggle = screen.getByRole('switch', { name: '关注' })
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+
+    // DOM 顺序：状态下拉的触发器 → 关注开关 → 清空筛选（未生效时不渲染）
+    const labels = screen.getAllByRole('combobox')
+    const lastSelect = labels[labels.length - 1]
+    expect(lastSelect.compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('点一下把 true 交给页面（状态由页面持有）', async () => {
+    const user = userEvent.setup()
+    const { onFollowedOnlyChange } = renderBar()
+    await user.click(screen.getByRole('switch', { name: '关注' }))
+    expect(onFollowedOnlyChange).toHaveBeenCalledWith(true)
+  })
+
+  it('选中态：开关打开、文案高亮，并出现「清空筛选」', () => {
+    renderBar({ followedOnly: true })
+    expect(screen.getByRole('switch', { name: '关注' }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByText('清空筛选')).toBeTruthy()
+  })
+
+  it('「清空筛选」把关注开关一起复位', async () => {
+    const user = userEvent.setup()
+    const { onFollowedOnlyChange, onFiltersChange, onBoardChange } = renderBar({ followedOnly: true })
+    await user.click(screen.getByText('清空筛选'))
+    expect(onFollowedOnlyChange).toHaveBeenCalledWith(false)
+    expect(onFiltersChange).toHaveBeenCalledWith(EMPTY_MARKET_FILTERS)
+    expect(onBoardChange).toHaveBeenCalledWith('all')
   })
 })

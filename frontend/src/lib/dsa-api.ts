@@ -52,6 +52,18 @@ export interface DsaStrategy {
   action_checklist?: string[]
 }
 
+/** 数据源面板的一行：后端 ``sources.module_status`` 的原样结构。 */
+export type DsaSourceStatus = 'ok' | 'unavailable' | 'unconfigured'
+
+export interface DsaSource {
+  key: string
+  label: string
+  source?: string | null
+  requires_key?: boolean
+  status: DsaSourceStatus
+  note?: string | null
+}
+
 export interface DsaDetails {
   sectors?: string[]
   sector_view?: string | null
@@ -61,6 +73,8 @@ export interface DsaDetails {
   sentiment_summary?: string | null
   limitations?: string[]
   data_sources?: string[]
+  /** 数据源清单（含「未配置」的模块）。老报告没有这一项，页面要容忍缺失。 */
+  sources?: DsaSource[]
 }
 
 export interface DsaReport {
