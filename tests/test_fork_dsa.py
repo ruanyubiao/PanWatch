@@ -457,7 +457,8 @@ def test_margin_not_a_target_is_normal_not_crash(monkeypatch):
     assert result["available"] is False
     assert result["is_target"] is False  # 确定「不是标的」，不再是「可能不是」
     assert result.get("empty") is True
-    assert "不在两融标的名单" in result["reason"] and "截至 2026-11-10" in result["reason"]
+    assert "全历史无记录" in result["reason"] and "截至 2026-11-10" in result["reason"]
+    assert "从未纳入标的名单" in result["reason"]
 
 
 def test_margin_stale_row_says_maybe_suspended_not_delisted(monkeypatch):
