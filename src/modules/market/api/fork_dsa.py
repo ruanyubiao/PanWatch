@@ -57,7 +57,11 @@ class AnalyzeRequest(BaseModel):
 
 @router.post("/dsa/analyze")
 def analyze(req: AnalyzeRequest):
-    """起一次分析（后台线程）。同一只票已有 running 时复用那一份，不重复烧 token。"""
+    """入队一次深度分析（单线程 FIFO 队列，与 PanWatch 分析队列无关）。
+
+    立刻返回，``status`` 可能是 ``queued``（前面有任务）或 ``running``；
+    ``queue_position`` 是等待位次（0 = 直接开跑）。
+    """
     code = _normalize_symbol(req.symbol)
     try:
         row = service.start(code, req.name, req.model_id)
@@ -67,10 +71,32 @@ def analyze(req: AnalyzeRequest):
         "id": row["id"],
         "symbol": row["symbol"],
         "status": row["status"],
-        "created_at": row["created_at"],
+        "created_at": row.get("created_at"),
+        "started_at": row.get("started_at"),
+        "queue_position": row.get("queue_position", 0),
         "report": row.get("report"),
         "error": row.get("error"),
     }
+
+
+@router.get("/dsa/queue")
+def get_queue():
+    """队列快照：第一个是正在运行的，后面是等待中的（页面「队列」按钮读这个）。"""
+    items = service.queue_list()
+    return {
+        "items": items,
+        "running": next((item for item in items if item["status"] == "running"), None),
+        "pending": sum(1 for item in items if item["status"] == "queued"),
+    }
+
+
+@router.delete("/dsa/queue/{report_id}")
+def delete_queue_item(report_id: int):
+    """删除队列项。排队中直接删；运行中标的 cancelled（结果丢弃，立刻让位给下一个）。"""
+    outcome = service.cancel(report_id)
+    if outcome is None:
+        raise _bad(404, "dsa_queue_not_found", f"任务 {report_id} 不在队列里")
+    return {"id": report_id, "outcome": outcome}
 
 
 @router.get("/dsa/report/{report_id}")
