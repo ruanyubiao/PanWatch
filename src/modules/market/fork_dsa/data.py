@@ -22,6 +22,8 @@ import logging
 import os
 from typing import Any, Optional
 
+from . import calendar
+
 logger = logging.getLogger(__name__)
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -231,30 +233,14 @@ def load_market_snapshot(code: str, bars: int = 130) -> dict[str, Any]:
 def market_phase(now: Optional[_dt.datetime] = None) -> dict[str, Any]:
     """A 股市场阶段（盘中/午休/收盘集合竞价/盘后/非交易日）。
 
-    交易日优先查库里的 ``trade_calendar``；查不到就退回「工作日 = 交易日」的近似，
-    并在返回里 ``calendar="approx"`` 标明，提示词据此降低置信度。
+    交易日判定走 ``calendar.resolve``：行情库里出现过的日期最准，今天用指数快照兜底，
+    只有两个来源都拿不到才退回「工作日 = 交易日」，并在返回里 ``calendar="approx"``
+    标明，提示词与「数据缺口」据此降低置信度。
     """
     now = now or _dt.datetime.now()
-    is_trading_day: Optional[bool] = None
-    calendar = "unknown"
-    try:
-        conn = _connect()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT is_trading FROM trade_calendar WHERE trade_date = %s", (now.date(),)
-                )
-                row = cur.fetchone()
-            if row is not None:
-                is_trading_day = bool(row["is_trading"])
-                calendar = "db"
-        finally:
-            conn.close()
-    except Exception as exc:  # noqa: BLE001 - 交易日历缺失不该让整条分析失败
-        logger.warning("读取交易日历失败，退回工作日近似：%s", exc)
-    if is_trading_day is None:
-        is_trading_day = now.weekday() < 5
-        calendar = "approx"
+    resolved = calendar.resolve(now)
+    is_trading_day = bool(resolved.get("is_trading_day"))
+    calendar_source = str(resolved.get("source") or "approx")
 
     t = now.time()
     if not is_trading_day:
@@ -274,12 +260,14 @@ def market_phase(now: Optional[_dt.datetime] = None) -> dict[str, Any]:
     else:
         phase, label = "postmarket", "盘后"
 
+    last_trade_date = resolved.get("last_trade_date")
     return {
         "phase": phase,
         "label": label,
         "market_local_time": now.strftime("%Y-%m-%d %H:%M"),
         "is_trading_day": is_trading_day,
-        "calendar": calendar,
+        "calendar": calendar_source,
+        "last_trade_date": last_trade_date.isoformat() if isinstance(last_trade_date, _dt.date) else None,
     }
 
 

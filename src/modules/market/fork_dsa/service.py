@@ -57,9 +57,23 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
     if not flash.get("available"):
         limitations.append(f"7×24 快讯未纳入（{flash.get('reason') or '无快讯'}）")
 
+    # 卖方观点 / 资金异动 / 讨论热度：三块都免 key，「零条」是正常结果而不是故障，
+    # 但两种情形在 limitations 里要能区分开（无覆盖 vs 接口挂了）。
+    research = sources.load_research(symbol)
+    if not research.get("available"):
+        limitations.append(f"机构研报未纳入（{research.get('reason') or '无研报'}）")
+
+    billboard = sources.load_billboard(symbol)
+    if not billboard.get("available"):
+        limitations.append(f"龙虎榜未纳入（{billboard.get('reason') or '无上榜记录'}）")
+
+    popularity = sources.load_popularity(symbol)
+    if not popularity.get("available"):
+        limitations.append(f"人气排名未纳入（{popularity.get('reason') or '无排名'}）")
+
     phase = data.market_phase()
-    if phase.get("calendar") != "db":
-        limitations.append("交易日历缺失，市场阶段按工作日近似")
+    if phase.get("calendar") == "approx":
+        limitations.append("交易日历不可用（行情库与指数快照都没取到），市场阶段按工作日近似")
 
     for key, label in (
         ("ma20", "MA20"),
@@ -80,6 +94,9 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
         "announcements": announcements,
         "margin": margin,
         "flash": flash,
+        "research": research,
+        "billboard": billboard,
+        "popularity": popularity,
         "phase": phase,
         "limitations": limitations,
         # 页面「数据源」面板要的行：每个模块一条，状态 ok / unavailable / unconfigured
@@ -92,6 +109,9 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
                 "announcements": bool(announcements.get("available")),
                 "margin": bool(margin.get("available")),
                 "flash": bool(flash.get("available")),
+                "research": bool(research.get("available")),
+                "billboard": bool(billboard.get("available")),
+                "popularity": bool(popularity.get("available")),
             }
         ),
     }
@@ -113,6 +133,9 @@ def _run_model(
         announcements=collected.get("announcements"),
         margin=collected.get("margin"),
         flash=collected.get("flash"),
+        research=collected.get("research"),
+        billboard=collected.get("billboard"),
+        popularity=collected.get("popularity"),
     )
     client = get_configured_failover_client(db, model_id)
 
@@ -174,6 +197,9 @@ def _worker(symbol: str, name: Optional[str], model_id: Optional[int], report_id
         report["details"]["announcements"] = collected.get("announcements") or {"available": False}
         report["details"]["margin"] = collected.get("margin") or {"available": False}
         report["details"]["flash"] = collected.get("flash") or {"available": False}
+        report["details"]["research"] = collected.get("research") or {"available": False}
+        report["details"]["billboard"] = collected.get("billboard") or {"available": False}
+        report["details"]["popularity"] = collected.get("popularity") or {"available": False}
         # 数据源面板（页面渲染用）。历史报告没有这一项，前端要能容忍缺失。
         report["details"]["sources"] = collected.get("sources") or sources.module_status({})
         report["details"]["data_sources"] = [
@@ -184,6 +210,9 @@ def _worker(symbol: str, name: Optional[str], model_id: Optional[int], report_id
             "东财公司公告",
             "东财融资融券",
             "财联社 7×24 快讯",
+            "东财研报中心",
+            "东财龙虎榜",
+            "东财人气榜",
         ]
         store.finish(report_id, report, model_label)
     except Exception as exc:  # noqa: BLE001 - 任何失败都要落成 failed，不能留 running

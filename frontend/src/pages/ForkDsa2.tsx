@@ -63,6 +63,7 @@ export const DSA2_TEXTS_ZH = {
   failed: '分析失败',
   empty: '还没有分析结果',
   start: '开始分析',
+  startHint: '这一页不会自动跑分析：点下面的按钮才会取数并调用模型，避免每次刷新页面都重新烧一次。',
 }
 
 const CARD = 'rounded-2xl border border-cyan-500/20 bg-[#0b1220]/80 shadow-[0_0_0_1px_rgba(34,211,238,0.06)]'
@@ -182,6 +183,7 @@ export default function ForkDsa2Page() {
   const [row, setRow] = useState<DsaReportRow | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef<number | null>(null)
 
@@ -198,29 +200,31 @@ export default function ForkDsa2Page() {
     }
   }, [nameHint, symbol])
 
-  // 首次进入：有历史结果就直接用（done 也照样展示，并在下方标生成时间）；
-  // 没有才起新任务。running 直接进轮询。
+  // 首次进入：只读历史结果，**绝不自动起任务**（用户口径：新窗口弹出后由人手动点按钮）。
+  // 没有历史就停在「开始分析」这一屏；running 直接进轮询。
   useEffect(() => {
     let cancelled = false
     if (!symbol) return
     setRow(null)
     setError(null)
+    setLoaded(false)
     getDsaLatest(symbol)
       .then(latest => {
         if (cancelled) return
         if (latest && latest.status !== 'none') {
           setRow(latest)
-        } else {
-          void startAnalysis()
         }
+        setLoaded(true)
       })
       .catch(exc => {
-        if (!cancelled) setError(exc instanceof Error ? exc.message : String(exc))
+        if (cancelled) return
+        setError(exc instanceof Error ? exc.message : String(exc))
+        setLoaded(true)
       })
     return () => {
       cancelled = true
     }
-  }, [symbol, startAnalysis])
+  }, [symbol])
 
   // 轮询：只在 running 时跑，done/failed 立刻停，避免空转。
   useEffect(() => {
@@ -296,7 +300,7 @@ export default function ForkDsa2Page() {
                   {text.marketPhase(meta.market_phase_label)}
                 </span>
               ) : null}
-              <span>{formatTime(meta.created_at || row?.created_at)}</span>
+              <span>{formatTime(row?.created_at || meta.created_at)}</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -469,6 +473,17 @@ export default function ForkDsa2Page() {
                 ) : null}
               </section>
             </aside>
+          </div>
+        ) : null}
+
+        {loaded && !row && !error ? (
+          <div className={`${CARD} flex flex-col items-center gap-3 p-10 text-center`} data-dsa2-idle>
+            <div className="text-sm text-slate-300">{text.empty}</div>
+            <div className="max-w-lg text-xs leading-relaxed text-slate-500">{text.startHint}</div>
+            <Button size="sm" onClick={() => void startAnalysis()} disabled={starting}>
+              {starting ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1 h-3.5 w-3.5" />}
+              {text.start}
+            </Button>
           </div>
         ) : null}
 

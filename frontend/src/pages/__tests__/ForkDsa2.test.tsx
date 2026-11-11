@@ -5,7 +5,7 @@
  * （``tests/test_fork_dsa.py``）。这里关注的是容易在改样式时弄坏的地方：
  * 核心洞察、操作建议/趋势预测、板块标签、四张狙击点位卡、情绪环数字与档位文案。
  */
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ForkDsa2Page from '../ForkDsa2'
@@ -106,10 +106,14 @@ describe('深度分析2 页面', () => {
     expect(screen.getByText(/新闻面未纳入/)).toBeTruthy()
   })
 
-  it('没有历史报告时自动起任务并显示进度', async () => {
+  it('没有历史报告时不自作主张：停在「开始分析」，点按钮才起任务', async () => {
     latest.mockResolvedValue({ id: null, symbol: '002256', status: 'none', report: null })
     analyze.mockResolvedValue({ id: 8, symbol: '002256', status: 'running', report: null })
     renderPage()
+    expect(await screen.findByText('开始分析')).toBeTruthy()
+    // 打开页面不能自己烧一次模型
+    expect(analyze).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByText('开始分析'))
     await waitFor(() => expect(analyze).toHaveBeenCalledWith('002256', '兆新股份'))
     expect(await screen.findByText('正在生成决策报告…')).toBeTruthy()
   })

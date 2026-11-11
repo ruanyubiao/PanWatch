@@ -16,8 +16,11 @@ import pytest
 from fastapi import HTTPException
 
 from src.modules.market.api import fork_dsa
+from src.modules.market.fork_dsa import calendar as calendar_mod
+from src.modules.market.fork_dsa import data as dsa_data
 from src.modules.market.fork_dsa import prompt as prompt_mod
 from src.modules.market.fork_dsa import schema, service, sources, store
+
 
 
 # ── 代码归一化 ───────────────────────────────────────────────────────────
@@ -275,16 +278,21 @@ def test_start_reuses_running_task(monkeypatch):
 # ── 免 key 数据面（公告 / 两融 / 财联社） ────────────────────────────
 
 
-def test_module_status_marks_paid_sources_as_unconfigured():
-    """需要 apikey 的模块必须显式标 unconfigured —— 页面据此显示「未配置」"""
+def test_module_status_marks_unavailable_sources_without_key():
+    """只有真接不到的模块才标 unconfigured；接了但本次没取到标 unavailable"""
     rows = {r["key"]: r for r in sources.module_status({"market": True, "news": True})}
     assert rows["market"]["status"] == "ok"
     assert rows["news"]["status"] == "ok"
     assert rows["boards"]["status"] == "unavailable"  # 接了但本次没取到
-    assert rows["research"]["status"] == "unconfigured"
-    assert rows["research"]["requires_key"] is True
-    assert rows["research"]["source"] is None
+    # 研报 / 龙虎榜 / 人气：东财免费接口，接了，不需要 key
+    for key in ("research", "billboard", "popularity"):
+        assert rows[key]["status"] == "unavailable"
+        assert rows[key]["requires_key"] is False
+        assert rows[key]["source"]
+    # 北向：交易所停止披露，本页确实不接
     assert rows["northbound"]["status"] == "unconfigured"
+    assert "停止披露" in (rows["northbound"]["note"] or "")
+
 
 
 def test_module_status_covers_every_connected_module():
@@ -397,7 +405,7 @@ def test_worker_records_source_panel(monkeypatch):
     panel = {row["key"]: row for row in report["details"]["sources"]}
     assert panel["boards"]["status"] == "ok"
     assert panel["margin"]["status"] == "unavailable"
-    assert panel["research"]["status"] == "unconfigured"
+    assert panel["research"]["status"] == "unavailable"  # 接了、本次没取到
     assert report["details"]["announcements"]["available"] is True
 
 
@@ -414,3 +422,230 @@ def test_flash_news_tolerates_list_stock_list(monkeypatch):
     result = sources.load_flash_news("兆新股份")
     assert result["available"] is True
     assert result["items"][0]["stocks"] == ["002256"]
+
+
+# ── 交易日历：行情库优先，指数快照兜底 ──────────────────────────────
+
+
+class _FakeCursor:
+    def __init__(self, conn):
+        self._conn = conn
+        self._sql = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self._sql = sql
+
+    def fetchone(self):
+        if "MAX(trade_date)" in self._sql:
+            return {"d": self._conn.last}
+        return {"x": 1} if self._conn.has else None
+
+
+class _FakeConn:
+    """只回答日历要用的两条 SQL：MAX(trade_date) 与「这天有没有日线」。"""
+
+    def __init__(self, last, has):
+        self.last = last
+        self.has = has
+
+    def cursor(self):
+        return _FakeCursor(self)
+
+    def close(self):
+        return None
+
+
+def _patch_calendar(monkeypatch, *, conn=None, index_day=None, raise_db=False):
+    calendar_mod._CACHE.clear()
+    if raise_db:
+        def boom():
+            raise RuntimeError("行情库连不上")
+
+        monkeypatch.setattr(calendar_mod, "_connect", boom)
+    else:
+        monkeypatch.setattr(calendar_mod, "_connect", lambda: conn)
+    monkeypatch.setattr(calendar_mod, "_index_last_trade_date", lambda: index_day)
+
+
+def test_calendar_reads_trading_days_from_stock_db(monkeypatch):
+    """行情库里出现过的日期 = 真实开过市：长假那天没有日线，就该判成休市"""
+    import datetime as dt
+
+    _patch_calendar(monkeypatch, conn=_FakeConn(dt.date(2026, 11, 10), False))
+    got = calendar_mod.resolve(dt.datetime(2026, 10, 1, 10, 0))
+    assert got == {
+        "is_trading_day": False,
+        "source": "db",
+        "last_trade_date": dt.date(2026, 11, 10),
+    }
+
+    calendar_mod._CACHE.clear()
+    monkeypatch.setattr(calendar_mod, "_connect", lambda: _FakeConn(dt.date(2026, 11, 10), True))
+    got = calendar_mod.resolve(dt.datetime(2026, 11, 9, 10, 0))
+    assert got["is_trading_day"] is True and got["source"] == "db"
+
+
+def test_calendar_uses_index_quote_before_eod_load(monkeypatch):
+    """今天还没跑采集（库里没有今天）→ 用上证指数快照判定，而不是退回工作日近似"""
+    import datetime as dt
+
+    _patch_calendar(
+        monkeypatch, conn=_FakeConn(dt.date(2026, 11, 10), False), index_day=dt.date(2026, 11, 11)
+    )
+    got = calendar_mod.resolve(dt.datetime(2026, 11, 11, 10, 0))
+    assert got["is_trading_day"] is True and got["source"] == "live"
+
+
+def test_calendar_detects_holiday_from_stale_index_quote(monkeypatch):
+    """工作日但指数没交易 → 长假休市（这正是「按工作日近似」出错的地方）"""
+    import datetime as dt
+
+    _patch_calendar(
+        monkeypatch, conn=_FakeConn(dt.date(2026, 9, 30), False), index_day=dt.date(2026, 9, 30)
+    )
+    got = calendar_mod.resolve(dt.datetime(2026, 10, 1, 10, 0))
+    assert got["is_trading_day"] is False and got["source"] == "live"
+
+
+def test_calendar_marks_approx_only_when_both_sources_fail(monkeypatch):
+    import datetime as dt
+
+    _patch_calendar(monkeypatch, raise_db=True, index_day=None)
+    got = calendar_mod.resolve(dt.datetime(2026, 11, 11, 10, 0))
+    assert got["source"] == "approx" and got["is_trading_day"] is True
+
+    calendar_mod._CACHE.clear()
+    got = calendar_mod.resolve(dt.datetime(2026, 11, 15, 10, 0))  # 周日
+    assert got["is_trading_day"] is False
+
+
+def test_market_phase_reports_calendar_source(monkeypatch):
+    import datetime as dt
+
+    _patch_calendar(monkeypatch, conn=_FakeConn(dt.date(2026, 11, 10), True))
+    phase = dsa_data.market_phase(dt.datetime(2026, 11, 9, 10, 0))
+    assert phase["calendar"] == "db"
+    assert phase["label"] == "盘中"
+    assert phase["last_trade_date"] == "2026-11-10"
+
+    calendar_mod._CACHE.clear()
+    monkeypatch.setattr(calendar_mod, "_connect", lambda: _FakeConn(dt.date(2026, 11, 10), False))
+    phase = dsa_data.market_phase(dt.datetime(2026, 10, 1, 10, 0))
+    assert phase["is_trading_day"] is False
+    assert phase["label"] == "非交易日"
+
+
+# ── 研报 / 龙虎榜 / 人气（全部免 key）───────────────────────────────
+
+
+def test_research_parses_rating_and_target_price(monkeypatch):
+    payload = {
+        "hits": 2,
+        "data": [
+            {
+                "publishDate": "2026-11-10 00:00:00.000",
+                "orgSName": "西南证券",
+                "title": "三季报点评",
+                "emRatingName": "买入",
+                "indvAimPriceT": "12.5",
+                "predictThisYearPe": "20.3",
+            },
+            {
+                "publishDate": "2026-10-01 00:00:00.000",
+                "orgSName": "中信证券",
+                "title": "首次覆盖",
+                "emRatingName": "增持",
+                "indvAimPriceT": "",
+                "predictThisYearPe": None,
+            },
+        ],
+    }
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: payload)
+    got = sources.load_research("600519")
+    assert got["available"] is True and got["hits"] == 2
+    assert got["items"][0]["rating"] == "买入" and got["items"][0]["target_price"] == 12.5
+    assert got["items"][1]["target_price"] is None
+    assert got["ratings"] == {"买入": 1, "增持": 1}
+
+
+def test_research_without_coverage_is_explained_not_faked(monkeypatch):
+    """小盘股零研报是常态：要明说「无覆盖」，不能说成接口故障，更不能编评级"""
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"hits": 0, "data": []})
+    got = sources.load_research("002256")
+    assert got["available"] is False
+    assert "无机构研报覆盖" in got["reason"]
+
+
+def test_billboard_keeps_net_buy_and_reason(monkeypatch):
+    payload = {
+        "result": {
+            "data": [
+                {
+                    "TRADE_DATE": "2026-11-02 00:00:00",
+                    "EXPLANATION": "日跌幅偏离值达到7%的前5只证券",
+                    "EXPLAIN": "4家机构卖出",
+                    "BILLBOARD_NET_AMT": -1.2e7,
+                    "BILLBOARD_BUY_AMT": 3.4e8,
+                    "BILLBOARD_SELL_AMT": 3.5e8,
+                    "CHANGE_RATE": -6.42,
+                    "D5_CLOSE_ADJCHRATE": 23.4,
+                }
+            ]
+        }
+    }
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: payload)
+    got = sources.load_billboard("000975")
+    assert got["available"] is True
+    item = got["items"][0]
+    assert item["date"] == "2026-11-02" and item["net_buy"] == -1.2e7
+    assert item["d5_return"] == 23.4
+
+
+def test_billboard_no_record_is_not_failure(monkeypatch):
+    monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"result": {"data": []}})
+    got = sources.load_billboard("002256")
+    assert got["available"] is False
+    assert "没有上过龙虎榜" in got["reason"]
+
+
+def test_popularity_returns_rank_or_explicitly_absent(monkeypatch):
+    monkeypatch.setattr(sources, "_post_json", lambda *a, **kw: {"data": [{"sc": "SZ002256", "rk": 37}]})
+    got = sources.load_popularity("002256")
+    assert got["available"] is True and got["rank"] == 37
+
+    monkeypatch.setattr(sources, "_post_json", lambda *a, **kw: {"data": [{"sc": "SH600000", "rk": 1}]})
+    got = sources.load_popularity("002256")
+    assert got["available"] is True and got["rank"] is None
+    assert got["scope"] == 100  # 榜单只公开前 100 名（pageNo=2 实测返回空）
+
+
+def test_prompt_carries_new_evidence_sections():
+    text = prompt_mod.build_user_prompt(
+        snapshot=_snapshot(),
+        phase={"phase": "intraday", "label": "盘中", "market_local_time": "2026-11-11 10:00"},
+        boards={"available": True, "industry": "银行", "region": "上海", "concepts": []},
+        flow={"available": True, "latest": {"main_net": -1.0e7}},
+        news={"available": True, "items": []},
+        limitations=[],
+        research={
+            "available": True,
+            "hits": 1,
+            "items": [{"date": "2026-11-10", "org": "西南证券", "title": "三季报点评", "rating": "买入"}],
+            "ratings": {"买入": 1},
+        },
+        billboard={
+            "available": True,
+            "items": [{"date": "2026-11-02", "reason": "跌幅偏离", "net_buy": -1.2e7}],
+        },
+        popularity={"available": True, "rank": None, "scope": 100},
+    )
+    assert "机构研报与评级" in text
+    assert "评级分布：买入 1 篇" in text
+    assert "龙虎榜" in text and "跌幅偏离" in text
+    assert "未进入前 100 名" in text
