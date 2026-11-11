@@ -305,13 +305,13 @@ describe('fork: 分析页全市场表格', () => {
     expect(widthOf('换手率')).toBe('68px')
     expect(widthOf('总市值')).toBe('88px')
     expect(widthOf('状态')).toBe('48px')
-    // 指标列 140；「Agent 状态」整列删除、图标搬进操作列，操作列 220
+    // 指标列 140；操作列 220 → 252（fork 的「深度分析2」图标再占一颗）
     expect(widthOf('指标')).toBe('140px')
-    expect(widthOf('操作')).toBe('220px')
+    expect(widthOf('操作')).toBe('252px')
     expect(headers).not.toContain('Agent 状态')
 
-    // 表宽 = 各列之和 1442（1451 − 6×1 − 1 − 2）
-    expect(table.className).toContain('min-w-[1442px]')
+    // 表宽 = 各列之和 1474（原 1442 + 操作列加宽 32）
+    expect(table.className).toContain('min-w-[1474px]')
 
     // 市场～总市值不再留 minWidth（否则浏览器会按内容撑开，固定宽失效）
     const cols = table.querySelectorAll('colgroup col')

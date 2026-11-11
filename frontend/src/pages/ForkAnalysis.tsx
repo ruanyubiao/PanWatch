@@ -5,6 +5,7 @@ import { Plus, Trash2, Pencil, Search, X, TrendingUp, Bot, Play, RefreshCw, Wall
 import { fetchAPI, stocksApi, type AIService, type NotifyChannel } from '@panwatch/api'
 import { klinesApi } from '@panwatch/api/klines'
 import { formatDateTime } from '@/lib/utils'
+import { openDsa2Window } from '@/lib/dsa-api'
 import {
   buildPortfolioStockKeys,
   loadPortfolioPageBackgroundData,
@@ -52,6 +53,7 @@ import {
   type MarketTableFilters,
 } from '@/lib/market-filters'
 import { StockFilterBar } from '@/components/fork/StockFilterBar'
+import { Dsa2Button } from '@/components/fork/Dsa2Button'
 import { TOOLBAR_GAP_PX } from '@/components/fork/TablePagination'
 import { BuildMetaStrip, type BuildMeta } from '@/components/fork/BuildMetaStrip'
 import {
@@ -2008,6 +2010,8 @@ export default function StocksPage() {
         >
           <Brain className="w-3.5 h-3.5" />
         </Button>
+        {/* fork：深度分析2 —— DSA 口径决策报告，紧跟在「深度分析」右边，新窗口打开 */}
+        <Dsa2Button symbol={row.code} name={row.name} label={cardTexts.dsaAnalysis} />
         <Button
           variant="ghost"
           size="icon"
@@ -3043,8 +3047,7 @@ export default function StocksPage() {
                     onDeepAnalysis={() => openDeepAnalysis(stock.id, stock.symbol, stock.name)}
                     onDsaAnalysis={() => {
                       // fork：深度分析2 —— 新窗口打开 DSA 风格决策报告，页面自己起任务/轮询
-                      const url = `/dsa2/${encodeURIComponent(stock.symbol)}?name=${encodeURIComponent(stock.name || '')}`
-                      window.open(url, '_blank', 'noopener,noreferrer')
+                      openDsa2Window(stock.symbol, stock.name)
                     }}
                     alertPanel={(
                       <StockPriceAlertPanel
