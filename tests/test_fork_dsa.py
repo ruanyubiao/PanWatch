@@ -648,4 +648,18 @@ def test_prompt_carries_new_evidence_sections():
     assert "机构研报与评级" in text
     assert "评级分布：买入 1 篇" in text
     assert "龙虎榜" in text and "跌幅偏离" in text
-    assert "未进入前 100 名" in text
+    assert "不在当日人气榜前 100 名" in text
+
+
+def test_billboard_query_limits_to_recent_year(monkeypatch):
+    """不加日期会翻出 2007 年的上榜记录，模型会当成近期异动（实测 600519 踩过）"""
+    captured = {}
+
+    def fake_get(url, params, **kwargs):
+        captured.update(params)
+        return {"result": {"data": []}}
+
+    monkeypatch.setattr(sources, "_get_json", fake_get)
+    sources.load_billboard("600519")
+    assert "TRADE_DATE>=" in captured["filter"]
+    assert "SECURITY_CODE=" in captured["filter"]
