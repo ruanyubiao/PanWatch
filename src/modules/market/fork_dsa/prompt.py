@@ -181,6 +181,9 @@ def build_user_prompt(
     announcements: Optional[dict[str, Any]] = None,
     margin: Optional[dict[str, Any]] = None,
     flash: Optional[dict[str, Any]] = None,
+    research: Optional[dict[str, Any]] = None,
+    billboard: Optional[dict[str, Any]] = None,
+    popularity: Optional[dict[str, Any]] = None,
 ) -> str:
     """把取到的数据拼成事实表。缺什么，就在「数据缺口」里点名。"""
     name = snapshot.get("name") or snapshot.get("code")
@@ -298,6 +301,54 @@ def build_user_prompt(
             lines.append(f"- [{item.get('time')}][{item.get('level')}级] {item.get('title')}")
     else:
         lines.append(f"- 未纳入（{fl.get('reason') or '快讯未取到'}）")
+
+    rs = research or {}
+    lines += ["", "## 机构研报与评级（来源：东财研报中心，近一年）"]
+    if rs.get("available"):
+        lines.append(f"- 近一年研报数：{rs.get('hits')}")
+        if rs.get("ratings"):
+            dist = "、".join(f"{k} {v} 篇" for k, v in rs["ratings"].items())
+            lines.append(f"- 评级分布：{dist}")
+        for item in (rs.get("items") or [])[:5]:
+            extra = []
+            if item.get("target_price"):
+                extra.append(f"目标价 {_num(item.get('target_price'))} 元")
+            if item.get("pe_this_year"):
+                extra.append(f"今年预测PE {_num(item.get('pe_this_year'))}")
+            tail = f"（{'，'.join(extra)}）" if extra else ""
+            lines.append(
+                f"- [{item.get('date')}] {item.get('org')}"
+                f"《{item.get('title')}》评级：{item.get('rating') or '未给出'}{tail}"
+            )
+        lines.append("- 研报是卖方观点，只能当情绪与预期参考，不得当成价格依据。")
+    else:
+        lines.append(f"- 未纳入（{rs.get('reason') or '研报未取到'}）")
+
+    bb = billboard or {}
+    lines += ["", "## 龙虎榜（来源：东财数据中心，单位：元）"]
+    if bb.get("available"):
+        for item in (bb.get("items") or [])[:5]:
+            lines.append(
+                f"- [{item.get('date')}] 上榜原因：{item.get('reason')}；"
+                f"榜单净买入 {_money(item.get('net_buy'))}，买入 {_money(item.get('buy'))}，"
+                f"卖出 {_money(item.get('sell'))}；当日涨跌 {_num(item.get('change_pct'))}%；"
+                f"上榜后5日 {_num(item.get('d5_return'))}%"
+                + (f"；备注：{item.get('note')}" if item.get("note") else "")
+            )
+    else:
+        lines.append(f"- 未纳入（{bb.get('reason') or '龙虎榜未取到'}）")
+
+    pop = popularity or {}
+    lines += ["", "## 人气排名（来源：东财人气榜，替代需 apikey 的社交情绪）"]
+    if pop.get("available"):
+        if pop.get("rank"):
+            lines.append(f"- 全市场人气排名：第 {pop.get('rank')} 名（样本：前 {pop.get('scope')} 名）")
+        else:
+            lines.append(
+                f"- 未进入前 {pop.get('scope')} 名：讨论热度低。**不能据此说情绪高涨**。"
+            )
+    else:
+        lines.append(f"- 未纳入（{pop.get('reason') or '人气榜未取到'}）")
 
     lines += ["", "## 数据缺口（必须写进报告，不得当作“已确认无风险”）"]
     if limitations:
