@@ -443,10 +443,27 @@ def test_dsa2_queue_consumer_registered_on_app_startup():
 
 def test_module_status_covers_every_connected_module():
     """每个「有来源」的模块都能被 availability 打开成 ok，不会漏配 key"""
-    connected = [r["key"] for r in sources.module_status({}) if r["status"] != "unconfigured"]
+    connected = [r["key"] for r in sources.module_status({})]
     rows = {r["key"]: r for r in sources.module_status({k: True for k in connected})}
     assert all(rows[k]["status"] == "ok" for k in connected)
     assert "margin" in connected and "announcements" in connected and "flash" in connected
+
+
+def test_module_status_never_emits_unconfigured_rows():
+    """面板上不该再有「未配置 / 需 apikey」这一档（用户口径）。
+
+    需要 apikey 或付费源的模块已经用免费公开源替代；清单里留一行「未配置」只会
+    让人以为报告没覆盖，而结论并不依赖那些源。
+    """
+    rows = sources.module_status({})
+    assert rows
+    assert all(r["status"] != "unconfigured" for r in rows)
+    assert all(r["source"] for r in rows)
+    bad = [r for r in rows if "apikey" in (r.get("note") or "") or "未配置" in (r.get("note") or "")]
+    assert bad == []
+    # 替代关系还在（研报 / 讨论热度 / 北向 都有免 key 来源）
+    keys = {r["key"] for r in rows}
+    assert {"research", "popularity", "northbound"} <= keys
 
 
 def test_announcements_classify_and_shape(monkeypatch):

@@ -144,7 +144,8 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
         "northbound": northbound,
         "phase": phase,
         "limitations": limitations,
-        # 页面「数据源」面板要的行：每个模块一条，状态 ok / empty / unavailable / unconfigured
+        # 页面「数据源」面板要的行：每个模块一条，状态 ok / empty / unavailable
+        # （需要 apikey / 付费源的模块不会出现在清单里）
         "sources": _sources_with_notes(
             sources.module_status(
                 {

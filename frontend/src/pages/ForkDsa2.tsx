@@ -39,6 +39,7 @@ import {
   getDsaLatest,
   getDsaQueue,
   getDsaReport,
+  isBeijingCode,
   type DsaQueueSnapshot,
   type DsaReportRow,
   type DsaSource,
@@ -95,6 +96,11 @@ export const DSA2_TEXTS_ZH = {
   sourceEmpty: '无数据',
   sourceUnavailable: '本次未取到',
   sourceUnconfigured: '未配置',
+  sourcesFailed: (labels: string, count: number) =>
+    `另 ${count} 项本次未取到：${labels}（其余结论不受影响）`,
+  bjExcluded: '北交所标的不在股票池内',
+  bjHint: '本页只分析沪深 A 股；北交所（bj / 4xx / 8xx / 920xxx）一律排除，不做分析也不排队。',
+  backToAnalysis: '返回分析页',
   failed: '分析失败',
   empty: '还没有分析结果',
   start: '开始分析',
@@ -179,6 +185,12 @@ function SniperCard({ label, value, tone }: { label: string; value?: string | nu
 /** 数据源面板：逐行列出「这个字段是从哪来的 / 有没有配上」。 */
 function SourcePanel({ sources }: { sources: DsaSource[] }) {
   const text = DSA2_TEXTS_ZH
+  // 用户口径：需要 apikey / 付费源、本页没接的模块不显示（老报告 payload 里还带
+  // 这几行 unconfigured，也必须在这里挡掉，不能等重新分析才干净）。
+  const visible = sources.filter(item => item.status !== 'unconfigured')
+  // 接口超时的模块不逐条报红，折叠成一行安静的汇总，避免面板变成一列失败
+  const failed = visible.filter(item => item.status === 'unavailable')
+  const rows = visible.filter(item => item.status !== 'unavailable')
   const toneOf = (status: DsaSourceStatus) =>
     status === 'ok'
       ? 'text-emerald-300'
@@ -204,12 +216,14 @@ function SourcePanel({ sources }: { sources: DsaSource[] }) {
           ? 'bg-amber-400'
           : 'bg-slate-600'
 
+  if (!visible.length) return null
+
   return (
     <section className={`${CARD} p-4`} data-dsa2-sources>
       <h2 className="text-sm font-medium text-cyan-300">{text.sourcesTitle}</h2>
       <div className="mt-1 text-[11px] text-slate-500">{text.sourcesSubtitle}</div>
       <ul className="mt-3 flex flex-col gap-1.5">
-        {sources.map(item => (
+        {rows.map(item => (
           <li
             key={item.key}
             className="flex items-start justify-between gap-2 text-[11px]"
@@ -230,6 +244,11 @@ function SourcePanel({ sources }: { sources: DsaSource[] }) {
           </li>
         ))}
       </ul>
+      {failed.length ? (
+        <div className="mt-2 text-[11px] leading-relaxed text-slate-500" data-dsa2-sources-failed={failed.length}>
+          {text.sourcesFailed(failed.map(item => item.label).join('、'), failed.length)}
+        </div>
+      ) : null}
     </section>
   )
 }
@@ -398,6 +417,11 @@ export default function ForkDsa2Page() {
     setRow(null)
     setError(null)
     setLoaded(false)
+    // 北交所：不在股票池内，一个请求都不发（后端本来也会 400）
+    if (isBeijingCode(symbol)) {
+      setLoaded(true)
+      return
+    }
     getDsaLatest(symbol)
       .then(latest => {
         if (cancelled) return
@@ -469,7 +493,11 @@ export default function ForkDsa2Page() {
 
   const stockName = meta.stock_name || row?.name || nameHint || symbol
   const changeTone = marketSignTextClass(meta.change_pct)
-  const limitations = details.limitations ?? []
+  // 数据缺口：老报告里可能还留着「需第三方 apikey / 未配置」这类已过时的行 ——
+  // 那些模块现在都换成免费源了，显示出来只会误导，所以在渲染层筛掉（新报告本就没有）。
+  const limitations = (details.limitations ?? []).filter(
+    line => !/未配置|需第三方\s*apikey|需付费数据源/.test(line),
+  )
   const sectors = details.sectors ?? []
   // 数据源清单：老报告没有这一项 → 空数组，面板整块不渲染（不显示一堆假的「未配置」）
   const sources = details.sources ?? []
@@ -492,6 +520,33 @@ export default function ForkDsa2Page() {
     if (/看空/.test(trend)) return 'text-market-down'
     return 'text-slate-200'
   }, [summary.trend_prediction])
+
+  // 北交所：股票池外，直接给一句话，不进「开始分析」也不排队
+  if (isBeijingCode(symbol)) {
+    return (
+      <div className="min-h-screen bg-[#05080f] px-4 py-6 text-slate-200 md:px-8" data-dsa2-page={symbol} data-dsa2-bj-blocked="1">
+        <div className="mx-auto flex max-w-3xl flex-col gap-4">
+          <header className={`${CARD} flex flex-wrap items-center justify-between gap-3 p-5`}>
+            <div>
+              <h1 className="text-xl font-semibold text-white">{nameHint || symbol}</h1>
+              <div className="mt-2 text-xs text-slate-400">
+                <span className="rounded-md border border-cyan-500/25 px-2 py-0.5 font-mono text-cyan-300">{symbol}</span>
+              </div>
+            </div>
+          </header>
+          <section className={`${CARD} flex flex-col gap-2 p-6 text-center`} data-dsa2-bj-notice>
+            <div className="text-sm font-medium text-amber-300">{text.bjExcluded}</div>
+            <div className="text-xs leading-relaxed text-slate-400">{text.bjHint}</div>
+            <div className="mt-2">
+              <a className="text-xs text-cyan-300 hover:underline" href="/analysis">
+                {text.backToAnalysis}
+              </a>
+            </div>
+          </section>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-[#05080f] px-4 py-6 text-slate-200 md:px-8" data-dsa2-page={symbol}>
