@@ -406,6 +406,11 @@ def build_user_prompt(
                 f"上榜后5日 {_num(item.get('d5_return'))}%"
                 + (f"；备注：{item.get('note')}" if item.get("note") else "")
             )
+    elif bb.get("empty"):
+        lines.append(
+            f"- {bb.get('reason') or '近一年无上榜记录'}"
+            "（接口正常、已回查历史核实，是真实空结果，**不得**写成「数据缺失/没取到」）"
+        )
     else:
         lines.append(f"- 未纳入（{bb.get('reason') or '龙虎榜未取到'}）")
 

@@ -221,7 +221,9 @@ function SourcePanel({ sources }: { sources: DsaSource[] }) {
               <span className="min-w-0">
                 <span className="text-slate-300">{item.label}</span>
                 {item.source ? <span className="block text-slate-500">{item.source}</span> : null}
-                {!item.source && item.note ? <span className="block text-slate-600">{item.note}</span> : null}
+                {item.note && (item.status === 'empty' || !item.source) ? (
+                  <span className="block text-slate-600">{item.note}</span>
+                ) : null}
               </span>
             </span>
             <span className={`shrink-0 ${toneOf(item.status)}`}>{labelOf(item)}</span>
