@@ -180,6 +180,20 @@ export function dsa2Path(symbol: string, name?: string | null) {
   return `/dsa2/${encodeURIComponent(symbol)}?name=${encodeURIComponent(name || '')}`
 }
 
+/**
+ * 北交所标的（bj 前缀 / 4xx / 8xx / 920xxx）不在股票池内（用户口径）。
+ *
+ * 与后端 ``fork_dsa._normalize_symbol``、``data.py`` 的判定保持一致：宁可少画一颗
+ * 按钮，也不要在弹窗里给一个 400。前缀 ``sh/sz/bj`` 与小写、``.BJ`` 后缀都吃掉。
+ */
+export function isBeijingCode(symbol?: string | null): boolean {
+  const raw = (symbol || '').trim().toLowerCase()
+  if (!raw) return false
+  if (raw.startsWith('bj') || raw.includes('.bj')) return true
+  const digits = raw.replace(/^(?:sh|sz)/, '').replace(/\.(?:sh|sz)$/, '')
+  return /^[489]/.test(digits)
+}
+
 /** 新窗口打开「深度分析2」：不发请求、不阻塞当前页（一次分析要调大模型）。 */
 export function openDsa2Window(symbol: string, name?: string | null) {
   window.open(dsa2Path(symbol, name), '_blank', 'noopener,noreferrer')

@@ -1,6 +1,6 @@
 import { BrainCircuit } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
-import { openDsa2Window } from '@/lib/dsa-api'
+import { isBeijingCode, openDsa2Window } from '@/lib/dsa-api'
 
 export interface Dsa2ButtonProps {
   symbol: string
@@ -15,8 +15,12 @@ export interface Dsa2ButtonProps {
  * 只负责开新窗口 —— 分析任务由 /dsa2/:symbol 页面自己起、自己轮询，所以点这颗
  * 按钮不发任何请求，也不会卡住当前页。做成一颗粒子组件是为了分析页表格与本组
  * 件之外的调用方共用同一套地址口径（``dsa2Path``），避免各处手拼 URL。
+ *
+ * 北交所标的直接不渲染（用户口径：股票池排除 bj / 4xx / 8xx / 920xxx）。后端
+ * 也会 400 拒绝，这里少一颗按钮比让人点进去吃一个错误好。
  */
 export function Dsa2Button({ symbol, name, label = '深度分析2' }: Dsa2ButtonProps) {
+  if (isBeijingCode(symbol)) return null
   return (
     <Button
       variant="ghost"

@@ -9,6 +9,17 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ForkDsa2Page from '../ForkDsa2'
+// ?raw：JSON 原样当字符串读进来，既不用开 resolveJsonModule，也不会被 i18n 检查当成待翻译文案
+import realRowRaw from './fixtures/dsa2-600519.json?raw'
+
+/**
+ * 真实报告 payload —— 云端 600519（贵州茅台）那份，原样抄下来当回归夹具。
+ *
+ * 为什么用真数据：mock 掉接口的用例永远造不出「真的模型输出长什么样」，字段名错、
+ * 缺字段、文案里带旧口径（未配置 / 需 apikey）这类问题只有真 payload 能暴露。
+ * 重新抓取方式：服务器 dsa_reports 表取 symbol=600519 最新 done 行的 payload。
+ */
+const realRow600519: unknown = JSON.parse(realRowRaw)
 
 const report = {
   meta: {
@@ -65,9 +76,9 @@ vi.mock('@/lib/dsa-api', async () => {
   }
 })
 
-function renderPage() {
+function renderPage(symbol = '002256', name = '%E5%85%86%E6%96%B0%E8%82%A1%E4%BB%BD') {
   return render(
-    <MemoryRouter initialEntries={['/dsa2/002256?name=%E5%85%86%E6%96%B0%E8%82%A1%E4%BB%BD']}>
+    <MemoryRouter initialEntries={[`/dsa2/${symbol}?name=${name}`]}>
       <Routes>
         <Route path="/dsa2/:symbol" element={<ForkDsa2Page />} />
       </Routes>
@@ -140,7 +151,7 @@ describe('深度分析2 页面', () => {
     expect(screen.getAllByText('重新分析').length).toBeGreaterThan(0)
   })
 
-  it('数据源面板：逐行标「已接入 / 未配置」，需要 apikey 的模块不会假装有数据', async () => {
+  it('数据源面板：需要 apikey 的模块整行不出现，接口失败的折叠成一行（老报告也挡掉）', async () => {
     latest.mockResolvedValue({
       id: 11,
       symbol: '002256',
@@ -155,17 +166,49 @@ describe('深度分析2 页面', () => {
             { key: 'market', label: '行情 / 均线 / 技术指标', source: '本机行情库 MySQL', status: 'ok' },
             { key: 'announcements', label: '公司公告', source: '东财公告接口', status: 'unavailable' },
             { key: 'research', label: '研报 / 机构评级', source: null, requires_key: true, status: 'unconfigured' },
+            { key: 'social', label: '社交情绪', source: null, requires_key: true, status: 'unconfigured' },
           ],
         },
       },
     })
     renderPage()
     expect(await screen.findByText('数据源')).toBeTruthy()
+    // 有数据的照常列出
     expect(screen.getByText('已接入')).toBeTruthy()
-    expect(screen.getByText('本次未取到')).toBeTruthy()
-    expect(screen.getByText('未配置')).toBeTruthy()
-    const research = document.querySelector('[data-dsa2-source="research"]')
-    expect(research?.getAttribute('data-dsa2-source-status')).toBe('unconfigured')
+    expect(document.querySelector('[data-dsa2-source="market"]')).toBeTruthy()
+    // 「未配置」这一档整行消失，页面上一个字都不留
+    expect(screen.queryByText('未配置')).toBeNull()
+    expect(document.querySelector('[data-dsa2-source="research"]')).toBeNull()
+    expect(document.querySelector('[data-dsa2-source="social"]')).toBeNull()
+    // 接口失败的不逐条报警，折叠成一行安静的汇总
+    expect(document.querySelector('[data-dsa2-source="announcements"]')).toBeNull()
+    const failed = document.querySelector('[data-dsa2-sources-failed]')
+    expect(failed?.getAttribute('data-dsa2-sources-failed')).toBe('1')
+    expect(failed?.textContent).toContain('公司公告')
+    expect(failed?.textContent).toContain('另 1 项本次未取到')
+  })
+
+  it('全部源都是 unconfigured 时（最老那种报告）整块面板不渲染', async () => {
+    latest.mockResolvedValue({
+      id: 13,
+      symbol: '002256',
+      status: 'done',
+      model_used: 'test/model',
+      created_at: '2026-10-19T16:34:58',
+      report: {
+        ...report,
+        details: {
+          ...report.details,
+          sources: [
+            { key: 'research', label: '研报', source: null, status: 'unconfigured' },
+            { key: 'social', label: '社交情绪', source: null, status: 'unconfigured' },
+          ],
+        },
+      },
+    })
+    renderPage()
+    expect(await screen.findByText('兆新股份')).toBeTruthy()
+    expect(document.querySelector('[data-dsa2-sources]')).toBeNull()
   })
 
   it('老报告没有数据源清单时不渲染面板（不留一堆假的未配置）', async () => {
@@ -202,5 +245,55 @@ describe('深度分析2 页面', () => {
     expect(await screen.findByText('近一年未上榜')).toBeTruthy()
     expect(screen.getByText(/最近一次 2013-01-28/)).toBeTruthy()
     expect(screen.queryByText('本次未取到')).toBeNull()
+  })
+
+  it('北交所标的：页面只给一句话，一个请求都不发、也不给「开始分析」', async () => {
+    renderPage('920992', '%E4%B8%AD%E7%A7%91%E7%BE%8E%E8%8F%B1')
+    expect(await screen.findByText('北交所标的不在股票池内')).toBeTruthy()
+    expect(screen.getByText(/北交所（bj \/ 4xx \/ 8xx \/ 920xxx）一律排除/)).toBeTruthy()
+    expect(document.querySelector('[data-dsa2-bj-blocked="1"]')).toBeTruthy()
+    // 不读历史、不起任务、不出现「开始分析」按钮
+    expect(latest).not.toHaveBeenCalled()
+    expect(analyze).not.toHaveBeenCalled()
+    expect(screen.queryByText('开始分析')).toBeNull()
+  })
+})
+
+describe('真实 payload 回归（云端 600519 那份原样回放）', () => {
+  it('页面完整渲染：不报错、不出现「未配置」，四张点位卡与数据源面板都在', async () => {
+    latest.mockResolvedValue(realRow600519)
+    renderPage('600519', '%E8%B4%B5%E5%B7%9E%E8%8C%85%E5%8F%B0')
+    expect(await screen.findByText('贵州茅台')).toBeTruthy()
+    // 不报错
+    expect(screen.queryByText(/读取报告失败/)).toBeNull()
+    expect(document.querySelector('[data-dsa2-sources]')).toBeTruthy()
+    expect(screen.queryByText('未配置')).toBeNull()
+    // 截图红框里的四块都在
+    expect(document.querySelector('[data-dsa2-core]')).toBeTruthy()
+    for (const label of ['理想买入', '二次买入', '止损价位', '止盈目标']) {
+      expect(document.querySelector(`[data-dsa2-sniper="${label}"]`)).toBeTruthy()
+    }
+    // 模型口径写的是 PanWatch 那套配置里的模型名
+    expect(screen.getByText(/腾讯\/hy4/)).toBeTruthy()
+    // 数据源面板里每一项都有状态（没有未配置这一档）
+    for (const node of Array.from(document.querySelectorAll('[data-dsa2-source-status]'))) {
+      expect(node.getAttribute('data-dsa2-source-status')).not.toBe('unconfigured')
+    }
+  })
+})
+
+describe('股票池排除北交所', () => {
+  it('isBeijingCode 认 bj / 4xx / 8xx / 920xxx，不误伤沪深主板与创业板', async () => {
+    const actual = await vi.importActual<typeof import('@/lib/dsa-api')>('@/lib/dsa-api')
+    const { isBeijingCode } = actual
+    for (const code of ['920992', 'bj920992', '920992.BJ', '830799', '430047', '870199', '430047.BJ']) {
+      expect(isBeijingCode(code)).toBe(true)
+    }
+    for (const code of ['600519', 'sh600519', '600519.SH', '002256', 'sz002256', '300750', '000975']) {
+      expect(isBeijingCode(code)).toBe(false)
+    }
+    expect(isBeijingCode('')).toBe(false)
+    expect(isBeijingCode(null)).toBe(false)
+    expect(isBeijingCode(undefined)).toBe(false)
   })
 })
