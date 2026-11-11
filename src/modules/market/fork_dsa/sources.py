@@ -557,7 +557,7 @@ def load_research(code: str, limit: int = 5) -> dict[str, Any]:
         return {
             "available": False,
             "empty": True,
-            "reason": "近三年无券商覆盖（研报库 0 篇、机构预测库 0 条，已核实的空结果）",
+            "reason": "研报库近三年 0 篇、机构预测库 0 条（已核实的空结果，不是取数失败）",
         }
 
     items = []

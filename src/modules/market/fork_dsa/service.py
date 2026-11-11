@@ -60,7 +60,7 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
         reason = margin.get("reason") or "无两融数据"
         if margin.get("is_target") is False:
             # 已核实的「不是标的」不是数据缺口，是这只票本来就没有杠杆数据
-            limitations.append(f"融资融券不适用（{reason}）")
+            limitations.append(f"融资融券不适用：{reason}")
         else:
             limitations.append(f"融资融券未纳入（{reason}）")
 
@@ -75,7 +75,7 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
         reason = research.get("reason") or "无研报"
         if research.get("empty"):
             # 已核实的「零覆盖」是事实（研报库与机构预测库都空），不是取数失败
-            limitations.append(f"机构研报无覆盖（{reason}）")
+            limitations.append(f"机构研报无覆盖：{reason}")
         else:
             limitations.append(f"机构研报未纳入（{reason}）")
 
