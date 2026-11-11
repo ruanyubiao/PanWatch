@@ -257,6 +257,17 @@ describe('深度分析2 页面', () => {
     expect(analyze).not.toHaveBeenCalled()
     expect(screen.queryByText('开始分析')).toBeNull()
   })
+
+  it('bj 前缀写法同样干净拦截（不影响沪深代码）', async () => {
+    for (const symbol of ['bj430047', '430047.BJ', 'bj920992', '830799']) {
+      const { unmount } = renderPage(symbol, '%E6%9F%90%E5%8C%97%E4%BA%A4%E6%89%80')
+      expect(await screen.findByText('北交所标的不在股票池内'), symbol).toBeTruthy()
+      expect(document.querySelector('[data-dsa2-bj-blocked="1"]'), symbol).toBeTruthy()
+      unmount()
+    }
+    expect(latest).not.toHaveBeenCalled()
+    expect(analyze).not.toHaveBeenCalled()
+  })
 })
 
 describe('真实 payload 回归（云端 600519 那份原样回放）', () => {
