@@ -92,7 +92,11 @@ def get_queue():
 
 @router.delete("/dsa/queue/{report_id}")
 def delete_queue_item(report_id: int):
-    """删除队列项。排队中直接删；运行中标的 cancelled（结果丢弃，立刻让位给下一个）。"""
+    """删除队列项。
+
+    排队中 → 整行删掉；运行中 → 标 cancelled，**结果丢弃**。注意当前这一轮
+    已经在跑的取数与模型调用无法中断，线程会跑完才轮到下一个（单消费者队列）。
+    """
     outcome = service.cancel(report_id)
     if outcome is None:
         raise _bad(404, "dsa_queue_not_found", f"任务 {report_id} 不在队列里")
