@@ -857,3 +857,28 @@ describe('fork: 分析页全市场表格', () => {
     expect(urlsOf()).toHaveLength(1)
   })
 })
+
+describe('fork: 「关注」开关只看已关注（2026-11-11）', () => {
+  it('选中后只渲染已关注的行，行数跟着变', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable({ existingSymbols: new Set(['600519', 'sz000001']) })
+    // 默认不选中：三只全在
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    expect(screen.getByText('平安银行')).toBeTruthy()
+    expect(screen.getByText('安徽凤凰')).toBeTruthy()
+
+    cleanup()
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable({ followedOnly: true, existingSymbols: new Set(['600519']) })
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    expect(screen.queryByText('平安银行')).toBeNull()
+    expect(screen.queryByText('安徽凤凰')).toBeNull()
+  })
+
+  it('自选集合里没有这只票 → 空态，不显示任何行', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable({ followedOnly: true, existingSymbols: new Set<string>() })
+    await waitFor(() => expect(screen.getByText('没有匹配的股票')).toBeTruthy())
+    expect(screen.queryByText('贵州茅台')).toBeNull()
+  })
+})
