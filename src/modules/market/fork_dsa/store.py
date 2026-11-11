@@ -191,8 +191,8 @@ def cancel(report_id: int) -> Optional[str]:
     """删除队列项。
 
     - ``queued``：整行删掉（还没开跑，没有任何价值要留）；
-    - ``running``：标 ``cancelled``，线程回来时 ``finish`` 不会覆盖（已经烧掉的
-      token 追不回来，但结果不留、队列立刻空出来让下一个跑）；
+    - ``running``：标 ``cancelled``，线程回来时 ``finish`` 不会覆盖。**不会中断**
+      已经在跑的取数与模型调用（那是外部 HTTP），只是把结果丢掉。
     - 其余状态：不在队列里，返回 ``None`` 让接口报 404。
     """
     init()
