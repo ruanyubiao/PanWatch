@@ -765,7 +765,7 @@ def test_research_without_coverage_is_explained_not_faked(monkeypatch):
     got = sources.load_research("002196")
     assert got["available"] is False
     assert got.get("empty") is True  # 面板据此显示「无券商覆盖」，而不是「本次未取到」
-    assert "无券商覆盖" in got["reason"] and "机构预测库 0 条" in got["reason"]
+    assert "研报库近三年 0 篇" in got["reason"] and "已核实" in got["reason"]
 
 
 def test_research_falls_back_to_f10_forecast(monkeypatch):
