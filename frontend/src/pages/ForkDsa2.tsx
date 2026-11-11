@@ -13,16 +13,33 @@
  * 为什么固定深色：这一页是「终端风」的分析面板，跟主应用的明暗主题无关；截图就是
  * 深色，改成跟随主题反而对不上。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
-import { AlertTriangle, Loader2, RefreshCw, Sparkles, Target, TrendingUp, Zap } from 'lucide-react'
+import {
+  AlertTriangle,
+  ListOrdered,
+  Loader2,
+  RefreshCw,
+  Sparkles,
+  Target,
+  TrendingUp,
+  Trash2,
+  X,
+  Zap,
+} from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { marketSignTextClass } from '@/lib/market-colors'
 import {
   DSA_POLL_MS,
+  DSA_QUEUE_POLL_MS,
   analyzeDsa,
+  dsaElapsedSeconds,
+  deleteDsaQueueItem,
+  formatDsaInstant,
   getDsaLatest,
+  getDsaQueue,
   getDsaReport,
+  type DsaQueueSnapshot,
   type DsaReportRow,
   type DsaSource,
   type DsaSourceStatus,
@@ -33,7 +50,24 @@ export const DSA2_TEXTS_ZH = {
   loadFailed: (message: string) => `读取报告失败：${message}`,
   running: '正在生成决策报告…',
   runningHint: '取数 + 大模型分析，通常 1~3 分钟。可以关掉这个窗口，稍后从原页面再打开会读到同一份结果。',
-  elapsed: (seconds: number) => `已用 ${seconds} 秒`,
+  elapsed: (text: string) => `已用 ${text}`,
+  startedAt: (at: string) => `任务开始时间 ${at}`,
+  queuedTitle: '排队中',
+  queuedHint: (position: number) =>
+    `前面还有 ${position} 个任务，轮到你才会开始取数与调用模型。可以关掉这个窗口，稍后回来还是这一份。`,
+  queuedNext: '队首，马上开始…',
+  queuedSince: (at: string) => `入队时间 ${at}`,
+  queue: '队列',
+  queueTitle: '深度分析2 队列',
+  queueSubtitle: '运行中的任务永远排在第一，其余按入队先后。队列与 PanWatch 的分析任务相互独立。',
+  queueEmpty: '队列里没有任务',
+  queueRunning: '运行',
+  queueWaiting: '等待',
+  queuePosition: (position: number) => `前面 ${position} 个`,
+  queueDelete: '删除',
+  queueDeleteLabel: (symbol: string) => `把 ${symbol} 从队列删除`,
+  queueClose: '关闭',
+  queueLoadFailed: (message: string) => `读取队列失败：${message}`,
   retry: '重新分析',
   coreInsight: '核心洞察',
   advice: '操作建议',
@@ -58,6 +92,7 @@ export const DSA2_TEXTS_ZH = {
   sourcesTitle: '数据源',
   sourcesSubtitle: '本页不含任何需要 apikey 的数据源',
   sourceOk: '已接入',
+  sourceEmpty: '无数据',
   sourceUnavailable: '本次未取到',
   sourceUnconfigured: '未配置',
   failed: '分析失败',
@@ -67,6 +102,14 @@ export const DSA2_TEXTS_ZH = {
 }
 
 const CARD = 'rounded-2xl border border-cyan-500/20 bg-[#0b1220]/80 shadow-[0_0_0_1px_rgba(34,211,238,0.06)]'
+
+/** 「已用 1 分 06 秒」——秒数是算出来的，不从 0 起数。 */
+function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const minutes = Math.floor(total / 60)
+  const rest = total % 60
+  return minutes > 0 ? `${minutes} 分 ${rest} 秒` : `${rest} 秒`
+}
 
 function formatTime(value?: string | null): string {
   if (!value) return '—'
@@ -139,13 +182,27 @@ function SourcePanel({ sources }: { sources: DsaSource[] }) {
   const toneOf = (status: DsaSourceStatus) =>
     status === 'ok'
       ? 'text-emerald-300'
-      : status === 'unavailable'
-        ? 'text-amber-300'
-        : 'text-slate-500'
-  const labelOf = (status: DsaSourceStatus) =>
-    status === 'ok' ? text.sourceOk : status === 'unavailable' ? text.sourceUnavailable : text.sourceUnconfigured
+      : status === 'empty'
+        ? 'text-slate-400'
+        : status === 'unavailable'
+          ? 'text-amber-300'
+          : 'text-slate-500'
+  const labelOf = (item: DsaSource) =>
+    item.status === 'ok'
+      ? text.sourceOk
+      : item.status === 'empty'
+        ? item.empty_label || text.sourceEmpty
+        : item.status === 'unavailable'
+          ? text.sourceUnavailable
+          : text.sourceUnconfigured
   const dotOf = (status: DsaSourceStatus) =>
-    status === 'ok' ? 'bg-emerald-400' : status === 'unavailable' ? 'bg-amber-400' : 'bg-slate-600'
+    status === 'ok'
+      ? 'bg-emerald-400'
+      : status === 'empty'
+        ? 'bg-slate-500'
+        : status === 'unavailable'
+          ? 'bg-amber-400'
+          : 'bg-slate-600'
 
   return (
     <section className={`${CARD} p-4`} data-dsa2-sources>
@@ -167,11 +224,126 @@ function SourcePanel({ sources }: { sources: DsaSource[] }) {
                 {!item.source && item.note ? <span className="block text-slate-600">{item.note}</span> : null}
               </span>
             </span>
-            <span className={`shrink-0 ${toneOf(item.status)}`}>{labelOf(item.status)}</span>
+            <span className={`shrink-0 ${toneOf(item.status)}`}>{labelOf(item)}</span>
           </li>
         ))}
       </ul>
     </section>
+  )
+}
+
+/** 队列弹层：运行中的排第一，其余是等待；每项可删。 */
+function QueuePanel({
+  snapshot,
+  error,
+  deletingId,
+  onClose,
+  onDelete,
+}: {
+  snapshot: DsaQueueSnapshot | null
+  error: string | null
+  deletingId: number | null
+  onClose: () => void
+  onDelete: (id: number) => void
+}) {
+  const text = DSA2_TEXTS_ZH
+  const items = snapshot?.items ?? []
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 px-4 py-10"
+      data-dsa2-queue-overlay
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className={`${CARD} w-full max-w-xl bg-[#0b1220] p-5`}
+        data-dsa2-queue
+        role="dialog"
+        aria-label={text.queueTitle}
+        onClick={event => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-medium text-cyan-300">{text.queueTitle}</h2>
+            <div className="mt-1 text-[11px] text-slate-500">{text.queueSubtitle}</div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-slate-400 hover:text-slate-100"
+            onClick={onClose}
+            aria-label={text.queueClose}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {error ? (
+          <div className="mt-3 rounded-lg border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-[11px] text-rose-200">
+            {text.queueLoadFailed(error)}
+          </div>
+        ) : null}
+
+        <ul className="mt-4 flex max-h-[60vh] flex-col gap-2 overflow-y-auto scrollbar">
+          {items.length === 0 ? (
+            <li className="rounded-lg border border-slate-800 px-3 py-6 text-center text-xs text-slate-500">
+              {text.queueEmpty}
+            </li>
+          ) : (
+            items.map(item => {
+              const running = item.status === 'running'
+              const position = item.queue_position ?? 0
+              return (
+                <li
+                  key={item.id ?? item.symbol}
+                  className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2"
+                  data-dsa2-queue-item={item.symbol}
+                  data-dsa2-queue-status={item.status}
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span
+                      className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] ${
+                        running
+                          ? 'bg-cyan-500/15 text-cyan-300'
+                          : 'bg-slate-700/40 text-slate-400'
+                      }`}
+                    >
+                      {running ? text.queueRunning : text.queueWaiting}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs text-slate-200">
+                        {item.name || item.symbol}
+                      </span>
+                      <span className="block font-mono text-[10px] text-slate-500">
+                        {item.symbol}
+                        {running
+                          ? ` · ${text.startedAt(formatDsaInstant(item.started_at))}`
+                          : ` · ${text.queuePosition(position)}`}
+                      </span>
+                    </span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-rose-300 hover:bg-rose-950/40 hover:text-rose-200"
+                    aria-label={text.queueDeleteLabel(item.symbol)}
+                    disabled={item.id === null || deletingId === item.id}
+                    onClick={() => item.id !== null && onDelete(item.id)}
+                  >
+                    {deletingId === item.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="h-3.5 w-3.5" />
+                    )}
+                    <span className="ml-1 text-[11px]">{text.queueDelete}</span>
+                  </Button>
+                </li>
+              )
+            })
+          )}
+        </ul>
+      </div>
+    </div>
   )
 }
 
@@ -184,8 +356,23 @@ export default function ForkDsa2Page() {
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
   const [loaded, setLoaded] = useState(false)
-  const [elapsed, setElapsed] = useState(0)
-  const timerRef = useRef<number | null>(null)
+  // 每秒 tick 的「当前时刻」。已用时间由 started_at 算出来，与前端 mount 无关 ——
+  // 刷新、换窗口、换浏览器都是同一个数（用户口径）。
+  const [now, setNow] = useState(() => Date.now())
+  const [queueOpen, setQueueOpen] = useState(false)
+  const [queue, setQueue] = useState<DsaQueueSnapshot | null>(null)
+  const [queueError, setQueueError] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<number | null>(null)
+
+  const loadQueue = useCallback(async () => {
+    try {
+      const snapshot = await getDsaQueue()
+      setQueue(snapshot)
+      setQueueError(null)
+    } catch (exc) {
+      setQueueError(exc instanceof Error ? exc.message : String(exc))
+    }
+  }, [])
 
   const startAnalysis = useCallback(async () => {
     setStarting(true)
@@ -201,7 +388,7 @@ export default function ForkDsa2Page() {
   }, [nameHint, symbol])
 
   // 首次进入：只读历史结果，**绝不自动起任务**（用户口径：新窗口弹出后由人手动点按钮）。
-  // 没有历史就停在「开始分析」这一屏；running 直接进轮询。
+  // 没有历史就停在「开始分析」这一屏；queued/running 直接进轮询。
   useEffect(() => {
     let cancelled = false
     if (!symbol) return
@@ -226,9 +413,9 @@ export default function ForkDsa2Page() {
     }
   }, [symbol])
 
-  // 轮询：只在 running 时跑，done/failed 立刻停，避免空转。
+  // 轮询：排队中与运行中都轮询（排到队时要能看到状态变化），done/failed 立刻停。
   useEffect(() => {
-    if (!row || row.status !== 'running' || row.id === null) return
+    if (!row || (row.status !== 'running' && row.status !== 'queued') || row.id === null) return
     const id = row.id
     const poll = window.setInterval(() => {
       getDsaReport(id)
@@ -238,20 +425,38 @@ export default function ForkDsa2Page() {
     return () => window.clearInterval(poll)
   }, [row])
 
-  // running 计时（只做展示，不参与判断）
+  // 计时：只在跑着的时候每秒刷新一次 now（不累加秒数，避免刷新后归零）
   useEffect(() => {
-    if (row?.status !== 'running') {
-      if (timerRef.current !== null) window.clearInterval(timerRef.current)
-      timerRef.current = null
-      return
-    }
-    setElapsed(0)
-    timerRef.current = window.setInterval(() => setElapsed(v => v + 1), 1000)
-    return () => {
-      if (timerRef.current !== null) window.clearInterval(timerRef.current)
-      timerRef.current = null
-    }
+    if (row?.status !== 'running') return
+    setNow(Date.now())
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
   }, [row?.status, row?.id])
+
+  // 队列读取：打开弹层时按固定间隔刷新；关掉就停，不空转。
+  useEffect(() => {
+    if (!queueOpen) return
+    void loadQueue()
+    const id = window.setInterval(() => void loadQueue(), DSA_QUEUE_POLL_MS)
+    return () => window.clearInterval(id)
+  }, [queueOpen, loadQueue])
+
+  const handleDelete = useCallback(
+    async (id: number) => {
+      setDeletingId(id)
+      try {
+        await deleteDsaQueueItem(id)
+        await loadQueue()
+        // 删掉的正是本页这一份：回到「还没有分析结果」，别继续轮询一个已经不存在的任务
+        setRow(current => (current?.id === id ? null : current))
+      } catch (exc) {
+        setQueueError(exc instanceof Error ? exc.message : String(exc))
+      } finally {
+        setDeletingId(null)
+      }
+    },
+    [loadQueue],
+  )
 
   const report = row?.report ?? null
   const meta = report?.meta ?? {}
@@ -265,6 +470,11 @@ export default function ForkDsa2Page() {
   const sectors = details.sectors ?? []
   // 数据源清单：老报告没有这一项 → 空数组，面板整块不渲染（不显示一堆假的「未配置」）
   const sources = details.sources ?? []
+
+  // 已用时长：起点是库里的 started_at（真正开跑的时刻），不是前端 mount 的时刻。
+  const elapsedSeconds = dsaElapsedSeconds(row, now)
+  const startedAtText = formatDsaInstant(row?.started_at)
+  const queuedPosition = row?.queue_position ?? 0
 
   const adviceTone = useMemo(() => {
     const advice = summary.operation_advice || ''
@@ -309,14 +519,30 @@ export default function ForkDsa2Page() {
               size="sm"
               className="border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10"
               onClick={() => void startAnalysis()}
-              disabled={starting || row?.status === 'running'}
+              disabled={starting || row?.status === 'running' || row?.status === 'queued'}
             >
-              {starting || row?.status === 'running' ? (
+              {starting || row?.status === 'running' || row?.status === 'queued' ? (
                 <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
               ) : (
                 <RefreshCw className="mr-1 h-3.5 w-3.5" />
               )}
               {text.retry}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-slate-700 text-slate-300 hover:bg-slate-800/60"
+              onClick={() => setQueueOpen(true)}
+              data-dsa2-queue-trigger="1"
+              aria-label={text.queue}
+            >
+              <ListOrdered className="mr-1 h-3.5 w-3.5" />
+              {text.queue}
+              {queue && queue.pending > 0 ? (
+                <span className="ml-1 rounded-full bg-cyan-500/20 px-1.5 py-0.5 text-[10px] text-cyan-200">
+                  {queue.pending}
+                </span>
+              ) : null}
             </Button>
           </div>
         </header>
@@ -327,13 +553,27 @@ export default function ForkDsa2Page() {
           </div>
         ) : null}
 
-        {/* 运行中 / 失败 / 空 */}
+        {/* 运行中 / 排队中 / 失败 / 空 */}
         {row?.status === 'running' ? (
           <div className={`${CARD} flex flex-col items-center gap-3 p-10 text-center`} data-dsa2-running>
             <Loader2 className="h-6 w-6 animate-spin text-cyan-300" />
             <div className="text-base text-slate-100">{text.running}</div>
             <div className="max-w-lg text-xs leading-relaxed text-slate-400">{text.runningHint}</div>
-            <div className="text-xs text-slate-500">{text.elapsed(elapsed)}</div>
+            <div className="flex flex-col items-center gap-1 text-xs text-slate-500">
+              <div data-dsa2-started-at>{text.startedAt(startedAtText)}</div>
+              <div data-dsa2-elapsed>{text.elapsed(formatDuration(elapsedSeconds))}</div>
+            </div>
+          </div>
+        ) : null}
+
+        {row?.status === 'queued' ? (
+          <div className={`${CARD} flex flex-col items-center gap-3 p-10 text-center`} data-dsa2-queued>
+            <ListOrdered className="h-6 w-6 text-cyan-300" />
+            <div className="text-base text-slate-100">{text.queuedTitle}</div>
+            <div className="max-w-lg text-xs leading-relaxed text-slate-400">
+              {queuedPosition > 0 ? text.queuedHint(queuedPosition) : text.queuedNext}
+            </div>
+            <div className="text-xs text-slate-500">{text.queuedSince(formatDsaInstant(row.created_at))}</div>
           </div>
         ) : null}
 
@@ -487,7 +727,7 @@ export default function ForkDsa2Page() {
           </div>
         ) : null}
 
-        {row && row.status !== 'running' && row.status !== 'failed' && !report ? (
+        {row && row.status !== 'running' && row.status !== 'queued' && row.status !== 'failed' && !report ? (
           <div className={`${CARD} flex flex-col items-center gap-3 p-10 text-center`}>
             <div className="text-sm text-slate-300">{text.empty}</div>
             <Button size="sm" onClick={() => void startAnalysis()}>
@@ -496,6 +736,16 @@ export default function ForkDsa2Page() {
           </div>
         ) : null}
       </div>
+
+      {queueOpen ? (
+        <QueuePanel
+          snapshot={queue}
+          error={queueError}
+          deletingId={deletingId}
+          onClose={() => setQueueOpen(false)}
+          onDelete={id => void handleDelete(id)}
+        />
+      ) : null}
     </div>
   )
 }

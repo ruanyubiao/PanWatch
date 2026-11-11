@@ -16,12 +16,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 from typing import Any, Optional
 
-from . import data, prompt as prompt_mod, schema, sources, store
+from . import data, prompt as prompt_mod, queue, schema, sources, store
 
 logger = logging.getLogger(__name__)
+
+
+def _avail(block: dict[str, Any]) -> Any:
+    """把数据的 available/empty 映射成面板三态：True / "empty" / False。"""
+    if block.get("available"):
+        return True
+    return "empty" if block.get("empty") else False
 
 
 def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
@@ -71,6 +77,10 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
     if not popularity.get("available"):
         limitations.append(f"人气排名未纳入（{popularity.get('reason') or '无排名'}）")
 
+    northbound = sources.load_northbound(symbol)
+    if not northbound.get("available"):
+        limitations.append(f"北向资金未纳入（{northbound.get('reason') or '无北向活跃数据'}）")
+
     phase = data.market_phase()
     if phase.get("calendar") == "approx":
         limitations.append("交易日历不可用（行情库与指数快照都没取到），市场阶段按工作日近似")
@@ -97,21 +107,23 @@ def _collect(symbol: str, name: Optional[str]) -> dict[str, Any]:
         "research": research,
         "billboard": billboard,
         "popularity": popularity,
+        "northbound": northbound,
         "phase": phase,
         "limitations": limitations,
-        # 页面「数据源」面板要的行：每个模块一条，状态 ok / unavailable / unconfigured
+        # 页面「数据源」面板要的行：每个模块一条，状态 ok / empty / unavailable / unconfigured
         "sources": sources.module_status(
             {
                 "market": True,
-                "boards": bool(boards.get("available")),
-                "capital_flow": bool(flow.get("available")),
-                "news": bool(news.get("available")),
-                "announcements": bool(announcements.get("available")),
-                "margin": bool(margin.get("available")),
-                "flash": bool(flash.get("available")),
-                "research": bool(research.get("available")),
-                "billboard": bool(billboard.get("available")),
-                "popularity": bool(popularity.get("available")),
+                "boards": _avail(boards),
+                "capital_flow": _avail(flow),
+                "news": _avail(news),
+                "announcements": _avail(announcements),
+                "margin": _avail(margin),
+                "flash": _avail(flash),
+                "research": _avail(research),
+                "billboard": _avail(billboard),
+                "popularity": _avail(popularity),
+                "northbound": _avail(northbound),
             }
         ),
     }
@@ -136,6 +148,7 @@ def _run_model(
         research=collected.get("research"),
         billboard=collected.get("billboard"),
         popularity=collected.get("popularity"),
+        northbound=collected.get("northbound"),
     )
     client = get_configured_failover_client(db, model_id)
 
@@ -163,6 +176,11 @@ def _run_model(
 
 
 def _worker(symbol: str, name: Optional[str], model_id: Optional[int], report_id: int) -> None:
+    # 先原子认领 queued → running（顺带写 started_at）。认领失败说明排队期间被删掉了，
+    # 直接放弃：用户点过「删除」的任务不能再偷偷烧一次 token。
+    if not store.mark_running(report_id):
+        logger.info("深度分析2 任务 %s 已取消，跳过", report_id)
+        return
     db = None
     try:
         from src.platform.persistence.database import SessionLocal
@@ -200,6 +218,7 @@ def _worker(symbol: str, name: Optional[str], model_id: Optional[int], report_id
         report["details"]["research"] = collected.get("research") or {"available": False}
         report["details"]["billboard"] = collected.get("billboard") or {"available": False}
         report["details"]["popularity"] = collected.get("popularity") or {"available": False}
+        report["details"]["northbound"] = collected.get("northbound") or {"available": False}
         # 数据源面板（页面渲染用）。历史报告没有这一项，前端要能容忍缺失。
         report["details"]["sources"] = collected.get("sources") or sources.module_status({})
         report["details"]["data_sources"] = [
@@ -213,6 +232,7 @@ def _worker(symbol: str, name: Optional[str], model_id: Optional[int], report_id
             "东财研报中心",
             "东财龙虎榜",
             "东财人气榜",
+            "东财沪深港通十大成交活跃股",
         ]
         store.finish(report_id, report, model_label)
     except Exception as exc:  # noqa: BLE001 - 任何失败都要落成 failed，不能留 running
@@ -224,16 +244,25 @@ def _worker(symbol: str, name: Optional[str], model_id: Optional[int], report_id
 
 
 def start(symbol: str, name: Optional[str] = None, model_id: Optional[int] = None) -> dict[str, Any]:
-    """起一次分析：先落 running 行，再开线程。同一只票已有 running 就复用它。"""
-    existing = store.running(symbol)
-    if existing:
-        return existing
-    report_id = store.create(symbol, name)
-    thread = threading.Thread(
-        target=_worker, args=(symbol, name, model_id, report_id), name=f"dsa2-{symbol}", daemon=True
-    )
-    thread.start()
-    return store.get(report_id) or {"id": report_id, "symbol": symbol, "status": "running"}
+    """入队一次分析（单消费者 FIFO，与 PanWatch 分析队列无关）。
+
+    同一只票已在队列里（排队中或运行中）就复用它 —— 连点两次不重复烧 token。
+    返回值多一个 ``queue_position``：0 = 立刻就是下一个/正在跑，N = 前面还有 N 个。
+    """
+    return queue.enqueue(symbol, name, model_id)
+
+
+def queue_list() -> list[dict[str, Any]]:
+    """队列快照：运行中的第一，其余按入队顺序。每项带 queue_position（等待位次）。"""
+    rows = store.queue_rows()
+    for row in rows:
+        row["queue_position"] = store.queue_position(row["id"])
+    return rows
+
+
+def cancel(report_id: int) -> Optional[str]:
+    """删除队列项（排队中→删行，运行中→标 cancelled）。不在队列里返回 None。"""
+    return store.cancel(report_id)
 
 
 def run_sync(symbol: str, name: Optional[str] = None, model_id: Optional[int] = None) -> dict[str, Any]:

@@ -7,7 +7,7 @@
  */
 import { fetchAPI } from '@panwatch/api'
 
-export type DsaStatus = 'none' | 'running' | 'done' | 'failed'
+export type DsaStatus = 'none' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 
 export interface DsaMeta {
   stock_code?: string
@@ -53,7 +53,7 @@ export interface DsaStrategy {
 }
 
 /** 数据源面板的一行：后端 ``sources.module_status`` 的原样结构。 */
-export type DsaSourceStatus = 'ok' | 'unavailable' | 'unconfigured'
+export type DsaSourceStatus = 'ok' | 'empty' | 'unavailable' | 'unconfigured'
 
 export interface DsaSource {
   key: string
@@ -62,6 +62,8 @@ export interface DsaSource {
   requires_key?: boolean
   status: DsaSourceStatus
   note?: string | null
+  /** status==='empty' 时的文案（例如「未上榜」），后端 MODULE_CATALOG 给。 */
+  empty_label?: string | null
 }
 
 export interface DsaDetails {
@@ -92,11 +94,23 @@ export interface DsaReportRow {
   model_used?: string | null
   error?: string | null
   created_at?: string
+  /** 真正开跑的时刻（排队期间为空）——「已用时间」以它为起点，刷新不归零。 */
+  started_at?: string | null
+  /** 队列位次：0 = 正在跑或下一个就是它，N = 前面还有 N 个。 */
+  queue_position?: number
   updated_at?: string
   report?: DsaReport | null
 }
 
+/** 队列快照：``running`` 只可能有一个（单消费者），其余是等待中的。 */
+export interface DsaQueueSnapshot {
+  items: DsaReportRow[]
+  running: DsaReportRow | null
+  pending: number
+}
+
 export const DSA_POLL_MS = 2500
+export const DSA_QUEUE_POLL_MS = 3000
 
 export function analyzeDsa(symbol: string, name?: string | null, modelId?: number | null) {
   return fetchAPI<DsaReportRow>('/stocks/dsa/analyze', {
@@ -117,6 +131,44 @@ export function getDsaHistory(symbol: string, limit = 10) {
   return fetchAPI<{ symbol: string; items: DsaReportRow[] }>(
     `/stocks/dsa/history?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
   )
+}
+
+/** 队列快照（页面「队列」按钮读这个）。 */
+export function getDsaQueue() {
+  return fetchAPI<DsaQueueSnapshot>('/stocks/dsa/queue')
+}
+
+/** 删除队列项：排队中直接删；运行中标 cancelled（结果丢弃，让位给下一个）。 */
+export function deleteDsaQueueItem(id: number) {
+  return fetchAPI<{ id: number; outcome: 'deleted' | 'cancelled' }>(`/stocks/dsa/queue/${id}`, {
+    method: 'DELETE',
+  })
+}
+
+/**
+ * 「已用秒数」——以 ``started_at``（真正开跑的时刻）为起点。
+ *
+ * 为什么不是从前端 mount 开始算：用户刷新一次就从 0 开始，看着像任务重启了。
+ * 起点存在库里，任何一次刷新、换窗口、换浏览器都算出同一个数。
+ */
+export function dsaElapsedSeconds(
+  row: Pick<DsaReportRow, 'started_at' | 'created_at'> | null | undefined,
+  nowMs: number = Date.now(),
+): number {
+  const start = row?.started_at || row?.created_at
+  if (!start) return 0
+  const started = new Date(start).getTime()
+  if (Number.isNaN(started)) return 0
+  return Math.max(0, Math.floor((nowMs - started) / 1000))
+}
+
+/** 2026/11/11 11:46:55 —— 带秒的本地时间（「任务开始时间」用）。 */
+export function formatDsaInstant(value?: string | null): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
 }
 
 /**
