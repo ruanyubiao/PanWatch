@@ -623,6 +623,46 @@ def test_collect_states_margin_not_a_target_as_fact(monkeypatch):
     assert panel["research"]["status"] == "empty"
 
 
+def test_collect_states_billboard_empty_as_verified_fact(monkeypatch):
+    """龙虎榜「近一年没上榜」是已核实的事实：缺口行与面板行都要带最近一次上榜日期"""
+    monkeypatch.setattr(dsa_data, "load_market_snapshot", lambda code, bars=130: _snapshot())
+    monkeypatch.setattr(dsa_data, "load_boards", lambda code: {"available": True, "tags": ["白酒"]})
+    monkeypatch.setattr(dsa_data, "load_capital_flow", lambda code: {"available": True, "latest": {}})
+    monkeypatch.setattr(dsa_data, "load_news", lambda keyword: {"available": True, "items": []})
+    monkeypatch.setattr(
+        dsa_data,
+        "market_phase",
+        lambda: {"phase": "postmarket", "label": "盘后", "market_local_time": "x", "calendar": "db"},
+    )
+    monkeypatch.setattr(sources, "load_announcements", lambda code, limit=8: {"available": True, "items": []})
+    monkeypatch.setattr(sources, "load_margin", lambda code: {"available": True, "balance": 1.0})
+    monkeypatch.setattr(sources, "load_flash_news", lambda keyword, limit=40: {"available": True, "items": []})
+    monkeypatch.setattr(sources, "load_research", lambda code, limit=5: {"available": True, "hits": 1})
+    monkeypatch.setattr(
+        sources,
+        "load_billboard",
+        lambda code, limit=5: {
+            "available": False,
+            "empty": True,
+            "verified": True,
+            "last_date": "2013-01-28",
+            "reason": "近一年未上榜，最近一次 2013-01-28，13 年前",
+        },
+    )
+    monkeypatch.setattr(sources, "load_popularity", lambda code: {"available": True, "rank": 3})
+    monkeypatch.setattr(sources, "load_northbound", lambda code, limit=10, lookback_days=60: {"available": True})
+
+    got = service._collect("600519", "贵州茅台")
+    line = next(x for x in got["limitations"] if "龙虎榜" in x)
+    # 不能写成「未纳入」（那是缺数据），要写成「无记录」并给出日期
+    assert line.startswith("龙虎榜近一年无记录：")
+    assert "2013-01-28" in line
+    panel = {row["key"]: row for row in got["sources"]}
+    assert panel["billboard"]["status"] == "empty"
+    assert panel["billboard"]["empty_label"] == "近一年未上榜"
+    assert "2013-01-28" in panel["billboard"]["note"]
+
+
 def test_flash_news_tolerates_list_stock_list(monkeypatch):
     """线上财联社的 stock_list 是列表（不是逗号串）—— 曾经在这里抛过 AttributeError"""
     payload = {
@@ -1000,7 +1040,40 @@ def test_billboard_no_record_is_not_failure(monkeypatch):
     monkeypatch.setattr(sources, "_get_json", lambda *a, **kw: {"result": {"data": []}})
     got = sources.load_billboard("002256")
     assert got["available"] is False
-    assert "没有上过龙虎榜" in got["reason"]
+    # 空结果必须带「已回查」标记，下一页能据此写「真实空结果」而不是「取数失败」
+    assert got["empty"] is True and got["verified"] is True
+    assert "无上榜记录" in got["reason"]
+
+
+def test_billboard_empty_reports_last_ever_date(monkeypatch):
+    """近一年没上榜时要回查历史，把「最近一次上榜」写出来，用户可核对"""
+    calls = []
+
+    def fake_get(url, params, **kwargs):
+        calls.append(params.get("filter") or "")
+        if len(calls) == 1:
+            return {"result": {"data": []}}  # 近一年：空
+        return {"result": {"data": [{"TRADE_DATE": "2013-01-28 00:00:00"}]}}
+
+    monkeypatch.setattr(sources, "_get_json", fake_get)
+    got = sources.load_billboard("600519")
+    assert got["empty"] is True and got["verified"] is True
+    assert got["last_date"] == "2013-01-28"
+    assert "最近一次 2013-01-28" in got["reason"]
+    assert "2013-01-28" in calls[1] or "SECURITY_CODE" in calls[1]
+
+
+def test_billboard_interface_failure_is_not_an_empty_result(monkeypatch):
+    """接口挂了必须报成不可用，不能被写成「没上榜」"""
+
+    def boom(*a, **kw):
+        raise RuntimeError("502")
+
+    monkeypatch.setattr(sources, "_get_json", boom)
+    got = sources.load_billboard("600519")
+    assert got["available"] is False
+    assert not got.get("empty")
+    assert "不可用" in got["reason"]
 
 
 def test_popularity_returns_rank_or_explicitly_absent(monkeypatch):
@@ -1042,13 +1115,15 @@ def test_prompt_carries_new_evidence_sections():
 
 def test_billboard_query_limits_to_recent_year(monkeypatch):
     """不加日期会翻出 2007 年的上榜记录，模型会当成近期异动（实测 600519 踩过）"""
-    captured = {}
+    first = {}
 
     def fake_get(url, params, **kwargs):
-        captured.update(params)
+        if not first:
+            first.update(params)
         return {"result": {"data": []}}
 
     monkeypatch.setattr(sources, "_get_json", fake_get)
     sources.load_billboard("600519")
-    assert "TRADE_DATE>=" in captured["filter"]
-    assert "SECURITY_CODE=" in captured["filter"]
+    # 主查询（判定近一年有无上榜）必须带日期窗；之后的回查历史是另一码事
+    assert "TRADE_DATE>=" in first["filter"]
+    assert "SECURITY_CODE=" in first["filter"]
