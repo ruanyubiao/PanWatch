@@ -56,7 +56,12 @@ def _loop() -> None:
     from . import service
 
     while not _stop.is_set():
-        job = store.next_queued()
+        try:
+            job = store.next_queued()
+        except Exception:  # noqa: BLE001 - SQLite 偶发 locked 不该打死消费线程
+            logger.exception("深度分析2 取队列失败，稍后重试")
+            _stop.wait(IDLE_POLL_SECONDS * 2)
+            continue
         if not job:
             _stop.wait(IDLE_POLL_SECONDS)
             continue
