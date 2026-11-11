@@ -49,7 +49,7 @@ export const DSA2_TEXTS_ZH = {
   title: '深度分析2',
   loadFailed: (message: string) => `读取报告失败：${message}`,
   running: '正在生成决策报告…',
-  runningHint: '取数 + 大模型分析，通常 1~3 分钟。可以关掉这个窗口，稍后从原页面再打开会读到同一份结果。',
+  runningHint: '通常 1~3 分钟；可关掉窗口，稍后再看同一份结果。',
   elapsed: (text: string) => `已用 ${text}`,
   startedAt: (at: string) => `任务开始时间 ${at}`,
   queuedTitle: '排队中',
@@ -300,7 +300,7 @@ function QueuePanel({
                   data-dsa2-queue-item={item.symbol}
                   data-dsa2-queue-status={item.status}
                 >
-                  <div className="flex min-w-0 items-center gap-2">
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
                     <span
                       className={`shrink-0 rounded-md px-1.5 py-0.5 text-[10px] ${
                         running
@@ -310,15 +310,16 @@ function QueuePanel({
                     >
                       {running ? text.queueRunning : text.queueWaiting}
                     </span>
-                    <span className="min-w-0">
-                      <span className="block truncate text-xs text-slate-200">
-                        {item.name || item.symbol}
-                      </span>
-                      <span className="block font-mono text-[10px] text-slate-500">
+                    {/* 名称 / 代码 / 时间压在**一行**：队列扫一眼就够，不该占两行 */}
+                    <span className="min-w-0 truncate whitespace-nowrap text-xs text-slate-200">
+                      <span className="truncate">{item.name || item.symbol}</span>
+                      <span className="ml-2 font-mono text-[11px] text-slate-500">
                         {item.symbol}
+                      </span>
+                      <span className="ml-2 text-[11px] text-slate-500">
                         {running
-                          ? ` · ${text.startedAt(formatDsaInstant(item.started_at))}`
-                          : ` · ${text.queuePosition(position)}`}
+                          ? formatDsaInstant(item.started_at)
+                          : text.queuePosition(position)}
                       </span>
                     </span>
                   </div>
