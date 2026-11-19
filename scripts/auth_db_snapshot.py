@@ -54,9 +54,10 @@ def main() -> int:
     snap = os.path.join(args.data_dir, PREFIX + time.strftime("%Y%m%d-%H%M%S"))
     if args.dry_run:
         print(f"[dry-run] would write {snap} ({len(rows)} rows)")
+    elif os.path.exists(snap):
+        # 同一秒内重复执行会撞名；内容等价（都取自当前活库），直接复用
+        print(f"exists, reuse {snap}")
     else:
-        if os.path.exists(snap):
-            sys.exit(f"refuse: {snap} 已存在")
         dst = sqlite3.connect(snap)
         dst.execute("create table app_settings "
                     "(key text primary key, value text, description text)")
