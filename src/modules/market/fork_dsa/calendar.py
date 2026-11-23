@@ -3,9 +3,9 @@
 为什么不再用「工作日 = 交易日」
 -------------------------------
 五一/国庆/春节这类长假会让「工作日近似」把休市日说成「盘中」，摘要里就会凭空写出
-「今日盘中主力流出」这种背景。行情库每天收盘后落一根日线（``stock_daily_recent``
-保留最近 90 个交易日），**某一天在库里出现过就等于那天真的开过市** —— 这是最便宜
-也最准的日历，不用拉第三方日历接口，也不用逐年维护节假日表。
+「今日盘中主力流出」这种背景。`trade_calendar` 每个真实交易日一行（`is_trading=1`，
+由日线数据反推，1990 年至今全量），**某一天在表里出现过就等于那天真的开过市** ——
+这是最便宜也最准的日历，不用拉第三方日历接口，也不用逐年维护节假日表。
 
 库里还没有的那一天（今天，收盘前采集任务还没跑），用东财上证指数快照的时间戳
 （``push2`` 的 ``f86``）兜底：
@@ -46,7 +46,7 @@ def _connect() -> Any:
 
 def _db_last_trade_date(conn: Any) -> Optional[_dt.date]:
     with conn.cursor() as cur:
-        cur.execute("SELECT MAX(trade_date) AS d FROM stock_daily_recent")
+        cur.execute("SELECT MAX(trade_date) AS d FROM trade_calendar WHERE is_trading = 1")
         row = cur.fetchone()
     value = (row or {}).get("d")
     if isinstance(value, _dt.datetime):
@@ -56,7 +56,10 @@ def _db_last_trade_date(conn: Any) -> Optional[_dt.date]:
 
 def _db_has(conn: Any, day: _dt.date) -> bool:
     with conn.cursor() as cur:
-        cur.execute("SELECT 1 AS x FROM stock_daily_recent WHERE trade_date = %s LIMIT 1", (day,))
+        cur.execute(
+            "SELECT 1 AS x FROM trade_calendar WHERE trade_date = %s AND is_trading = 1 LIMIT 1",
+            (day,),
+        )
         return cur.fetchone() is not None
 
 
