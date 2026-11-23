@@ -88,6 +88,11 @@ WITH base AS (
            CASE WHEN {_IS_ST_CASE} THEN 1 ELSE 0 END AS is_st
     FROM stock_info i
     WHERE i.status = 'listed'
+      -- 北交所不上展示端（2026-11-23）：数据层已收 bj 行情（研究侧做全市场横截面要用），
+      -- 但用户没有北交所交易权限，所以列表、计数、条件选股一律排除 bj。
+      -- 放在 base 里而不是各端点各写一遍：uni 是「列表」和「板块计数」的唯一来源，
+      -- 漏一处就会出现「全部 5,582、翻页只有 5,225」这种自相矛盾的响应。
+      AND LOWER(LEFT(i.symbol, 2)) <> 'bj'
 ),
 latest AS (SELECT MAX(trade_date) AS asof FROM stock_daily),
 status_today AS (
