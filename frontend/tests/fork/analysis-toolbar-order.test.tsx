@@ -57,26 +57,25 @@ describe('fork: 分析页工具条按钮顺序', () => {
     const source = await readSource()
     const start = source.indexOf('const renderMarketSource')
     const end = source.indexOf('/** 操作列', start)
-    const block = source.slice(start, end)
+    const cell = source.slice(start, end)
     expect(start).toBeGreaterThan(-1)
     // 数值与链接口径
-    expect(block).toContain('predictStockPath(row.code)')
-    expect(block).toContain('predictScores?.scores?.[row.code]')
-    expect(block).toContain('target="_blank"')
+    expect(cell).toContain('predictStockPath(row.code)')
+    expect(cell).toContain('predictScores?.scores?.[row.code]')
+    expect(cell).toContain('target="_blank"')
     // 这一格只说预测：原来那行来源文字不并排、也不塞进这一格的 title
-    expect(block).toContain('predictHint(predict.rank_no')
-    expect(block).not.toContain('legacyLine')
+    expect(cell).toContain('predictHint(predict.rank_no')
+    expect(cell).not.toContain('legacyLine')
     // 没有预测时给「—」，不是 0
-    expect(block).toContain('predictNone')
+    expect(cell).toContain('predictNone')
 
     // 来源那行改挂到「指标」列徽章的悬停提示：技术面那行→技术面徽章，AI 那行→AI 徽章
     const hintStart = source.indexOf('const rowSourceHint')
     const indicatorStart = source.indexOf('const renderMarketIndicator')
     expect(hintStart).toBeGreaterThan(-1)
     expect(source.slice(hintStart, indicatorStart)).toContain("kind: 'ai'")
-    const indicatorBlock = source.slice(indicatorStart, source.indexOf('const renderMarketTradeStatus'))
-    expect(indicatorBlock).toContain("technicalHint={hint.kind === 'tech' ? hint.text : null}")
-    expect(indicatorBlock).toContain("aiHint={hint.kind === 'ai' ? hint.text : null}")
+    const indicator = source.slice(indicatorStart, source.indexOf('const renderMarketTradeStatus'))
+    expect(indicator).toContain("technicalHint={hint.kind === 'tech' ? hint.text : null}")
+    expect(indicator).toContain("aiHint={hint.kind === 'ai' ? hint.text : null}")
   })
-
 })

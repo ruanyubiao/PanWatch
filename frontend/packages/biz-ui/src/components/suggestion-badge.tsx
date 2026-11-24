@@ -381,7 +381,7 @@ export function SuggestionBadge({
               e.stopPropagation()
               setKlineDialogOpen(true)
             }}
-            title={titleWithHint(tr('technicalTitle'))}
+            title={tr('technicalTitle')}
           />
         </div>
 
@@ -432,7 +432,7 @@ export function SuggestionBadge({
                   tone={tech ? technicalToneFromSuggestionAction(tech.action, tech.action_label) : 'neutral'}
                   size="md"
                   onClick={(e) => { e.stopPropagation(); setKlineDialogOpen(true) }}
-                  title={titleWithHint(tr('technicalTitle'))}
+                  title={tr('technicalTitle')}
                 />
               )
             })()

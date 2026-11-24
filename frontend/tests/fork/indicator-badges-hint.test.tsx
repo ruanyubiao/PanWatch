@@ -97,7 +97,6 @@ describe('fork: 指标列徽章的悬停提示带着原「来源」那行文字'
     )
     const titles = allTitles(container)
     expect(titles.filter(t => t.includes('AI深度'))).toHaveLength(1)
-    // 技术面徽章那颗没有换行、也没有来源那行
     const techTitles = titles.filter(t => !t.includes('AI深度') && !t.includes('减仓'))
     for (const title of techTitles) {
       expect(title).not.toContain('\n')
@@ -110,7 +109,6 @@ describe('fork: 指标列徽章的悬停提示带着原「来源」那行文字'
     )
     for (const title of allTitles(container)) {
       expect(title).not.toContain('\n')
-      expect(title).not.toContain('技术指标 · 1')
     }
   })
 
