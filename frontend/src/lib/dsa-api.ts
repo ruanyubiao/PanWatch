@@ -15,6 +15,9 @@ export interface DsaMeta {
   current_price?: number | null
   change_pct?: number | null
   asof?: string | null
+  bar_asof?: string | null
+  intraday?: boolean
+  quote_time?: string | null
   created_at?: string
   market_phase?: string | null
   market_phase_label?: string | null

@@ -188,6 +188,45 @@ def build_user_prompt(
 ) -> str:
     """把取到的数据拼成事实表。缺什么，就在「数据缺口」里点名。"""
     name = snapshot.get("name") or snapshot.get("code")
+    intraday = bool(snapshot.get("intraday"))
+    if intraday:
+        price_section: list[str] = [
+            "## 实时行情（东财快照，**未收盘**）",
+            f"快照时间 {snapshot.get('quote_time')}；成交量/成交额只统计到该时刻，**不是全天数据**。",
+            "| 指标 | 数值 |",
+            "|------|------|",
+            f"| 现价 | {_num(snapshot.get('price'))} |",
+            f"| 今日涨跌幅 | {_num(snapshot.get('change_pct'))}% |",
+            f"| 今日开盘 | {_num(snapshot.get('open'))} |",
+            f"| 今日最高 | {_num(snapshot.get('high'))} |",
+            f"| 今日最低 | {_num(snapshot.get('low'))} |",
+            f"| 昨收 | {_num(snapshot.get('pre_close'))} |",
+            f"| 今日成交额（截至快照） | {_money(snapshot.get('amount'))} |",
+            f"| 今日换手率（截至快照） | {_num(snapshot.get('turnover_rate'))}% |",
+            "",
+            "## 技术面数据（来源：本机行情库，**截至上一交易日收盘**，单位：元）",
+            f"技术指标基准日 {snapshot.get('asof')}，该日收盘 {_num(snapshot.get('bar_close'))}。"
+            "均线与现价的比较要用上面的**现价**，不要用该日收盘价。",
+            "| 指标 | 数值 |",
+            "|------|------|",
+            f"| 量比（上一交易日全天口径） | {_num(snapshot.get('volume_ratio'))} |",
+        ]
+    else:
+        price_section = [
+            "## 行情与技术面（来源：本机行情库，已收盘，单位：元）",
+            f"行情日期 {snapshot.get('asof')}。",
+            "| 指标 | 数值 |",
+            "|------|------|",
+            f"| 收盘价 | {_num(snapshot.get('price'))} |",
+            f"| 开盘价 | {_num(snapshot.get('open'))} |",
+            f"| 最高价 | {_num(snapshot.get('high'))} |",
+            f"| 最低价 | {_num(snapshot.get('low'))} |",
+            f"| 昨收 | {_num(snapshot.get('pre_close'))} |",
+            f"| 涨跌幅 | {_num(snapshot.get('change_pct'))}% |",
+            f"| 成交额 | {_money(snapshot.get('amount'))} |",
+            f"| 换手率 | {_num(snapshot.get('turnover_rate'))}% |",
+            f"| 量比（日线口径近似） | {_num(snapshot.get('volume_ratio'))} |",
+        ]
     lines: list[str] = [
         "# 决策仪表盘分析请求",
         "",
@@ -196,21 +235,10 @@ def build_user_prompt(
         f"|------|------|",
         f"| 股票代码 | {snapshot.get('code')} |",
         f"| 股票名称 | {name} |",
-        f"| 行情日期（库里最新一根） | {snapshot.get('asof')} |",
+        f"| 技术指标基准日（已收盘日线） | {snapshot.get('asof')} |",
         f"| 市场阶段 | {phase.get('label')}（{phase.get('phase')}，{phase.get('market_local_time')}） |",
         "",
-        "## 技术面数据（来源：本机行情库，单位：元）",
-        "| 指标 | 数值 |",
-        "|------|------|",
-        f"| 收盘价 | {_num(snapshot.get('price'))} |",
-        f"| 开盘价 | {_num(snapshot.get('open'))} |",
-        f"| 最高价 | {_num(snapshot.get('high'))} |",
-        f"| 最低价 | {_num(snapshot.get('low'))} |",
-        f"| 昨收 | {_num(snapshot.get('pre_close'))} |",
-        f"| 涨跌幅 | {_num(snapshot.get('change_pct'))}% |",
-        f"| 成交额 | {_money(snapshot.get('amount'))} |",
-        f"| 换手率 | {_num(snapshot.get('turnover_rate'))}% |",
-        f"| 量比（日线口径近似） | {_num(snapshot.get('volume_ratio'))} |",
+        *price_section,
         f"| PE(TTM) | {_num(snapshot.get('pe_ttm'))} |",
         f"| PB | {_num(snapshot.get('pb'))} |",
         f"| 总市值 | {_money(snapshot.get('total_market_cap'))} |",
@@ -437,6 +465,16 @@ def build_user_prompt(
         "",
         "## 要求",
         f"- 现价以 {_num(snapshot.get('price'))} 元为基准，所有点位都必须是具体价格（元）。",
+    ]
+    if intraday:
+        lines += [
+            f"- 现价、今日涨跌幅、今日开高低、今日成交额与换手率都来自 **{snapshot.get('quote_time')} 的实时快照**，"
+            "当日尚未收盘：成交量/成交额只到该时刻，**不得**据此下「放量/缩量/天量」这类全天量能结论。",
+            f"- 均线、MACD/RSI/KDJ/BOLL、技术评分、量比都基于 **{snapshot.get('asof')} 收盘**，"
+            "不是今天的盘中值；把现价与均线比较时用现价，不要把上一交易日收盘价说成今天的价格。",
+            f"- 不得把今日涨跌幅写成上一交易日（{snapshot.get('asof')}）的涨跌幅，也不得把两者的数字混用。",
+        ]
+    lines += [
         "- 直接输出 JSON，不要代码块围栏。",
     ]
     return "\n".join(lines)

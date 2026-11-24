@@ -237,7 +237,11 @@ def _worker(symbol: str, name: Optional[str], model_id: Optional[int], report_id
             "stock_name": name or snapshot.get("name"),
             "current_price": snapshot.get("price"),
             "change_pct": snapshot.get("change_pct"),
-            "asof": snapshot.get("asof"),
+            # 头部日期取「数据实际是哪一天的」：盘中给快照日期（今天），收盘后给日线日期
+            "asof": snapshot.get("quote_date") or snapshot.get("asof"),
+            "bar_asof": snapshot.get("asof"),
+            "intraday": bool(snapshot.get("intraday")),
+            "quote_time": snapshot.get("quote_time"),
             "created_at": store._now(),
             "market_phase": collected["phase"].get("phase"),
             "market_phase_label": collected["phase"].get("label"),

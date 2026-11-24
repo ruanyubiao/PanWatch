@@ -125,6 +125,36 @@ describe('深度分析2 页面', () => {
     expect(screen.getByText(/新闻面未纳入/)).toBeTruthy()
   })
 
+  it('盘中报告：头部标出实时快照与「技术面基于上一交易日」，不把昨天的涨跌当今天', async () => {
+    latest.mockResolvedValue({
+      id: 8,
+      symbol: '000975',
+      status: 'done',
+      model_used: 'test/model',
+      created_at: '2026-11-24T10:32:24',
+      report: {
+        ...report,
+        meta: {
+          ...report.meta,
+          stock_code: '000975',
+          stock_name: '山金国际',
+          current_price: 21.61,
+          change_pct: -2,
+          asof: '2026-11-24',
+          bar_asof: '2026-11-23',
+          intraday: true,
+          quote_time: '2026-11-24 10:44:33',
+        },
+      },
+    })
+    renderPage('000975', '%E5%B1%B1%E9%87%91%E5%9B%BD%E9%99%85')
+    expect(await screen.findByText('山金国际')).toBeTruthy()
+    expect(screen.getByText('21.61')).toBeTruthy()
+    expect(screen.getByText('-2.00%')).toBeTruthy()
+    expect(screen.getByText('实时快照 10:44 · 技术面基于 2026-11-23 收盘')).toBeTruthy()
+    expect(screen.getByText('技术指标基准日 2026-11-23（已收盘日线）')).toBeTruthy()
+  })
+
   it('没有历史报告时不自作主张：停在「开始分析」，点按钮才起任务', async () => {
     latest.mockResolvedValue({ id: null, symbol: '002256', status: 'none', report: null })
     analyze.mockResolvedValue({ id: 8, symbol: '002256', status: 'running', report: null })

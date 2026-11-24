@@ -89,6 +89,10 @@ export const DSA2_TEXTS_ZH = {
   confidence: (level: string) => `置信度 ${level}`,
   riskTitle: '风险提示',
   asof: (date: string) => `行情日期 ${date}`,
+  asofBar: (date: string) => `技术指标基准日 ${date}（已收盘日线）`,
+  intradayBadge: (quoteTime: string, barDate: string) =>
+    `实时快照 ${quoteTime} · 技术面基于 ${barDate} 收盘`,
+  intradayHint: '当前为盘中：价格与当日量额是实时快照，均线与技术指标基于上一交易日收盘。',
   dataSources: (sources: string) => `数据源：${sources}`,
   sourcesTitle: '数据源',
   sourcesSubtitle: '本页不含任何需要 apikey 的数据源',
@@ -569,6 +573,15 @@ export default function ForkDsa2Page() {
                 </span>
               ) : null}
               <span>{formatTime(row?.created_at || meta.created_at)}</span>
+              {meta.intraday && meta.bar_asof ? (
+                <span
+                  className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-amber-300"
+                  title={text.intradayHint}
+                  data-dsa2-intraday="1"
+                >
+                  {text.intradayBadge((meta.quote_time || '').slice(11, 16) || meta.asof || '', meta.bar_asof)}
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -766,6 +779,9 @@ export default function ForkDsa2Page() {
                   )}
                 </div>
                 {meta.asof ? <div className="mt-1">{text.asof(meta.asof)}</div> : null}
+                {meta.intraday && meta.bar_asof ? (
+                  <div className="mt-1">{text.asofBar(meta.bar_asof)}</div>
+                ) : null}
                 {details.data_sources?.length ? (
                   <div className="mt-1">{text.dataSources(details.data_sources.join('、'))}</div>
                 ) : null}

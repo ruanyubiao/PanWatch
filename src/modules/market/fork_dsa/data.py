@@ -145,9 +145,32 @@ def load_market_snapshot(code: str, bars: int = 130) -> dict[str, Any]:
     lows = [x for x in (_f(r.get("low")) for r in rows) if x is not None]
     volumes = [x for x in (_f(r.get("volume")) for r in rows) if x is not None]
 
-    price = closes[-1] if closes else None
+    bar_price = closes[-1] if closes else None
+    asof = str(latest["trade_date"])
     high_20 = max(highs[-20:]) if len(highs) >= 20 else (max(highs) if highs else None)
     low_20 = min(lows[-20:]) if len(lows) >= 20 else (min(lows) if lows else None)
+
+    # 盘中：库里最新一根是上一交易日，价格/当日量额要靠实时快照补上，
+    # 否则页面会把昨天的收盘价和昨天的涨跌幅当成今天的行情。
+    quote = load_realtime_quote(code)
+    intraday = bool(
+        quote.get("available")
+        and quote.get("price") is not None
+        and (quote.get("quote_date") or "") > asof
+    )
+    price = quote["price"] if intraday else bar_price
+    day_fields = {
+        "price": price,
+        "open": quote.get("open") if intraday else _f(latest.get("open")),
+        "high": quote.get("high") if intraday else _f(latest.get("high")),
+        "low": quote.get("low") if intraday else _f(latest.get("low")),
+        "pre_close": quote.get("pre_close") if intraday else _f(latest.get("pre_close")),
+        "change_pct": quote.get("change_pct") if intraday else _f(latest.get("change_pct")),
+        "volume": quote.get("volume") if intraday else _f(latest.get("volume")),
+        "amount": quote.get("amount") if intraday else _f(latest.get("amount")),
+        "turnover_rate": quote.get("turnover_rate") if intraday else _f(latest.get("turnover_rate")),
+    }
+
 
     def ret(n: int) -> Optional[float]:
         if price is None or len(closes) <= n:
@@ -190,16 +213,21 @@ def load_market_snapshot(code: str, bars: int = 130) -> dict[str, Any]:
         "symbol": info["symbol"],
         "name": info.get("name"),
         "exchange": info.get("exchange"),
-        "asof": str(latest["trade_date"]),
+        "asof": asof,  # 技术面基准日：库里最新一根已收盘日线
+        "bar_close": bar_price,
+        "intraday": intraday,  # True = 现价与当日量额来自实时快照
+        "quote_date": quote.get("quote_date") if intraday else None,
+        "quote_time": quote.get("quote_time") if intraday else None,
+        "quote_reason": None if intraday else quote.get("reason"),
         "price": round(price, 4) if price is not None else None,
-        "open": _f(latest.get("open")),
-        "high": _f(latest.get("high")),
-        "low": _f(latest.get("low")),
-        "pre_close": _f(latest.get("pre_close")),
-        "change_pct": _f(latest.get("change_pct")),
-        "volume": _f(latest.get("volume")),
-        "amount": _f(latest.get("amount")),
-        "turnover_rate": _f(latest.get("turnover_rate")),
+        "open": day_fields["open"],
+        "high": day_fields["high"],
+        "low": day_fields["low"],
+        "pre_close": day_fields["pre_close"],
+        "change_pct": day_fields["change_pct"],
+        "volume": day_fields["volume"],
+        "amount": day_fields["amount"],
+        "turnover_rate": day_fields["turnover_rate"],
         "pe_ttm": _f(latest.get("pe_ttm")),
         "pb": _f(latest.get("pb")),
         "total_market_cap": _f(latest.get("total_market_cap")),
@@ -211,6 +239,7 @@ def load_market_snapshot(code: str, bars: int = 130) -> dict[str, Any]:
         "ma_alignment": alignment,
         "bias_ma5": bias_ma5,
         "volume_ratio": volume_ratio,
+        "volume_ratio_asof": asof,  # 量比按已收盘日线口径：始终对应 asof 那一天
         "high_20": high_20,
         "low_20": low_20,
         "ret_5d": ret(5),
@@ -286,6 +315,76 @@ def _http_get(url: str, params: dict[str, Any], referer: str, timeout: int) -> A
 def _secid(code: str) -> str:
     """6 位代码 → 东财 secid（1=沪、0=深）。"""
     return f"1.{code}" if code[:1] in ("6", "5", "9") else f"0.{code}"
+
+
+_QUOTE_FIELDS = "f43,f44,f45,f46,f47,f48,f57,f58,f60,f86,f168,f169,f170"
+_CST = _dt.timezone(_dt.timedelta(hours=8))
+
+
+def _px(value: Any) -> Optional[float]:
+    """东财价格字段（×100 的整数）→ 元；停牌时是 ``-``，给 None。"""
+    raw = _f(value)
+    return None if raw is None else round(raw / 100, 2)
+
+
+def load_realtime_quote(code: str) -> dict[str, Any]:
+    """实时快照（东财 push2，免 key）：现价 / 涨跌 / 当日开高低 / 成交量额。
+
+    为什么必须有这一层
+    ------------------
+    ``stock_daily`` 只装**已收盘**的日线，当天的 K 线要等收盘后的采集任务才入库。
+    盘中分析时库里最新一根是上一交易日，拿它当「现价」就会把昨天的收盘价、昨天的
+    涨跌幅当成今天的行情。价格取快照、技术指标仍用已收盘日线，两者在提示词里分开
+    标注，才不会互相污染。
+
+    取不到（停牌 / 接口异常）返回 ``available=False``，调用方退回日线，不抛异常。
+    """
+    try:
+        resp = _http_get(
+            "https://push2.eastmoney.com/api/qt/stock/get",
+            {"secid": _secid(code), "fields": _QUOTE_FIELDS, "ut": "fa5fd1943c7b386f172d6893dbfba10b"},
+            referer="https://quote.eastmoney.com/",
+            timeout=_QUOTE_TIMEOUT,
+        )
+        payload = (resp.json() or {}).get("data") or {}
+    except Exception as exc:  # noqa: BLE001 - 快照失败不该让整条分析失败
+        logger.warning("取实时快照失败（%s），本次退回日线口径：%s", code, exc)
+        return {"available": False, "reason": f"实时快照取数失败：{exc}"}
+
+    if not payload:
+        return {"available": False, "reason": "实时快照无数据（可能停牌或代码不存在）"}
+
+    price = _px(payload.get("f43"))
+    if price is None:
+        return {"available": False, "reason": "实时快照没有现价（停牌或集合竞价前）"}
+
+    stamp = payload.get("f86")
+    quote_dt: Optional[_dt.datetime] = None
+    if stamp not in (None, "", "-"):
+        try:
+            quote_dt = _dt.datetime.fromtimestamp(int(stamp), _CST)
+        except (TypeError, ValueError, OSError):
+            quote_dt = None
+
+    volume_lots = _f(payload.get("f47"))
+    return {
+        "available": True,
+        "code": str(payload.get("f57") or code),
+        "name": payload.get("f58"),
+        "price": price,
+        "change": _px(payload.get("f169")),
+        "change_pct": _px(payload.get("f170")),
+        "open": _px(payload.get("f46")),
+        "high": _px(payload.get("f44")),
+        "low": _px(payload.get("f45")),
+        "pre_close": _px(payload.get("f60")),
+        # 东财成交量单位是「手」，库里 stock_daily.volume 是「股」，统一换成股
+        "volume": None if volume_lots is None else round(volume_lots * 100, 0),
+        "amount": _f(payload.get("f48")),
+        "turnover_rate": _px(payload.get("f168")),
+        "quote_date": quote_dt.date().isoformat() if quote_dt else None,
+        "quote_time": quote_dt.strftime("%Y-%m-%d %H:%M:%S") if quote_dt else None,
+    }
 
 
 def load_boards(code: str) -> dict[str, Any]:

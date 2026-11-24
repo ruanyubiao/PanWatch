@@ -1146,3 +1146,179 @@ def test_billboard_query_limits_to_recent_year(monkeypatch):
     # 主查询（判定近一年有无上榜）必须带日期窗；之后的回查历史是另一码事
     assert "TRADE_DATE>=" in first["filter"]
     assert "SECURITY_CODE=" in first["filter"]
+
+
+# ── 盘中：现价取实时快照，技术指标仍用已收盘日线 ────────────────────
+
+
+def _bar(day, close, ma5=None, adj=1.0):
+    return {
+        "trade_date": day,
+        "open": close,
+        "high": close + 0.2,
+        "low": close - 0.2,
+        "close": close,
+        "pre_close": close - 0.1,
+        "change_pct": 0.5,
+        "volume": 1_000_000,
+        "amount": 20_000_000,
+        "turnover_rate": 1.2,
+        "pe_ttm": 30.0,
+        "pb": 2.0,
+        "total_market_cap": 10_000_000_000,
+        "circulating_market_cap": 8_000_000_000,
+        "ma5": ma5 if ma5 is not None else close / adj,
+        "ma10": close / adj,
+        "ma20": close / adj,
+        "ma60": close / adj,
+        "adj_factor": adj,
+        "tech_score": 50,
+        "tech_trend": "震荡",
+        "tech_macd": "金叉",
+        "tech_rsi": 50,
+        "tech_kdj": "中性",
+        "tech_boll": "中轨",
+        "tech_volume": "平量",
+        "tech_support": close / adj,
+        "tech_resistance": close / adj,
+        "traded": 1,
+    }
+
+
+class _BarsCursor:
+    """回答 load_market_snapshot 的两条 SQL：stock_info 一行 + 日线若干行。"""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self._sql = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self._sql = sql
+
+    def fetchone(self):
+        return {"code": self._conn.code, "symbol": f"sz{self._conn.code}", "exchange": "sz", "name": "测试股", "status": "L"}
+
+    def fetchall(self):
+        # 真实 SQL 是 ORDER BY trade_date DESC；load_market_snapshot 自己会 reverse 成升序
+        return sorted(self._conn.bars, key=lambda r: str(r["trade_date"]), reverse=True)
+
+
+class _BarsConn:
+    def __init__(self, code, bars):
+        self.code = code
+        self.bars = bars
+
+    def cursor(self):
+        return _BarsCursor(self)
+
+    def close(self):
+        return None
+
+
+def _patch_snapshot_db(monkeypatch, bars):
+    monkeypatch.setattr(dsa_data, "_connect", lambda: _BarsConn("000975", bars))
+
+
+def _quote(price, pct, day, when="10:44:33"):
+    return {
+        "available": True,
+        "code": "000975",
+        "name": "测试股",
+        "price": price,
+        "change": round(price * pct / 100, 2),
+        "change_pct": pct,
+        "open": price + 0.3,
+        "high": price + 0.4,
+        "low": price - 0.5,
+        "pre_close": round(price / (1 + pct / 100), 2),
+        "volume": 22_059_700,
+        "amount": 483_206_628,
+        "turnover_rate": 0.87,
+        "quote_date": day,
+        "quote_time": f"{day} {when}",
+    }
+
+
+def test_intraday_quote_replaces_price_but_not_technicals(monkeypatch):
+    """盘中：现价/涨跌幅/量额取快照，均线与 asof 仍是上一交易日收盘。
+
+    这是「分析出来都是昨天的数据」那个 bug 的回归钉：库里最新一根是 11-23，
+    今天 11-24 盘中就该显示 11-24 的现价，同时技术指标明确标注基准日是 11-23。
+    """
+    bars = [_bar("2026-11-20", 20.0), _bar("2026-11-23", 22.05)]
+    _patch_snapshot_db(monkeypatch, bars)
+    monkeypatch.setattr(dsa_data, "load_realtime_quote", lambda code: _quote(21.61, -2.0, "2026-11-24"))
+
+    snap = dsa_data.load_market_snapshot("000975")
+
+    assert snap["intraday"] is True
+    assert snap["price"] == 21.61  # 今天的快照价，不是 22.05 那根日线
+    assert snap["change_pct"] == -2.0
+    assert snap["amount"] == 483_206_628
+    assert snap["asof"] == "2026-11-23"  # 技术指标基准日仍是上一交易日
+    assert snap["bar_close"] == 22.05
+    assert snap["quote_date"] == "2026-11-24"
+    assert snap["quote_time"] == "2026-11-24 10:44:33"
+    # 均线来自日线，不能被快照改写
+    assert snap["ma5"] == 22.05
+
+
+def test_quote_not_newer_than_bar_keeps_eod_semantics(monkeypatch):
+    """收盘后快照日期 == 日线日期：不标 intraday，价格以日线为准（同一份数据）。"""
+    bars = [_bar("2026-11-23", 22.05)]
+    _patch_snapshot_db(monkeypatch, bars)
+    monkeypatch.setattr(dsa_data, "load_realtime_quote", lambda code: _quote(22.05, 7.93, "2026-11-23"))
+
+    snap = dsa_data.load_market_snapshot("000975")
+
+    assert snap["intraday"] is False
+    assert snap["price"] == 22.05
+    assert snap["quote_date"] is None
+    assert snap["asof"] == "2026-11-23"
+
+
+def test_quote_failure_falls_back_to_bar_with_reason(monkeypatch):
+    """快照挂了退回日线，并把原因留给页面，不要静默把旧数据当今天。"""
+    bars = [_bar("2026-11-23", 22.05)]
+    _patch_snapshot_db(monkeypatch, bars)
+    monkeypatch.setattr(
+        dsa_data,
+        "load_realtime_quote",
+        lambda code: {"available": False, "reason": "实时快照取数失败：timeout"},
+    )
+
+    snap = dsa_data.load_market_snapshot("000975")
+
+    assert snap["intraday"] is False
+    assert snap["price"] == 22.05
+    assert "timeout" in (snap["quote_reason"] or "")
+
+
+def test_prompt_marks_quote_and_bar_dates_separately(monkeypatch):
+    """提示词必须同时写清「快照时间」和「技术指标基准日」，并禁止混用两者涨跌幅。"""
+    bars = [_bar("2026-11-23", 22.05)]
+    _patch_snapshot_db(monkeypatch, bars)
+    monkeypatch.setattr(dsa_data, "load_realtime_quote", lambda code: _quote(21.61, -2.0, "2026-11-24"))
+    snap = dsa_data.load_market_snapshot("000975")
+
+    text = prompt_mod.build_user_prompt(
+        snapshot=snap,
+        phase={"phase": "intraday", "label": "盘中", "market_local_time": "2026-11-24 10:44"},
+        boards={"available": False},
+        flow={"available": False},
+        news={"available": False},
+        limitations=[],
+    )
+
+    assert "2026-11-24 10:44:33" in text
+    assert "技术指标基准日 2026-11-23" in text
+    assert "未收盘" in text
+    assert "不得把今日涨跌幅写成上一交易日" in text
+    # 盘中不得出现「收盘价」这种把快照当收盘的说法
+    assert "| 收盘价 |" not in text
