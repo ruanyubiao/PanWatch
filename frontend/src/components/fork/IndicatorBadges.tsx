@@ -38,6 +38,14 @@ export interface IndicatorBadgesProps {
   klineTr: (key: string, options?: Record<string, unknown>) => string
   /** 点技术面徽章：打开 K 线摘要弹窗。不传则不可点（与上游一致）。 */
   onOpenKline?: () => void
+  /**
+   * 原「来源」列那行文字（用户口径：不并排显示，只进悬停提示）。
+   *
+   * ``technicalHint`` → 技术面徽章（回避 / 买入 / 观望那颗）的 title；
+   * ``aiHint``        → AI 建议徽章的 title。两者都是「来源那行在前、原提示在后」。
+   */
+  technicalHint?: string | null
+  aiHint?: string | null
 }
 
 export function IndicatorBadges({
@@ -49,10 +57,15 @@ export function IndicatorBadges({
   hasPosition = false,
   klineTr,
   onOpenKline,
+  technicalHint,
+  aiHint,
 }: IndicatorBadgesProps) {
   const { t } = useTranslation('bizUi')
   const tr = (key: string) =>
     (t as unknown as (key: string) => string)(`suggestionBadge.${key}`)
+  /** fork：来源那行接在原提示前面（换行分隔）；没有提示时就是原提示。 */
+  const withHint = (base: string, hint?: string | null) =>
+    hint ? `${hint}\n${base}` : base
 
   // 上游的判定：技术面兜底建议本身就是「技术面徽章」，不会再配一颗技术面徽章。
   // 那种情况（以及完全没有 AI 建议、只有技术面数据）只需要一颗，不存在排序问题。
@@ -69,6 +82,7 @@ export function IndicatorBadges({
         hasPosition={hasPosition}
         hideSourceLine
         hideTechnicalPrefix
+        titleHint={technicalHint ?? aiHint ?? undefined}
       />
     )
   }
@@ -83,7 +97,7 @@ export function IndicatorBadges({
           label={technicalLabel}
           tone={tech ? technicalToneFromSuggestionAction(tech.action, tech.action_label) : 'neutral'}
           size="md"
-          title={tr('technicalTitle')}
+          title={withHint(tr('technicalTitle'), technicalHint)}
           onClick={
             onOpenKline
               ? event => {
@@ -103,6 +117,7 @@ export function IndicatorBadges({
           showTechnicalCompanion={false}
           hideSourceLine
           hideTechnicalPrefix
+          titleHint={aiHint ?? undefined}
         />
       </div>
     </div>

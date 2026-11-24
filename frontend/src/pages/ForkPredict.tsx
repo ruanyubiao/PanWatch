@@ -47,6 +47,8 @@ export const PREDICT_TEXTS_ZH = {
   pct: '分位',
   amount: '20 日中位成交额',
   total: (n: number) => `共 ${n} 只`,
+  /** 列表一次只取前 500 名（接口上限）；总量更多时说清楚，别让人以为只有这些 */
+  truncated: (shown: number, total: number) => `按名次只列前 ${shown} 名（共 ${total} 只）`,
   scoredAt: (at: string) => `计算于 ${at}`,
   caveat:
     '这个模型只在最头部的几十只有一点信息，整体排序不成立。当参考之一，不是买入建议，也不代表涨跌概率。',
@@ -178,6 +180,11 @@ export default function ForkPredictPage() {
           </div>
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500">
             {daily?.trade_date && <span>{PREDICT_TEXTS_ZH.total(daily.total)}</span>}
+            {daily?.total != null && rows.length > 0 && daily.total > rows.length && (
+              <span data-predict-truncated="1">
+                {PREDICT_TEXTS_ZH.truncated(rows.length, daily.total)}
+              </span>
+            )}
             {daily?.scored_at && <span>{PREDICT_TEXTS_ZH.scoredAt(daily.scored_at)}</span>}
             {modelLabel && <span>{modelLabel}</span>}
             <span>{PREDICT_TEXTS_ZH.openHint}</span>

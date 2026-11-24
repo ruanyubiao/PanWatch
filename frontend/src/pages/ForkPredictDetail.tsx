@@ -12,11 +12,13 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useParams } from 'react-router-dom'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import { getPredictStock, type PredictStockResponse } from '@/lib/predict-api'
+import { isBeijingCode } from '@/lib/dsa-api'
 import { formatAmount } from './ForkPredict'
 
 export const PREDICT_DETAIL_TEXTS_ZH = {
   loadFailed: (message: string) => `读取预测失败：${message}`,
   notFound: '这只票在预测表里没有记录（可能不在股票池内，或预测还没生成）。',
+  beijing: '北交所标的不在股票池内：本页只覆盖沪深 A 股，不做预测。',
   tradeDate: '交易日',
   rank: '名次',
   universe: (n: number) => `全市场 ${n} 只`,
@@ -28,6 +30,8 @@ export const PREDICT_DETAIL_TEXTS_ZH = {
   curveHint: '越高越靠前（分位 100 = 当日第 1 名）',
   historyTitle: '逐日记录',
   historyEmpty: '还没有更早的记录。',
+  /** 只有 1 个交易日时画不出折线（曲线至少要两个点），如实写出来 */
+  curveSingle: '目前只有 1 个交易日的数据，还画不出曲线 —— 逐日记录见下方。',
   caveat:
     '这个模型只在最头部的几十只有一点信息，整体排序不成立。名次与分位都是当日横截面里的相对位置，不是涨跌概率、也不是买入建议。',
   pending:
@@ -43,7 +47,12 @@ const CARD =
 /** 分位曲线（SVG 折线）：0–100 固定量程，不按数据缩放，跨股票可比。 */
 export function PredictCurve({ points }: { points: { trade_date: string; pct: number | null }[] }) {
   const usable = points.filter(p => p.pct != null) as { trade_date: string; pct: number }[]
-  if (usable.length < 2) return <div className="py-6 text-center text-[11px] text-slate-500">—</div>
+  if (usable.length < 2)
+    return (
+      <div className="py-6 text-center text-[11px] text-slate-500" data-predict-curve-single="1">
+        {PREDICT_DETAIL_TEXTS_ZH.curveSingle}
+      </div>
+    )
   const width = 640
   const height = 120
   const pad = 6
@@ -83,6 +92,11 @@ export default function ForkPredictDetailPage() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    // 北交所标的连请求都不发（后端也会 400，这里少一次无效调用）
+    if (isBeijingCode(code)) {
+      setLoading(false)
+      return
+    }
     let alive = true
     setLoading(true)
     getPredictStock(code)
@@ -103,6 +117,15 @@ export default function ForkPredictDetailPage() {
       <div className="mx-auto flex max-w-4xl flex-col gap-4">{children}</div>
     </div>
   )
+
+  // 北交所标的（bj / 4xx / 8xx / 920xxx）：一个请求都不发，直接一句话（用户口径）
+  if (isBeijingCode(code)) {
+    return shell(
+      <div className={`${CARD} px-5 py-10 text-center text-xs text-slate-400`} data-predict-excluded="1">
+        {PREDICT_DETAIL_TEXTS_ZH.beijing}
+      </div>,
+    )
+  }
 
   if (loading && !data) {
     return shell(

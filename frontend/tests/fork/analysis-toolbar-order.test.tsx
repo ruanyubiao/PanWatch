@@ -53,7 +53,7 @@ describe('fork: 分析页工具条按钮顺序', () => {
     expect(toolbar).not.toContain('getPredictDaily')
   })
 
-  it('「模型预测」列（原「来源」）：值是预测名次，点它新窗口进详情，旧信息进悬停提示', async () => {
+  it('「模型预测」列（原「来源」）：值是预测名次，点它新窗口进详情，旧信息进徽章悬停提示', async () => {
     const source = await readSource()
     const start = source.indexOf('const renderMarketSource')
     const end = source.indexOf('/** 操作列', start)
@@ -63,18 +63,20 @@ describe('fork: 分析页工具条按钮顺序', () => {
     expect(block).toContain('predictStockPath(row.code)')
     expect(block).toContain('predictScores?.scores?.[row.code]')
     expect(block).toContain('target="_blank"')
-    // 原来那行来源文字不并排显示，但**没有丢**：塞进同一格的悬停提示（两行）
-    expect(block).toContain('rowSourceHint(row).text')
-    expect(block).toContain('predictHint(legacyLine, predict.rank_no')
+    // 这一格只说预测：原来那行来源文字不并排、也不塞进这一格的 title
+    expect(block).toContain('predictHint(predict.rank_no')
+    expect(block).not.toContain('legacyLine')
     // 没有预测时给「—」，不是 0
     expect(block).toContain('predictNone')
+
+    // 来源那行改挂到「指标」列徽章的悬停提示：技术面那行→技术面徽章，AI 那行→AI 徽章
+    const hintStart = source.indexOf('const rowSourceHint')
+    const indicatorStart = source.indexOf('const renderMarketIndicator')
+    expect(hintStart).toBeGreaterThan(-1)
+    expect(source.slice(hintStart, indicatorStart)).toContain("kind: 'ai'")
+    const indicatorBlock = source.slice(indicatorStart, source.indexOf('const renderMarketTradeStatus'))
+    expect(indicatorBlock).toContain("technicalHint={hint.kind === 'tech' ? hint.text : null}")
+    expect(indicatorBlock).toContain("aiHint={hint.kind === 'ai' ? hint.text : null}")
   })
 
-  it('上游徽章组件一个字符都没动（悬停提示不往徽章上接线）', async () => {
-    const source = await readSource()
-    // 页面侧不传 titleHint / technicalHint / aiHint 这类为 fork 新增的徽章属性
-    expect(source).not.toContain('titleHint')
-    expect(source).not.toContain('technicalHint')
-    expect(source).not.toContain('aiHint')
-  })
 })

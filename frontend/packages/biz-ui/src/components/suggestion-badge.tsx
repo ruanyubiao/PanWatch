@@ -99,6 +99,14 @@ interface SuggestionBadgeProps {
    * 用户反馈只要「买入」，那一处传 true。
    */
   hideTechnicalPrefix?: boolean
+  /**
+   * fork：接在徽章悬停提示**前面**的一段文字（默认 undefined = 与上游完全一致）。
+   *
+   * 分析页把原来的「来源」列改成「模型预测」之后，那行来源文字（例：
+   * 「AI深度 · 16:39（已过期）」/「技术指标 · 11-23」）不再单独占一列，而是挂到
+   * 对应徽章的 title 上，**原提示接在它后面**（用户口径）。
+   */
+  titleHint?: string
 }
 
 // 格式化建议时间（自动转换为本地时区，只显示时:分）
@@ -158,6 +166,7 @@ export function SuggestionBadge({
   showTechnicalCompanion = true,
   hideSourceLine = false,
   hideTechnicalPrefix = false,
+  titleHint,
 }: SuggestionBadgeProps) {
   const { t, i18n } = useTranslation('bizUi')
   const tr = (key: string, options?: Record<string, unknown>) =>
@@ -167,6 +176,8 @@ export function SuggestionBadge({
   const locale = (i18n.resolvedLanguage || i18n.language).toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
   const english = locale === 'en-US'
   const isTechnical = suggestion?.agent_name === 'technical_fallback' || suggestion?.agent_label === '技术指标'
+  /** fork：``titleHint`` 在前、原提示在后（换行分隔）；不传时与上游完全一致。 */
+  const titleWithHint = (base: string) => (titleHint ? `${titleHint}\n${base}` : base)
   const knownAgents = new Set(['intraday_monitor', 'daily_report', 'premarket_outlook', 'technical_fallback'])
   const localizedAgent = suggestion?.agent_name && knownAgents.has(suggestion.agent_name)
     ? tr(`agents.${suggestion.agent_name}`)
@@ -227,7 +238,7 @@ export function SuggestionBadge({
                   tone={tech ? technicalToneFromSuggestionAction(tech.action, tech.action_label) : 'neutral'}
                   size="lg"
                   onClick={(e) => { e.stopPropagation(); setKlineDialogOpen(true) }}
-                  title={tr('technicalTitle')}
+                  title={titleWithHint(tr('technicalTitle'))}
                 />
               )}
             </div>
@@ -370,7 +381,7 @@ export function SuggestionBadge({
               e.stopPropagation()
               setKlineDialogOpen(true)
             }}
-            title={tr('technicalTitle')}
+            title={titleWithHint(tr('technicalTitle'))}
           />
         </div>
 
@@ -410,7 +421,7 @@ export function SuggestionBadge({
               if (isTechnical) setKlineDialogOpen(true)
               else setDialogOpen(true)
             }}
-            title={sourceInfo ? `${sourceInfo} - ${tr('detailTitle')}` : tr('detailTitle')}
+            title={titleWithHint(sourceInfo ? `${sourceInfo} - ${tr('detailTitle')}` : tr('detailTitle'))}
           />
           {showTechnicalCompanion && !isTechnical && (
             (() => {
@@ -421,7 +432,7 @@ export function SuggestionBadge({
                   tone={tech ? technicalToneFromSuggestionAction(tech.action, tech.action_label) : 'neutral'}
                   size="md"
                   onClick={(e) => { e.stopPropagation(); setKlineDialogOpen(true) }}
-                  title={tr('technicalTitle')}
+                  title={titleWithHint(tr('technicalTitle'))}
                 />
               )
             })()

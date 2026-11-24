@@ -86,7 +86,8 @@ describe('模型预测列表页', () => {
   it('诚实提示与总数一定在页面上', async () => {
     renderList()
     await waitFor(() => expect(screen.getByText('芯碁微装')).toBeTruthy())
-    expect(screen.getByText(/共 4991 只/)).toBeTruthy()
+    // 总数可能出现在两处（页头统计 + 「只列前 N 名」提示），只要都在就通过
+    expect(screen.getAllByText(/共 4991 只/).length).toBeGreaterThan(0)
     expect(screen.getByText(/整体排序不成立/)).toBeTruthy()
   })
 
@@ -150,5 +151,14 @@ describe('模型预测详情页', () => {
     getStock.mockRejectedValue(new Error('predict_not_found'))
     renderDetail('600519')
     await waitFor(() => expect(screen.getByText(/读取预测失败/)).toBeTruthy())
+  })
+
+  it('北交所标的：一句话说明不在股票池，且一个请求都不发', async () => {
+    renderDetail('920992')
+    await waitFor(() =>
+      expect(screen.getByText(/北交所标的不在股票池内/)).toBeTruthy(),
+    )
+    expect(document.querySelector('[data-predict-excluded="1"]')).toBeTruthy()
+    expect(getStock).not.toHaveBeenCalled()
   })
 })
