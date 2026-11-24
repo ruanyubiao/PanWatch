@@ -42,7 +42,7 @@ import {
  * 列宽（用户逐列指定）：市场 60 / 代码 80 / 名称 140 / 成交量 96 / 成交额 104 /
  * 换手率 84（这三列排在**总市值前面**）/ 总市值之后紧跟**状态 68**
  * （停牌 / 正常 / ST 这类 2–3 字标签）/ 指标 160 → 120（本页最新要求再减 40）/
- * 来源 200 / 操作 180 → 220 → 252（Agent 配置图标搬进操作列，fork 的「深度分析2」再占一颗）；
+ * 模型预测（原「来源」）200 → 220 / 操作 180 → 220 → 252（Agent 配置图标搬进操作列，fork 的「深度分析2」再占一颗）；
  * 其余数值列只给最小列宽，宽屏时摊开剩余空间。
  *
  * 本组件只管「取数 / 筛选 / 排序 / 分页 / 表格骨架 / 列的格式」——三个富列
@@ -71,7 +71,9 @@ const MARKET_TABLE_TEXTS_ZH = {
   colTradeStatus: '状态',
   /** 技术面结论（买入 / 回避 / 观望 + 技术面徽章）。原名「状态」，第 4 条改名。 */
   colIndicator: '指标',
-  colSource: '来源',
+  /** fork 2026-11-24：原来叫「来源」，用户要求改成「模型预测」（点数值进详情窗）。
+      这一列的口径由页面注入的 renderSource 决定，表格本身只管表头与列宽。 */
+  colSource: '模型预测',
   colActions: '操作',
   sortBy: (label: string) => `按${label}排序`,
   /** 状态列的兜底文案：库里没有状态行 = 正常交易 */
@@ -295,7 +297,8 @@ const COLUMNS: ColumnDef[] = [
   { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 48, padLeft: 20, padRight: 2 },
   // 指标列：左内边距 20px，列宽 200 → 180 → 160 → 120 → 140（本轮 +20）
   { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 140, padLeft: 20 },
-  { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 200 },
+  // 「模型预测」列 200 → 220：格子里是「#1234 · 99.98」，比原来那句「技术指标 · 11-24」宽一点
+  { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 220 },
   // 操作列 252：Agent 状态列整列删掉，改成操作列里一颗「A」图标；
   // fork 的「深度分析2」再占一颗（7 颗图标 = 7×28 + 6×2 间距 + 16 内边距 ≈ 224，留余量）
   { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 252 },
@@ -678,7 +681,7 @@ export function StockMarketTable({
               保留 w-full：容器比 1442 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
               窄到不够就横向滚动；只有容器比 1442 还宽时 table-fixed 才会把余量按比例摊给各列——
               这是原来就有的行为（宽屏铺满），本次不动 */}
-          <table className="w-full min-w-[1474px] table-fixed text-[12px]">
+          <table className="w-full min-w-[1494px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col

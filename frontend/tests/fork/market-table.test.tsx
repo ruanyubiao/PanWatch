@@ -10,7 +10,7 @@ vi.mock('@panwatch/api', () => ({ fetchAPI: vi.fn() }))
 
 /**
  * fork 分析页的行表格。这里钉住用户明确要求过的事：
- *   1. 列的**顺序与名称**（市场 代码 名称 昨收价 现价 涨跌 最高价 最低价 成交量 成交额 换手率 总市值 状态 指标 来源 操作）
+ *   1. 列的**顺序与名称**（市场 代码 名称 昨收价 现价 涨跌 最高价 最低价 成交量 成交额 换手率 总市值 状态 指标 模型预测 操作）
  *   2. 数据**只**来自 /stocks/market-table —— 再也不发 /quotes/batch 与
  *      /klines/summary/batch（那两条就是「查外网次数太多被屏蔽」的元凶）
  *   3. 市场列只出 沪/深/北
@@ -193,7 +193,7 @@ describe('fork: 分析页全市场表格', () => {
       '总市值',
       '状态',
       '指标',
-      '来源',
+      '模型预测',
       '操作',
     ])
   })
@@ -310,8 +310,8 @@ describe('fork: 分析页全市场表格', () => {
     expect(widthOf('操作')).toBe('252px')
     expect(headers).not.toContain('Agent 状态')
 
-    // 表宽 = 各列之和 1474（原 1442 + 操作列加宽 32）
-    expect(table.className).toContain('min-w-[1474px]')
+    // 表宽 = 各列之和 1494（1474 + 模型预测列「来源」200 → 220）
+    expect(table.className).toContain('min-w-[1494px]')
 
     // 市场～总市值不再留 minWidth（否则浏览器会按内容撑开，固定宽失效）
     const cols = table.querySelectorAll('colgroup col')

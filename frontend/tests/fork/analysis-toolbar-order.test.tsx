@@ -37,4 +37,44 @@ describe('fork: 分析页工具条按钮顺序', () => {
     expect(leading).toContain('data-tour="refresh-quotes"')
     expect(leading).not.toContain('data-tour="add-stock"')
   })
+
+  it('「模型预测」紧跟在「添加股票」后面，且只开新窗口', async () => {
+    const source = await readSource()
+    const actionsStart = source.indexOf('const tableToolbarActions')
+    const actionsEnd = source.indexOf('const tableToolbarMeta')
+    const toolbar = source.slice(actionsStart, actionsEnd)
+
+    const addIndex = toolbar.indexOf('data-tour="add-stock"')
+    const predictIndex = toolbar.indexOf('data-tour="predict"')
+    expect(addIndex).toBeGreaterThan(-1)
+    expect(predictIndex).toBeGreaterThan(addIndex)
+    // 只开新窗口，页面自己不请求预测接口（列表页/详情页自己读）
+    expect(toolbar).toContain('openPredictWindow()')
+    expect(toolbar).not.toContain('getPredictDaily')
+  })
+
+  it('「模型预测」列（原「来源」）：值是预测名次，点它新窗口进详情，旧信息进悬停提示', async () => {
+    const source = await readSource()
+    const start = source.indexOf('const renderMarketSource')
+    const end = source.indexOf('/** 操作列', start)
+    const block = source.slice(start, end)
+    expect(start).toBeGreaterThan(-1)
+    // 数值与链接口径
+    expect(block).toContain('predictStockPath(row.code)')
+    expect(block).toContain('predictScores?.scores?.[row.code]')
+    expect(block).toContain('target="_blank"')
+    // 原来那行来源文字不并排显示，但**没有丢**：塞进同一格的悬停提示（两行）
+    expect(block).toContain('rowSourceHint(row).text')
+    expect(block).toContain('predictHint(legacyLine, predict.rank_no')
+    // 没有预测时给「—」，不是 0
+    expect(block).toContain('predictNone')
+  })
+
+  it('上游徽章组件一个字符都没动（悬停提示不往徽章上接线）', async () => {
+    const source = await readSource()
+    // 页面侧不传 titleHint / technicalHint / aiHint 这类为 fork 新增的徽章属性
+    expect(source).not.toContain('titleHint')
+    expect(source).not.toContain('technicalHint')
+    expect(source).not.toContain('aiHint')
+  })
 })

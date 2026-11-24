@@ -28,6 +28,8 @@ const {
   ForkAnalysisTaskPage,
   // fork：深度分析2（DSA 风格决策报告，新窗口）
   ForkDsa2Page,
+  ForkPredictPage,
+  ForkPredictDetailPage,
   GettingStartedPage,
   OpportunitiesPage,
   StocksPage,
@@ -160,7 +162,10 @@ function App() {
     location.pathname.startsWith('/analysis/report/') ||
     location.pathname.startsWith('/analysis/task/') ||
     // fork：深度分析2 是新窗口里的独立页（无导航、无侧栏）
-    location.pathname.startsWith('/dsa2/')
+    location.pathname.startsWith('/dsa2/') ||
+    // fork：模型预测（列表 / 详情）同样是新窗口的独立页，没有返回导航
+    location.pathname === '/predict' ||
+    location.pathname.startsWith('/predict/')
 
   // 登录页面不显示导航
   if (location.pathname === '/login') {
@@ -354,6 +359,9 @@ function App() {
               <Route path="/analysis/task/:kind/:runId" element={<ForkAnalysisTaskPage />} />
               {/* fork：深度分析2（DSA 风格决策报告，新窗口打开；无导航） */}
               <Route path="/dsa2/:symbol" element={<ForkDsa2Page />} />
+              {/* fork：模型预测（每日个股预测列表 / 个股详情，新窗口打开；无导航） */}
+              <Route path="/predict" element={<ForkPredictPage />} />
+              <Route path="/predict/:code" element={<ForkPredictDetailPage />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/evaluations" element={<EvaluationsPage />} />
               <Route path="/history" element={<HistoryPage />} />

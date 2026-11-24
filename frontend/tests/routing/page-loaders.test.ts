@@ -13,6 +13,9 @@ describe('route page loaders', () => {
       'forkAnalysisTask',
       // fork: 深度分析2（/dsa2/:symbol，DSA 风格决策报告）
       'forkDsa2',
+      // fork: 模型预测（/predict 列表 + /predict/:code 详情）
+      'forkPredict',
+      'forkPredictDetail',
       'dashboard',
       'gettingStarted',
       'stocks',
@@ -40,6 +43,12 @@ describe('route page loaders', () => {
 
   it('resolves the recoverable setup page', () => {
     expect(resolveRouteKey('/getting-started')).toBe('gettingStarted')
+  })
+
+  it('resolves the fork predict routes', () => {
+    expect(resolveRouteKey('/predict')).toBe('forkPredict')
+    // 详情要排在列表前面：/predict/000975 也满足 /predict 前缀
+    expect(resolveRouteKey('/predict/000975')).toBe('forkPredictDetail')
   })
 
   it('resolves the fork analysis route to the fork page', () => {

@@ -35,6 +35,7 @@ from src.modules.market.api import (
     fork_dsa,
     fork_infer,
     fork_market,
+    fork_predict,
     fork_screen,
     klines,
     market,
@@ -105,6 +106,11 @@ app.include_router(
 # 业务逻辑在 src/modules/market/fork_dsa/。
 app.include_router(
     fork_dsa.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
+)
+# fork: 每日个股预测（分析页「模型预测」按钮 / 列表 / 详情）。只读 MySQL 的
+# stock_predict_daily（由 A 股管道每日 17:00 同步后写入）；路径 /api/stocks/predict/*。
+app.include_router(
+    fork_predict.router, prefix="/api/stocks", tags=["fork"], dependencies=protected
 )
 # fork（深度分析2）：队列消费线程随服务启动拉起 —— 否则重启前排队的任务要等到
 # 下一次有人点「分析」才会被认领。ensure_started 幂等，重复注册无副作用。

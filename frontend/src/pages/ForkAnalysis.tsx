@@ -7,6 +7,12 @@ import { klinesApi } from '@panwatch/api/klines'
 import { formatDateTime } from '@/lib/utils'
 import { openDsa2Window } from '@/lib/dsa-api'
 import {
+  getPredictScores,
+  openPredictWindow,
+  predictStockPath,
+  type PredictScoresResponse,
+} from '@/lib/predict-api'
+import {
   buildPortfolioStockKeys,
   loadPortfolioPageBackgroundData,
   loadPortfolioPageCoreData,
@@ -267,6 +273,20 @@ const MARKET_ROW_TEXTS_ZH = {
   expired: '（已过期）',
   technical: '技术指标',
   aiDeep: 'AI深度',
+  /** 「模型预测」列没有当日预测时的占位（不是 0，0 会被读成真实分位） */
+  predictNone: '—',
+  /** 「模型预测」列的悬停说明：第 1 行是原来「来源」那行，第 2 行是预测名次 */
+  predictHint: (line: string, rank: number, pct: number | null, date: string | null) =>
+    [
+      line,
+      `模型预测：当日第 ${rank} 名${pct == null ? '' : `（分位 ${pct.toFixed(2)}）`}${
+        date ? ` · ${date}` : ''
+      }`,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  /** 当日还没跑推理时的悬停说明（17:00 同步完才有，不是取数失败） */
+  predictMissingHint: '当日模型预测还没生成（每天 17:00 行情同步后跑一次推理）',
 }
 
 /**
@@ -304,6 +324,8 @@ const TRADE_STATUS_TEXTS_ZH = {
 /** fork：条件选股入口与列表页里直接写死的文案（变量名以 _ZH 结尾，check:i18n 放行）。 */
 const FORK_ANALYSIS_TEXTS_ZH = {
   addStock: '添加股票',
+  /** 「添加股票」后面那颗按钮：新窗口打开每日模型预测列表（无返回导航） */
+  predict: '模型预测',
   searchPlaceholder: '搜索代码或名称',
   noMatch: '没有匹配的股票',
   prevPage: '上一页',
@@ -471,6 +493,24 @@ export default function StocksPage() {
   const [marketCounts, setMarketCounts] = useState<MarketBoardCounts | null>(null)
   // 递增后让行情表重新向本机 MySQL 取全量。「刷新」只动这个，不再打外网行情。
   const [marketReloadToken, setMarketReloadToken] = useState(0)
+  /* fork：模型预测（2026-11-24）—— 一次取回全市场「代码 → 名次/分位」，
+     表格那一列只查这张 map，不逐行发请求（5000 行逐行请求等于打死自己）。
+     跟着 marketReloadToken 一起重取：点「刷新」时预测也应当是最新的。
+     取不到（表还没建 / 当日推理没跑）就是 null，那一列显示「—」，不是报错。 */
+  const [predictScores, setPredictScores] = useState<PredictScoresResponse | null>(null)
+  useEffect(() => {
+    let alive = true
+    getPredictScores()
+      .then(res => {
+        if (alive) setPredictScores(res)
+      })
+      .catch(() => {
+        if (alive) setPredictScores(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [marketReloadToken])
   const [tableLoading, setTableLoading] = useState(false)
   // fork：批量添加弹窗
   const [showBatchAdd, setShowBatchAdd] = useState(false)
@@ -1840,14 +1880,56 @@ export default function StocksPage() {
    *
    *  2026-10-20 第 4 条：这一列原名「状态」，改名「指标」；「状态」这个词留给下面
    *  那颗交易日状态标签（停牌 / 正常 / ST）。 */
+  /**
+   * fork：原来「来源」列那行文字的出处（2026-11-24 起不再单独占一列）。
+   *
+   * 用户的明确口径（这一轮）：
+   *   - 有 AI 建议 → 「AI深度 · 16:39（已过期）」，挂到**AI 徽章**的悬停提示上，
+   *     原来的提示接在后面；
+   *   - 没有 AI 建议 → 「技术指标 · 11-23」，挂到**技术面徽章**（回避 / 买入 /
+   *     观望那颗）的悬停提示上，原来的提示接在后面。
+   *
+   * 为什么不并排显示：那一列已改成「模型预测」，再塞一段来源文字会把列撑宽，
+   * 一行两种口径也读不出主次（用户口径）。
+   */
+  const rowSourceHint = (row: MarketRow): { text: string; kind: 'ai' | 'tech' } => {
+    const { suggestion } = getSuggestionForStock(row.code, 'CN')
+    if (suggestion?.agent_label || suggestion?.created_at) {
+      const time = suggestionTimeText(suggestion.created_at)
+      let text = [sourceAgentLabel(suggestion.agent_label), time].filter(Boolean).join(' · ')
+      if (suggestion.is_expired) text += MARKET_ROW_TEXTS_ZH.expired
+      return { text, kind: 'ai' }
+    }
+    const date = row.trade_date ? row.trade_date.slice(5) : ''
+    return {
+      text: [MARKET_ROW_TEXTS_ZH.technical, date].filter(Boolean).join(' · '),
+      kind: 'tech',
+    }
+  }
+
+  /**
+   * 指标列：AI 建议徽章（建议池里有才有）+ 技术面徽章（库里 tech_*，零外网）。
+   *
+   *  ``hideSourceLine``：表格里原先「来源」是独立一列，徽章再自带一行来源就是同一份
+   *  信息出现两次（用户截图反馈的 bug）。弹窗里的来源不变。
+   *
+   *  原「来源」列那行文字（``rowSourceHint``）按用户口径挂到徽章的悬停提示上：
+   *  技术面那行挂技术面徽章、AI 那行挂 AI 徽章，原提示接在后面。
+   *
+   *  2026-10-20 第 4 条：这一列原名「状态」，改名「指标」；「状态」这个词留给下面
+   *  那颗交易日状态标签（停牌 / 正常 / ST）。
+   */
   const renderMarketIndicator = (row: MarketRow) => {
     const { suggestion } = getSuggestionForStock(row.code, 'CN')
     const kline = rowSummary(row)
+    const hint = rowSourceHint(row)
     if (!suggestion && !kline) {
       return (
         <span
           className="text-[11px] text-muted-foreground/70"
-          title={FORK_ANALYSIS_TEXTS_ZH.indicatorEmptyHint}
+          title={[FORK_ANALYSIS_TEXTS_ZH.indicatorEmptyHint, hint.text]
+            .filter(Boolean)
+            .join('\n')}
         >
           {FORK_ANALYSIS_TEXTS_ZH.indicatorEmpty}
         </span>
@@ -1946,31 +2028,45 @@ export default function StocksPage() {
   }
 
   /**
-   * 来源列：
-   *   有 AI 建议 → 与徽章同一套口径「来源：盘中监测 · 19:08（已过期）」
-   *   没有       → 「技术指标 · 10-14」（库里的日终口径 + 交易日）
-   * 交易所收盘后这一列是判断「这份数据是哪天的」的唯一依据 —— 现价不是实时价。
+   * fork：「模型预测」列（2026-11-24，用户要求把原来的「来源」列改成这一列）。
+   *
+   * 格子里显示「#名次 · 分位」，点它在新窗口打开个股预测详情（无返回导航）。
+   * 原来那一列的内容（AI 建议 · 时间 / 技术面 · 日期）**不并排显示**，只进
+   * 这一格的悬停提示（用户口径），与预测那行拼成两行。
+   *
+   * 当日没有预测就显示「—」：每天 17:00 同步跑完推理之前就是这样，不是错误。
    */
   const renderMarketSource = (row: MarketRow) => {
-    const { suggestion } = getSuggestionForStock(row.code, 'CN')
-    if (suggestion?.agent_label || suggestion?.created_at) {
-      const time = suggestionTimeText(suggestion.created_at)
+    const predict = predictScores?.scores?.[row.code]
+    const date = predictScores?.trade_date ?? null
+    /* 原来「来源」那行文字（AI 建议 · 时间 / 技术指标 · 日期）不再并排显示，
+       只进这一格的悬停提示（用户口径），与预测那行拼成两行。 */
+    const legacyLine = rowSourceHint(row).text
+    if (!predict) {
       return (
-        <span>
-          {sourceAgentLabel(suggestion.agent_label)}
-          {time && ` · ${time}`}
-          {suggestion.is_expired && (
-            <span className="ml-1 text-amber-600">{MARKET_ROW_TEXTS_ZH.expired}</span>
-          )}
+        <span
+          className="text-muted-foreground/60"
+          title={[legacyLine, MARKET_ROW_TEXTS_ZH.predictMissingHint].filter(Boolean).join('\n')}
+        >
+          {MARKET_ROW_TEXTS_ZH.predictNone}
         </span>
       )
     }
-    const date = row.trade_date ? row.trade_date.slice(5) : ''
+    const title = MARKET_ROW_TEXTS_ZH.predictHint(legacyLine, predict.rank_no, predict.pct, date)
     return (
-      <span title={`${row.source || ''} ${row.trade_date || ''}`.trim()}>
-        {MARKET_ROW_TEXTS_ZH.technical}
-        {date && ` · ${date}`}
-      </span>
+      <a
+        href={predictStockPath(row.code)}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={title}
+        data-fork-predict={row.code}
+        className="inline-flex items-baseline gap-1 font-mono text-cyan-700 hover:underline dark:text-cyan-300"
+      >
+        #{predict.rank_no}
+        {predict.pct != null && (
+          <span className="text-[10px] text-muted-foreground">{predict.pct.toFixed(2)}</span>
+        )}
+      </a>
     )
   }
 
@@ -2182,6 +2278,20 @@ export default function StocksPage() {
         onClick={() => setShowBatchAdd(true)}
       >
         <Plus className="h-3.5 w-3.5" /> {FORK_ANALYSIS_TEXTS_ZH.addStock}
+      </Button>
+      {/* fork：「模型预测」（2026-11-24）。位置在「添加股票」后面（用户指定）。
+          点它只开新窗口（/predict，无返回导航），不发请求 —— 列表页自己去读
+          /api/stocks/predict/*。 */}
+      <Button
+        data-tour="predict"
+        size="sm"
+        variant="secondary"
+        className="h-7 px-2 text-[12px]"
+        onClick={() => openPredictWindow()}
+        data-fork-predict-button="1"
+      >
+        <TrendingUp className="h-3.5 w-3.5" />
+        {FORK_ANALYSIS_TEXTS_ZH.predict}
       </Button>
     </div>
   )

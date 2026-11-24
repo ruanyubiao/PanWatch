@@ -10,6 +10,9 @@ export const pageLoaders = {
   forkAnalysisTask: () => import('@/pages/ForkAnalysisTask'),
   // fork：深度分析2（/dsa2/:symbol，DSA 风格决策报告，新窗口打开）
   forkDsa2: () => import('@/pages/ForkDsa2'),
+  // fork：模型预测（/predict 列表 + /predict/:code 详情，都是新窗口的独立页）
+  forkPredict: () => import('@/pages/ForkPredict'),
+  forkPredictDetail: () => import('@/pages/ForkPredictDetail'),
   dashboard: () => import('@/pages/Dashboard'),
   gettingStarted: () => import('@/pages/GettingStarted'),
   stocks: () => import('@/pages/Stocks'),
@@ -35,6 +38,9 @@ export const routePages = {
   ForkAnalysisTaskPage: lazy(pageLoaders.forkAnalysisTask),
   // fork：深度分析2
   ForkDsa2Page: lazy(pageLoaders.forkDsa2),
+  // fork：模型预测（列表 / 详情）
+  ForkPredictPage: lazy(pageLoaders.forkPredict),
+  ForkPredictDetailPage: lazy(pageLoaders.forkPredictDetail),
   DashboardPage: lazy(pageLoaders.dashboard),
   GettingStartedPage: lazy(pageLoaders.gettingStarted),
   StocksPage: lazy(pageLoaders.stocks),
@@ -71,6 +77,9 @@ const routeMatchers: Array<{ key: RouteKey; matches: (pathname: string) => boole
   { key: 'forkAnalysisTask', matches: pathname => pathname.startsWith('/analysis/task/') },
   // fork：深度分析2（新窗口的独立页，不吃主布局）
   { key: 'forkDsa2', matches: pathname => pathname.startsWith('/dsa2/') },
+  // fork：模型预测（先详情后列表 —— /predict/000975 也满足 /predict）
+  { key: 'forkPredictDetail', matches: pathname => pathname.startsWith('/predict/') },
+  { key: 'forkPredict', matches: pathname => pathname === '/predict' || pathname === '/predict/' },
   { key: 'analysisDetail', matches: pathname => pathname.startsWith('/analysis/') },
 ]
 
