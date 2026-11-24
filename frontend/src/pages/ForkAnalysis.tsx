@@ -275,16 +275,11 @@ const MARKET_ROW_TEXTS_ZH = {
   aiDeep: 'AI深度',
   /** 「模型预测」列没有当日预测时的占位（不是 0，0 会被读成真实分位） */
   predictNone: '—',
-  /** 「模型预测」列的悬停说明：第 1 行是原来「来源」那行，第 2 行是预测名次 */
-  predictHint: (line: string, rank: number, pct: number | null, date: string | null) =>
-    [
-      line,
-      `模型预测：当日第 ${rank} 名${pct == null ? '' : `（分位 ${pct.toFixed(2)}）`}${
-        date ? ` · ${date}` : ''
-      }`,
-    ]
-      .filter(Boolean)
-      .join('\n'),
+  /** 「模型预测」列的悬停说明（只说预测；原来「来源」那行挂在徽章提示上） */
+  predictHint: (rank: number, pct: number | null, date: string | null) =>
+    `模型预测：当日第 ${rank} 名${pct == null ? '' : `（分位 ${pct.toFixed(2)}）`}${
+      date ? ` · ${date}` : ''
+    }`,
   /** 当日还没跑推理时的悬停说明（17:00 同步完才有，不是取数失败） */
   predictMissingHint: '当日模型预测还没生成（每天 17:00 行情同步后跑一次推理）',
 }
@@ -2042,8 +2037,7 @@ export default function StocksPage() {
     const predict = predictScores?.scores?.[row.code]
     const date = predictScores?.trade_date ?? null
     /* 原来「来源」那行文字（AI 建议 · 时间 / 技术指标 · 日期）不再并排显示，
-       只进这一格的悬停提示（用户口径），与预测那行拼成两行。 */
-    const legacyLine = rowSourceHint(row).text
+       按用户口径挂到「指标」列徽章的悬停提示上（见 rowSourceHint），不在这里。 */
     if (!predict) {
       return (
         <span className="text-muted-foreground/60" title={MARKET_ROW_TEXTS_ZH.predictMissingHint}>
