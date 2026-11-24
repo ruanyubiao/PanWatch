@@ -350,3 +350,41 @@ describe('股票池排除北交所', () => {
     expect(isBeijingCode(undefined)).toBe(false)
   })
 })
+
+describe('深度分析2 历史弹窗：状态列对齐', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    // 三份历史，只有最新那份是「当前」——对齐问题正是它造成的（用户截图）
+    getHistory.mockResolvedValue({
+      symbol: '000975',
+      name: '山金国际',
+      count: 3,
+      items: [
+        { id: 22, created_at: '2026-11-24T10:56:45', price: 21.7, change_pct: -1.59, asof: '2026-11-24', advice: '持有', trend: '震荡' },
+        { id: 21, created_at: '2026-11-24T10:31:30', price: 22.05, change_pct: 7.93, asof: '2026-11-23', advice: '观望', trend: '震荡' },
+        { id: 3, created_at: '2026-11-11T10:46:51', price: 25.21, change_pct: 0.84, asof: '2026-11-10', advice: '观望', trend: '震荡' },
+      ],
+    })
+    latest.mockResolvedValue({
+      id: 22,
+      symbol: '000975',
+      status: 'done',
+      model_used: 'test/model',
+      created_at: '2026-11-24T10:56:45',
+      report,
+    })
+  })
+
+  it('「当前」排在建议/趋势之前，不把后两列挤歪', async () => {
+    renderPage('000975')
+    fireEvent.click(await screen.findByText('历史'))
+    const row = await screen.findByText('当前')
+    const cell = row.parentElement as HTMLElement
+    const order = Array.from(cell.querySelectorAll('span')).map(el => el.textContent)
+    expect(order).toEqual(['当前', '持有', '震荡'])
+    // 建议列宽度固定，跨行才对齐（「待复核」这种三字建议也塞得下）
+    const advice = Array.from(cell.querySelectorAll('span')).find(el => el.textContent === '持有') as HTMLElement
+    expect(advice.className).toContain('min-w-[2.75rem]')
+    expect(advice.className).toContain('text-right')
+  })
+})

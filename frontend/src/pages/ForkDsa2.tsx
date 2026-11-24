@@ -488,10 +488,13 @@ function HistoryPanel({
                       ) : null}
                     </span>
                   </span>
+                  {/* 「当前」只在一条上出现，放在最左，右边的建议/趋势才能跨行对齐 */}
                   <span className="flex shrink-0 items-center gap-2 text-[11px]">
-                    {item.advice ? <span className="text-cyan-300">{item.advice}</span> : null}
-                    {item.trend ? <span className="text-slate-400">{item.trend}</span> : null}
                     {current ? <span className="text-cyan-400">{text.historyCurrent}</span> : null}
+                    {item.advice ? (
+                      <span className="min-w-[2.75rem] text-right text-cyan-300">{item.advice}</span>
+                    ) : null}
+                    {item.trend ? <span className="text-slate-400">{item.trend}</span> : null}
                   </span>
                 </button>
               </li>
