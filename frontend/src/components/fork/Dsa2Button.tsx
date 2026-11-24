@@ -4,7 +4,6 @@ import { isBeijingCode, openDsa2Window } from '@/lib/dsa-api'
 
 export interface Dsa2ButtonProps {
   symbol: string
-  name?: string | null
   /** 悬停提示，默认「深度分析2」 */
   label?: string
 }
@@ -16,10 +15,13 @@ export interface Dsa2ButtonProps {
  * 按钮不发任何请求，也不会卡住当前页。做成一颗粒子组件是为了分析页表格与本组
  * 件之外的调用方共用同一套地址口径（``dsa2Path``），避免各处手拼 URL。
  *
+ * 地址里只带代码：名称由页面自己从报告 / 行情库取（用户口径：代码已经能唯一确定
+ * 标的，不需要 ``?name=`` 那一串百分号编码）。
+ *
  * 北交所标的直接不渲染（用户口径：股票池排除 bj / 4xx / 8xx / 920xxx）。后端
  * 也会 400 拒绝，这里少一颗按钮比让人点进去吃一个错误好。
  */
-export function Dsa2Button({ symbol, name, label = '深度分析2' }: Dsa2ButtonProps) {
+export function Dsa2Button({ symbol, label = '深度分析2' }: Dsa2ButtonProps) {
   if (isBeijingCode(symbol)) return null
   return (
     <Button
@@ -29,7 +31,7 @@ export function Dsa2Button({ symbol, name, label = '深度分析2' }: Dsa2Button
       title={label}
       aria-label={label}
       data-fork-dsa2-trigger="1"
-      onClick={() => openDsa2Window(symbol, name)}
+      onClick={() => openDsa2Window(symbol)}
     >
       <BrainCircuit className="w-3.5 h-3.5" />
     </Button>

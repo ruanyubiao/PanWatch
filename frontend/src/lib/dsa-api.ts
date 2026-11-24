@@ -105,6 +105,30 @@ export interface DsaReportRow {
   report?: DsaReport | null
 }
 
+/** 历史列表的一行：后端 ``/dsa/history`` 只回列表要用的字段，不含报告正文。 */
+export interface DsaHistoryItem {
+  id: number
+  symbol: string
+  status: DsaStatus
+  created_at?: string | null
+  started_at?: string | null
+  model_used?: string | null
+  price?: number | null
+  change_pct?: number | null
+  asof?: string | null
+  advice?: string | null
+  trend?: string | null
+  sentiment_score?: number | null
+}
+
+export interface DsaHistoryResponse {
+  symbol: string
+  /** 行情库里的股票名（地址里不再带 ?name=，页面靠它显示「山金国际」）。 */
+  name?: string | null
+  count?: number
+  items: DsaHistoryItem[]
+}
+
 /** 队列快照：``running`` 只可能有一个（单消费者），其余是等待中的。 */
 export interface DsaQueueSnapshot {
   items: DsaReportRow[]
@@ -130,8 +154,8 @@ export function getDsaLatest(symbol: string) {
   return fetchAPI<DsaReportRow>(`/stocks/dsa/latest?symbol=${encodeURIComponent(symbol)}`)
 }
 
-export function getDsaHistory(symbol: string, limit = 10) {
-  return fetchAPI<{ symbol: string; items: DsaReportRow[] }>(
+export function getDsaHistory(symbol: string, limit = 20) {
+  return fetchAPI<DsaHistoryResponse>(
     `/stocks/dsa/history?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
   )
 }
@@ -177,10 +201,18 @@ export function formatDsaInstant(value?: string | null): string {
 /**
  * 「深度分析2」页面的地址（新窗口打开用）。
  *
- * 页面自己会拉最新报告 / 起任务，所以这里只带代码和名称，不带 state。
+ * 只带股票代码，**不再带 ``?name=``** —— 代码本身已经唯一确定标的，名称由页面
+ * 从报告 / 行情库里取（``analyze`` 的 ``name`` 为空时后端也会用库里的名字）。
+ * 带中文名会让地址变成一长串百分号编码，分享、粘贴都难读（用户口径）。
  */
-export function dsa2Path(symbol: string, name?: string | null) {
-  return `/dsa2/${encodeURIComponent(symbol)}?name=${encodeURIComponent(name || '')}`
+export function dsa2Path(symbol: string) {
+  return `/dsa2/${encodeURIComponent(symbol)}`
+}
+
+/** 历史里某一份报告的地址（``/dsa2/000975?id=22``）；不带 id 就是取最新一份。 */
+export function dsa2ReportPath(symbol: string, id?: number | null) {
+  const base = dsa2Path(symbol)
+  return typeof id === 'number' && Number.isFinite(id) ? `${base}?id=${id}` : base
 }
 
 /**
@@ -198,6 +230,6 @@ export function isBeijingCode(symbol?: string | null): boolean {
 }
 
 /** 新窗口打开「深度分析2」：不发请求、不阻塞当前页（一次分析要调大模型）。 */
-export function openDsa2Window(symbol: string, name?: string | null) {
-  window.open(dsa2Path(symbol, name), '_blank', 'noopener,noreferrer')
+export function openDsa2Window(symbol: string) {
+  window.open(dsa2Path(symbol), '_blank', 'noopener,noreferrer')
 }

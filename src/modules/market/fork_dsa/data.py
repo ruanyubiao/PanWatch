@@ -97,6 +97,29 @@ _BAR_COLUMNS = """
 """
 
 
+def resolve_name(code: str) -> Optional[str]:
+    """只查股票名字（``stock_info.name``），不碰日线。
+
+    用途：页面地址里不再带 ``?name=`` 之后（用户口径：代码已经能唯一确定标的），
+    头部、队列、历史列表仍然要显示「山金国际」而不是「000975」。取不到就给
+    ``None`` —— 名字只是显示用，**绝不能因为它把页面打成 500**。
+    """
+    try:
+        conn = _connect()
+    except MarketDataUnavailable:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name FROM stock_info WHERE code = %s LIMIT 1", (code,))
+            row = cur.fetchone()
+    except Exception as exc:  # noqa: BLE001 - 名字取不到不该让接口失败
+        logger.debug("resolve_name failed: %s", exc)
+        return None
+    finally:
+        conn.close()
+    return (row or {}).get("name") or None
+
+
 def load_market_snapshot(code: str, bars: int = 130) -> dict[str, Any]:
     """个股行情 + 均线 + 技术面 + 近期统计（全部来自 MySQL）。
 

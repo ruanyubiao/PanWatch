@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   queue: vi.fn(),
   analyze: vi.fn(),
   remove: vi.fn(),
+  history: vi.fn(),
 }))
 
 vi.mock('@/lib/dsa-api', async () => {
@@ -29,6 +30,7 @@ vi.mock('@/lib/dsa-api', async () => {
     getDsaQueue: mocks.queue,
     analyzeDsa: mocks.analyze,
     deleteDsaQueueItem: mocks.remove,
+    getDsaHistory: mocks.history,
   }
 })
 
@@ -41,16 +43,20 @@ afterEach(() => {
   vi.mocked(mocks.queue).mockReset()
   vi.mocked(mocks.analyze).mockReset()
   vi.mocked(mocks.remove).mockReset()
+  vi.mocked(mocks.history).mockReset()
 })
 
-const renderPage = (symbol = '600877') =>
-  render(
-    <MemoryRouter initialEntries={[dsa2Path(symbol, '电科芯片')]}>
+const renderPage = (symbol = '600877') => {
+  // 页面一进来会读一次历史（拿股票名 + 历史列表），默认给空列表
+  mocks.history.mockResolvedValue({ symbol, name: '电科芯片', count: 0, items: [] })
+  return render(
+    <MemoryRouter initialEntries={[dsa2Path(symbol)]}>
       <Routes>
         <Route path="/dsa2/:symbol" element={<ForkDsa2Page />} />
       </Routes>
     </MemoryRouter>,
   )
+}
 
 describe('深度分析2 · 计时', () => {
   it('已用时间以 started_at 为起点：晚 65 秒打开也是 1 分多，不是 0', () => {

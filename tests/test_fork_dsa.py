@@ -1322,3 +1322,78 @@ def test_prompt_marks_quote_and_bar_dates_separately(monkeypatch):
     assert "不得把今日涨跌幅写成上一交易日" in text
     # 盘中不得出现「收盘价」这种把快照当收盘的说法
     assert "| 收盘价 |" not in text
+
+
+# ── 历史列表 / 名称解析 ──────────────────────────────────────────────────
+
+
+def _done_report(symbol: str, price: float, advice: str) -> int:
+    """造一份已完成的报告（入队 → 认领 → 写结果）。"""
+    row_id = store.create(symbol, None)
+    assert store.mark_running(row_id)
+    store.finish(
+        row_id,
+        {
+            "meta": {"stock_code": symbol, "current_price": price, "change_pct": 1.23, "asof": "2026-11-24"},
+            "summary": {"action_label": advice, "trend_prediction": "震荡", "sentiment_score": 52},
+            "strategy": {},
+            "details": {},
+        },
+        "test/model",
+    )
+    return row_id
+
+
+def test_history_returns_brief_rows_newest_first(monkeypatch):
+    """历史接口只回列表要用的字段（不回整份 payload），最新的在前。"""
+    first = _done_report("000975", 22.05, "买入")
+    second = _done_report("000975", 21.7, "观望")
+    monkeypatch.setattr(dsa_data, "resolve_name", lambda code: "山金国际")
+
+    payload = fork_dsa.get_history(symbol="000975", limit=20)
+
+    assert payload["symbol"] == "000975"
+    assert payload["name"] == "山金国际"
+    assert payload["count"] == 2
+    ids = [item["id"] for item in payload["items"]]
+    assert ids == [second, first]
+    row = payload["items"][0]
+    assert row["price"] == 21.7
+    assert row["advice"] == "观望"
+    assert row["trend"] == "震荡"
+    assert row["model_used"] == "test/model"
+    # 列表用不上报告正文，几百 KB 的 payload 不进列表
+    assert "report" not in row
+
+
+def test_history_respects_limit(monkeypatch):
+    for _ in range(3):
+        _done_report("600519", 1400.0, "观望")
+    monkeypatch.setattr(dsa_data, "resolve_name", lambda code: None)
+
+    payload = fork_dsa.get_history(symbol="600519", limit=2)
+
+    assert len(payload["items"]) == 2
+    assert payload["name"] is None
+
+
+def test_history_rejects_beijing(monkeypatch):
+    with pytest.raises(HTTPException) as exc:
+        fork_dsa.get_history(symbol="bj430047", limit=20)
+    assert exc.value.detail["code"] == "dsa_beijing_excluded"
+
+
+def test_resolve_name_never_raises(monkeypatch):
+    """名字只是显示用：库没配 / 查不到 / 出错都只能是 None，不能把页面打成 500。"""
+    monkeypatch.setattr(dsa_data, "_connect", lambda: (_ for _ in ()).throw(dsa_data.MarketDataUnavailable("x")))
+    assert dsa_data.resolve_name("000975") is None
+
+    class Boom:
+        def cursor(self):
+            raise RuntimeError("boom")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(dsa_data, "_connect", lambda: Boom())
+    assert dsa_data.resolve_name("000975") is None

@@ -2,7 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Dsa2Button } from '@/components/fork/Dsa2Button'
-import { dsa2Path } from '@/lib/dsa-api'
+import { dsa2Path, dsa2ReportPath } from '@/lib/dsa-api'
 
 /**
  * 分析页操作列里的「深度分析2」入口。
@@ -17,15 +17,19 @@ afterEach(() => {
 })
 
 describe('深度分析2 入口', () => {
-  it('地址口径：/dsa2/<代码>?name=<名称>，名称缺省留空', () => {
-    expect(dsa2Path('600519', '贵州茅台')).toBe('/dsa2/600519?name=%E8%B4%B5%E5%B7%9E%E8%8C%85%E5%8F%B0')
-    expect(dsa2Path('000001')).toBe('/dsa2/000001?name=')
-    expect(dsa2Path('000001', null)).toBe('/dsa2/000001?name=')
+  it('地址口径：只有代码，不再带 ?name=（代码本身已经唯一确定标的）', () => {
+    expect(dsa2Path('600519')).toBe('/dsa2/600519')
+    expect(dsa2Path('000975')).toBe('/dsa2/000975')
+    // 历史里某一份：/dsa2/代码?id=N；不给 id 就是最新一份
+    expect(dsa2ReportPath('000975', 22)).toBe('/dsa2/000975?id=22')
+    expect(dsa2ReportPath('000975')).toBe('/dsa2/000975')
+    expect(dsa2ReportPath('000975', null)).toBe('/dsa2/000975')
+    expect(dsa2Path('600519')).not.toContain('name=')
   })
 
-  it('点一下只开新窗口：标题与 aria 都是「深度分析2」，URL 带代码和名称', async () => {
+  it('点一下只开新窗口：标题与 aria 都是「深度分析2」，URL 只带代码', async () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null)
-    render(<Dsa2Button symbol="600519" name="贵州茅台" />)
+    render(<Dsa2Button symbol="600519" />)
 
     const button = screen.getByRole('button', { name: '深度分析2' })
     expect(button.getAttribute('title')).toBe('深度分析2')
@@ -33,21 +37,17 @@ describe('深度分析2 入口', () => {
 
     await userEvent.click(button)
     expect(open).toHaveBeenCalledTimes(1)
-    expect(open).toHaveBeenCalledWith(
-      '/dsa2/600519?name=%E8%B4%B5%E5%B7%9E%E8%8C%85%E5%8F%B0',
-      '_blank',
-      'noopener,noreferrer',
-    )
+    expect(open).toHaveBeenCalledWith('/dsa2/600519', '_blank', 'noopener,noreferrer')
   })
 
   it('悬停文案可覆盖（分析页从 cardTexts 传进来）', () => {
-    render(<Dsa2Button symbol="600519" name="贵州茅台" label="深度分析2（DSA）" />)
+    render(<Dsa2Button symbol="600519" label="深度分析2（DSA）" />)
     expect(screen.getByRole('button', { name: '深度分析2（DSA）' })).toBeTruthy()
   })
 
   it('北交所标的：入口不渲染（bj 前缀 / 4xx / 8xx / 920xxx 都不给按钮）', () => {
     for (const symbol of ['bj430047', '430047', '830799', '920992', 'bj920992', '870199']) {
-      const { container, unmount } = render(<Dsa2Button symbol={symbol} name="某北交所股" />)
+      const { container, unmount } = render(<Dsa2Button symbol={symbol} />)
       expect(container.querySelector('[data-fork-dsa2-trigger]'), symbol).toBeNull()
       unmount()
     }

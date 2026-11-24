@@ -12,6 +12,7 @@ import {
   loadPortfolioPageCoreData,
 } from '@/lib/portfolio-page-data'
 import { SuggestionBadge, type SuggestionInfo, type KlineSummary } from '@panwatch/biz-ui/components/suggestion-badge'
+import { IndicatorBadges } from '@/components/fork/IndicatorBadges'
 import { KlineSummaryDialog } from '@panwatch/biz-ui/components/kline-summary-dialog'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { Input } from '@panwatch/base-ui/components/ui/input'
@@ -1852,18 +1853,19 @@ export default function StocksPage() {
         </span>
       )
     }
+    // fork：两颗徽章的顺序是「技术面在前、AI 建议在后」—— 技术面只有买入/回避/
+    // 观望三种两字文案，宽度固定，放前面整列才对得齐（用户截图口径）。重排放在
+    // fork 自己的组件里，上游 SuggestionBadge 不动。
     return (
-      <SuggestionBadge
+      <IndicatorBadges
         suggestion={suggestion}
         stockName={row.name}
         stockSymbol={row.code}
         kline={kline}
         market="CN"
         hasPosition={false}
-        hideSourceLine
-        /* 列标题已经写着「指标」，技术面徽章只留结论（买入 / 回避 / 观望），
-           否则读成「指标 · 买入」（用户反馈）。AI 徽章的 AI 角标不受影响。 */
-        hideTechnicalPrefix
+        klineTr={klineTr}
+        onOpenKline={() => openMarketKline(row)}
       />
     )
   }
@@ -2017,7 +2019,7 @@ export default function StocksPage() {
           <Brain className="w-3.5 h-3.5" />
         </Button>
         {/* fork：深度分析2 —— DSA 口径决策报告，紧跟在「深度分析」右边，新窗口打开 */}
-        <Dsa2Button symbol={row.code} name={row.name} label={cardTexts.dsaAnalysis} />
+        <Dsa2Button symbol={row.code} label={cardTexts.dsaAnalysis} />
         <Button
           variant="ghost"
           size="icon"
@@ -3058,7 +3060,7 @@ export default function StocksPage() {
                     onDeepAnalysis={() => openDeepAnalysis(stock.id, stock.symbol, stock.name)}
                     onDsaAnalysis={() => {
                       // fork：深度分析2 —— 新窗口打开 DSA 风格决策报告，页面自己起任务/轮询
-                      openDsa2Window(stock.symbol, stock.name)
+                      openDsa2Window(stock.symbol)
                     }}
                     alertPanel={(
                       <StockPriceAlertPanel

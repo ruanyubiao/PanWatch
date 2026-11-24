@@ -2,9 +2,18 @@
  * 「深度分析2」独立页（/dsa2/:symbol）—— 从分析页那颗 BrainCircuit 按钮在新窗口打开。
  *
  * 界面按 daily_stock_analysis 的报告页复刻，只保留截图里红框那一块：
- *   头部（名称/价格/涨跌/代码/市场阶段/时间 + 重新分析）
+ *   头部（名称/价格/涨跌/代码/市场阶段/时间 + 重新分析 / 队列 / 历史）
  *   核心洞察 → 数据缺口提示 → 操作建议 + 趋势预测 → 板块联动 → 策略点位四卡
- *   右栏：市场情绪（恐慌贪婪指数环）
+ *   右栏：市场情绪（恐慌贪婪指数环）+ 数据源面板
+ *
+ * 地址口径（用户口径）
+ * -------------------
+ * ``/dsa2/000975``             → 打开最新一份（没有就停在「开始分析」）
+ * ``/dsa2/000975?id=22``       → 打开历史里第 22 份
+ *
+ * 地址里**不带** ``?name=``：6 位代码本身已经唯一确定标的，名称由后端从行情库
+ * 解析（``/api/stocks/dsa/history`` 顺带返回），带中文名只会让地址变成一长串
+ * 百分号编码。带 ``?name=`` 的老链接仍能打开，只是那一串名称被忽略。
  *
  * 数据全部来自本站 fork 接口 ``/api/stocks/dsa/*``：行情取本机 MySQL，板块/资金流/
  * 新闻取东财公开接口，模型取库里已配置的 AI service。**不依赖内网那个 DSA 服务**
@@ -14,9 +23,10 @@
  * 深色，改成跟随主题反而对不上。
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useParams, useSearchParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle,
+  History,
   ListOrdered,
   Loader2,
   RefreshCw,
@@ -33,13 +43,16 @@ import {
   DSA_POLL_MS,
   DSA_QUEUE_POLL_MS,
   analyzeDsa,
+  dsa2ReportPath,
   dsaElapsedSeconds,
   deleteDsaQueueItem,
   formatDsaInstant,
+  getDsaHistory,
   getDsaLatest,
   getDsaQueue,
   getDsaReport,
   isBeijingCode,
+  type DsaHistoryItem,
   type DsaQueueSnapshot,
   type DsaReportRow,
   type DsaSource,
@@ -69,6 +82,14 @@ export const DSA2_TEXTS_ZH = {
   queueDeleteLabel: (symbol: string) => `把 ${symbol} 从队列删除`,
   queueClose: '关闭',
   queueLoadFailed: (message: string) => `读取队列失败：${message}`,
+  history: '历史',
+  historyTitle: '历史分析报告',
+  historySubtitle: '点任意一条打开那一份报告。不带 id 的地址永远打开最新一份。',
+  historyEmpty: '这只票还没有历史报告',
+  historyLoadFailed: (message: string) => `读取历史失败：${message}`,
+  historyCurrent: '当前',
+  historyAsof: (date: string) => `行情日 ${date}`,
+  historyCount: (count: number) => `共 ${count} 份`,
   retry: '重新分析',
   coreInsight: '核心洞察',
   advice: '操作建议',
@@ -373,11 +394,125 @@ function QueuePanel({
   )
 }
 
+/** 历史弹层：这只票的历次报告（只列已完成），点一条跳到 `/dsa2/代码?id=N`。 */
+function HistoryPanel({
+  symbol,
+  items,
+  currentId,
+  loading,
+  error,
+  onClose,
+  onPick,
+}: {
+  symbol: string
+  items: DsaHistoryItem[]
+  currentId: number | null
+  loading: boolean
+  error: string | null
+  onClose: () => void
+  onPick: (item: DsaHistoryItem) => void
+}) {
+  const text = DSA2_TEXTS_ZH
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 px-4 py-10"
+      data-dsa2-history-overlay
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        className={`${CARD} w-full max-w-xl bg-[#0b1220] p-5`}
+        data-dsa2-history
+        role="dialog"
+        aria-label={text.historyTitle}
+        onClick={event => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-medium text-cyan-300">{text.historyTitle}</h2>
+            <div className="mt-1 text-[11px] text-slate-500">
+              {text.historySubtitle}
+              {items.length ? ` ${text.historyCount(items.length)}` : ''}
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-slate-400 hover:text-slate-100"
+            onClick={onClose}
+            aria-label={text.queueClose}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+
+        {error ? (
+          <div className="mt-3 rounded-lg border border-rose-900/60 bg-rose-950/40 px-3 py-2 text-[11px] text-rose-200">
+            {text.historyLoadFailed(error)}
+          </div>
+        ) : null}
+
+        <ul className="mt-4 flex max-h-[60vh] flex-col gap-2 overflow-y-auto scrollbar">
+          {items.length === 0 && !loading ? (
+            <li className="rounded-lg border border-slate-800 px-3 py-6 text-center text-xs text-slate-500">
+              {text.historyEmpty}
+            </li>
+          ) : null}
+          {items.map(item => {
+            const current = currentId !== null && item.id === currentId
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  className={`flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-colors ${
+                    current
+                      ? 'border-cyan-500/50 bg-cyan-500/10'
+                      : 'border-slate-800 bg-slate-900/40 hover:border-cyan-500/30 hover:bg-slate-800/60'
+                  }`}
+                  data-dsa2-history-item={item.id}
+                  data-dsa2-history-current={current ? '1' : undefined}
+                  onClick={() => onPick(item)}
+                  title={`${symbol} #${item.id}`}
+                >
+                  <span className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="shrink-0 font-mono text-[11px] text-slate-500">#{item.id}</span>
+                    <span className="min-w-0 truncate whitespace-nowrap text-xs text-slate-200">
+                      {formatDsaInstant(item.created_at)}
+                      {item.price !== null && item.price !== undefined ? (
+                        <span className="ml-2 text-[11px] text-slate-400">
+                          {formatPrice(item.price)} · {formatPct(item.change_pct)}
+                        </span>
+                      ) : null}
+                      {item.asof ? (
+                        <span className="ml-2 text-[11px] text-slate-500">{text.historyAsof(item.asof)}</span>
+                      ) : null}
+                    </span>
+                  </span>
+                  <span className="flex shrink-0 items-center gap-2 text-[11px]">
+                    {item.advice ? <span className="text-cyan-300">{item.advice}</span> : null}
+                    {item.trend ? <span className="text-slate-400">{item.trend}</span> : null}
+                    {current ? <span className="text-cyan-400">{text.historyCurrent}</span> : null}
+                  </span>
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+    </div>
+  )
+}
+
 export default function ForkDsa2Page() {
   const text = DSA2_TEXTS_ZH
   const { symbol = '' } = useParams()
   const [search] = useSearchParams()
-  const nameHint = search.get('name') || ''
+  const navigate = useNavigate()
+  // ``?id=22`` = 打开历史里指定的那一份；不带 id = 永远打开最新一份（用户口径）。
+  const idParam = useMemo(() => {
+    const raw = Number(search.get('id'))
+    return Number.isInteger(raw) && raw > 0 ? raw : null
+  }, [search])
   const [row, setRow] = useState<DsaReportRow | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
@@ -389,6 +524,28 @@ export default function ForkDsa2Page() {
   const [queue, setQueue] = useState<DsaQueueSnapshot | null>(null)
   const [queueError, setQueueError] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  // 历史：列表 + 弹层。名称也从这一条接口拿 —— 地址里不再带 ?name=（用户口径：
+  // 代码已经唯一确定标的），但头部、队列还是得显示「山金国际」而不是「000975」。
+  const [history, setHistory] = useState<DsaHistoryItem[]>([])
+  const [resolvedName, setResolvedName] = useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
+
+  const loadHistory = useCallback(async () => {
+    if (!symbol || isBeijingCode(symbol)) return
+    setHistoryLoading(true)
+    try {
+      const data = await getDsaHistory(symbol)
+      setHistory(data.items ?? [])
+      if (data.name) setResolvedName(data.name)
+      setHistoryError(null)
+    } catch (exc) {
+      setHistoryError(exc instanceof Error ? exc.message : String(exc))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [symbol])
 
   const loadQueue = useCallback(async () => {
     try {
@@ -404,21 +561,30 @@ export default function ForkDsa2Page() {
     setStarting(true)
     setError(null)
     try {
-      const started = await analyzeDsa(symbol, nameHint)
+      const started = await analyzeDsa(symbol, resolvedName || row?.report?.meta?.stock_name || null)
       setRow(started)
+      // 入了新任务就把地址钉到这一份上：刷新 / 分享出来看到的还是它，而不是
+      // 「又读了最新的另一份」。id 没变（连点两次）就不动地址，免得白跑一次加载。
+      if (started.id !== null && started.id !== idParam) {
+        navigate(dsa2ReportPath(symbol, started.id), { replace: true })
+      }
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc))
     } finally {
       setStarting(false)
     }
-  }, [nameHint, symbol])
+  }, [idParam, navigate, resolvedName, row?.report?.meta?.stock_name, symbol])
 
-  // 首次进入：只读历史结果，**绝不自动起任务**（用户口径：新窗口弹出后由人手动点按钮）。
-  // 没有历史就停在「开始分析」这一屏；queued/running 直接进轮询。
+  // 历史列表：进页面读一次（拿名称 + 判断有没有历史），打开弹层时再刷一次。
+  useEffect(() => {
+    void loadHistory()
+  }, [loadHistory])
+
+  // 读报告：带 ?id= 就读那一份，不带就读最新——**绝不自动起任务**（用户口径：
+  // 新窗口弹出后由人手动点按钮）。没有历史就停在「开始分析」那一屏。
   useEffect(() => {
     let cancelled = false
     if (!symbol) return
-    setRow(null)
     setError(null)
     setLoaded(false)
     // 北交所：不在股票池内，一个请求都不发（后端本来也会 400）
@@ -426,11 +592,16 @@ export default function ForkDsa2Page() {
       setLoaded(true)
       return
     }
-    getDsaLatest(symbol)
-      .then(latest => {
+    // 换标的才清空画面；只换 id（点历史 / 刚入队）时保留当前内容，别闪一下再回来
+    setRow(current => (current && current.symbol === symbol ? current : null))
+    const request = idParam !== null ? getDsaReport(idParam) : getDsaLatest(symbol)
+    request
+      .then(next => {
         if (cancelled) return
-        if (latest && latest.status !== 'none') {
-          setRow(latest)
+        if (next && next.status !== 'none') {
+          setRow(next)
+        } else {
+          setRow(null)
         }
         setLoaded(true)
       })
@@ -442,7 +613,7 @@ export default function ForkDsa2Page() {
     return () => {
       cancelled = true
     }
-  }, [symbol])
+  }, [symbol, idParam])
 
   // 轮询：排队中与运行中都轮询（排到队时要能看到状态变化），done/failed 立刻停。
   useEffect(() => {
@@ -495,7 +666,7 @@ export default function ForkDsa2Page() {
   const strategy = report?.strategy ?? {}
   const details = report?.details ?? {}
 
-  const stockName = meta.stock_name || row?.name || nameHint || symbol
+  const stockName = meta.stock_name || row?.name || resolvedName || symbol
   const changeTone = marketSignTextClass(meta.change_pct)
   // 数据缺口：老报告里可能还留着「需第三方 apikey / 未配置」这类已过时的行 ——
   // 那些模块现在都换成免费源了，显示出来只会误导，所以在渲染层筛掉（新报告本就没有）。
@@ -532,7 +703,7 @@ export default function ForkDsa2Page() {
         <div className="mx-auto flex max-w-3xl flex-col gap-4">
           <header className={`${CARD} flex flex-wrap items-center justify-between gap-3 p-5`}>
             <div>
-              <h1 className="text-xl font-semibold text-white">{nameHint || symbol}</h1>
+              <h1 className="text-xl font-semibold text-white">{resolvedName || symbol}</h1>
               <div className="mt-2 text-xs text-slate-400">
                 <span className="rounded-md border border-cyan-500/25 px-2 py-0.5 font-mono text-cyan-300">{symbol}</span>
               </div>
@@ -612,6 +783,26 @@ export default function ForkDsa2Page() {
               {queue && queue.pending > 0 ? (
                 <span className="ml-1 rounded-full bg-cyan-500/20 px-1.5 py-0.5 text-[10px] text-cyan-200">
                   {queue.pending}
+                </span>
+              ) : null}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-slate-700 text-slate-300 hover:bg-slate-800/60"
+              onClick={() => {
+                setHistoryOpen(true)
+                // 打开时刷一次：刚跑完的那一份要能立刻出现在列表里
+                void loadHistory()
+              }}
+              data-dsa2-history-trigger="1"
+              aria-label={text.history}
+            >
+              <History className="mr-1 h-3.5 w-3.5" />
+              {text.history}
+              {history.length ? (
+                <span className="ml-1 rounded-full bg-slate-700/60 px-1.5 py-0.5 text-[10px] text-slate-300">
+                  {history.length}
                 </span>
               ) : null}
             </Button>
@@ -818,6 +1009,22 @@ export default function ForkDsa2Page() {
           deletingId={deletingId}
           onClose={() => setQueueOpen(false)}
           onDelete={id => void handleDelete(id)}
+        />
+      ) : null}
+
+      {historyOpen ? (
+        <HistoryPanel
+          symbol={symbol}
+          items={history}
+          currentId={row?.id ?? null}
+          loading={historyLoading}
+          error={historyError}
+          onClose={() => setHistoryOpen(false)}
+          onPick={item => {
+            setHistoryOpen(false)
+            // 直接跳链接 /dsa2/代码?id=N（用户口径）；不带 id 的地址仍然取最新一份
+            navigate(dsa2ReportPath(symbol, item.id))
+          }}
         />
       ) : null}
     </div>

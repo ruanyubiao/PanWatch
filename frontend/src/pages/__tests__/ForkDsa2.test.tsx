@@ -60,6 +60,7 @@ const latest = vi.fn()
 const getReport = vi.fn()
 const analyze = vi.fn()
 const getQueue = vi.fn()
+const getHistory = vi.fn()
 
 vi.mock('@/lib/dsa-api', async () => {
   // 纯格式化/计时函数保留真实实现（本文件要钉的正是显示口径），只把网络调用换成 mock。
@@ -72,13 +73,13 @@ vi.mock('@/lib/dsa-api', async () => {
     analyzeDsa: (...args: unknown[]) => analyze(...args),
     getDsaQueue: (...args: unknown[]) => getQueue(...args),
     deleteDsaQueueItem: vi.fn(),
-    getDsaHistory: vi.fn(),
+    getDsaHistory: (...args: unknown[]) => getHistory(...args),
   }
 })
 
-function renderPage(symbol = '002256', name = '%E5%85%86%E6%96%B0%E8%82%A1%E4%BB%BD') {
+function renderPage(symbol = '002256', query = '') {
   return render(
-    <MemoryRouter initialEntries={[`/dsa2/${symbol}?name=${name}`]}>
+    <MemoryRouter initialEntries={[`/dsa2/${symbol}${query}`]}>
       <Routes>
         <Route path="/dsa2/:symbol" element={<ForkDsa2Page />} />
       </Routes>
@@ -89,6 +90,13 @@ function renderPage(symbol = '002256', name = '%E5%85%86%E6%96%B0%E8%82%A1%E4%BB
 describe('深度分析2 页面', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // 页面一进来读一次历史：地址里不再带 ?name=，名称由这条接口给（用户口径）
+    getHistory.mockResolvedValue({
+      symbol: '002256',
+      name: '兆新股份',
+      count: 0,
+      items: [],
+    })
     latest.mockResolvedValue({
       id: 7,
       symbol: '002256',
@@ -147,7 +155,8 @@ describe('深度分析2 页面', () => {
         },
       },
     })
-    renderPage('000975', '%E5%B1%B1%E9%87%91%E5%9B%BD%E9%99%85')
+    getHistory.mockResolvedValue({ symbol: '000975', name: '山金国际', count: 0, items: [] })
+    renderPage('000975')
     expect(await screen.findByText('山金国际')).toBeTruthy()
     expect(screen.getByText('21.61')).toBeTruthy()
     expect(screen.getByText('-2.00%')).toBeTruthy()
@@ -158,6 +167,8 @@ describe('深度分析2 页面', () => {
   it('没有历史报告时不自作主张：停在「开始分析」，点按钮才起任务', async () => {
     latest.mockResolvedValue({ id: null, symbol: '002256', status: 'none', report: null })
     analyze.mockResolvedValue({ id: 8, symbol: '002256', status: 'running', report: null })
+    // 起任务后页面把地址钉到 ?id=8，随后的加载读的就是这一份
+    getReport.mockResolvedValue({ id: 8, symbol: '002256', status: 'running', report: null })
     renderPage()
     expect(await screen.findByText('开始分析')).toBeTruthy()
     // 打开页面不能自己烧一次模型
@@ -278,7 +289,7 @@ describe('深度分析2 页面', () => {
   })
 
   it('北交所标的：页面只给一句话，一个请求都不发、也不给「开始分析」', async () => {
-    renderPage('920992', '%E4%B8%AD%E7%A7%91%E7%BE%8E%E8%8F%B1')
+    renderPage('920992')
     expect(await screen.findByText('北交所标的不在股票池内')).toBeTruthy()
     expect(screen.getByText(/北交所（bj \/ 4xx \/ 8xx \/ 920xxx）一律排除/)).toBeTruthy()
     expect(document.querySelector('[data-dsa2-bj-blocked="1"]')).toBeTruthy()
@@ -290,7 +301,7 @@ describe('深度分析2 页面', () => {
 
   it('bj 前缀写法同样干净拦截（不影响沪深代码）', async () => {
     for (const symbol of ['bj430047', '430047.BJ', 'bj920992', '830799']) {
-      const { unmount } = renderPage(symbol, '%E6%9F%90%E5%8C%97%E4%BA%A4%E6%89%80')
+      const { unmount } = renderPage(symbol)
       expect(await screen.findByText('北交所标的不在股票池内'), symbol).toBeTruthy()
       expect(document.querySelector('[data-dsa2-bj-blocked="1"]'), symbol).toBeTruthy()
       unmount()
@@ -303,7 +314,8 @@ describe('深度分析2 页面', () => {
 describe('真实 payload 回归（云端 600519 那份原样回放）', () => {
   it('页面完整渲染：不报错、不出现「未配置」，四张点位卡与数据源面板都在', async () => {
     latest.mockResolvedValue(realRow600519)
-    renderPage('600519', '%E8%B4%B5%E5%B7%9E%E8%8C%85%E5%8F%B0')
+    getHistory.mockResolvedValue({ symbol: '600519', name: '贵州茅台', count: 0, items: [] })
+    renderPage('600519')
     expect(await screen.findByText('贵州茅台')).toBeTruthy()
     // 不报错
     expect(screen.queryByText(/读取报告失败/)).toBeNull()

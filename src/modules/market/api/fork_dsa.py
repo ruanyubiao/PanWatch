@@ -123,5 +123,33 @@ def get_latest(symbol: str = Query(...)):
 
 @router.get("/dsa/history")
 def get_history(symbol: str = Query(...), limit: int = Query(20, ge=1, le=100)):
+    """这只票的历史报告（只列 ``done``，最新的在前）。
+
+    只回**列表要用的那几个字段**，不回整份 payload —— 20 份报告正文几百 KB，
+    历史弹层用不上。``name`` 顺带在这里解析（地址里不带 ``?name=`` 之后，页面
+    在还没有报告时靠它显示股票名）。
+    """
     code = _normalize_symbol(symbol)
-    return {"symbol": code, "items": store.history(code, limit)}
+    rows = store.history(code, limit)
+    items = []
+    for row in rows:
+        report = row.get("report") or {}
+        meta = report.get("meta") or {}
+        summary = report.get("summary") or {}
+        items.append(
+            {
+                "id": row["id"],
+                "symbol": row["symbol"],
+                "status": row["status"],
+                "created_at": row.get("created_at"),
+                "started_at": row.get("started_at"),
+                "model_used": row.get("model_used"),
+                "price": meta.get("current_price"),
+                "change_pct": meta.get("change_pct"),
+                "asof": meta.get("asof"),
+                "advice": summary.get("action_label") or summary.get("operation_advice"),
+                "trend": summary.get("trend_prediction"),
+                "sentiment_score": summary.get("sentiment_score"),
+            }
+        )
+    return {"symbol": code, "name": data.resolve_name(code), "count": len(items), "items": items}
