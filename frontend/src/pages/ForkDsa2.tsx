@@ -136,6 +136,13 @@ export const DSA2_TEXTS_ZH = {
 
 const CARD = 'rounded-2xl border border-cyan-500/20 bg-[#0b1220]/80 shadow-[0_0_0_1px_rgba(34,211,238,0.06)]'
 
+/**
+ * 左右两栏的宽度只在这里定义一次。
+ * 页面上有两行都是「左宽右窄」：证据行（技术面 / 模型预测）和结论行（核心洞察 / 情绪）。
+ * 两行各写一个值就会差几十像素，右栏的左边界对不齐——所以必须共用同一个常量。
+ */
+const TWO_COL = 'grid gap-5 lg:grid-cols-[minmax(0,1fr)_330px]'
+
 /** 「已用 1 分 06 秒」——秒数是算出来的，不从 0 起数。 */
 function formatDuration(seconds: number): string {
   const total = Math.max(0, Math.floor(seconds))
@@ -866,7 +873,7 @@ export default function ForkDsa2Page() {
               所以放在 AI 的核心洞察之前。两块都只读报告里存的快照，打开页面不会
               拿今天的数据去补旧报告。
             */}
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_330px]" data-dsa2-evidence="1">
+            <div className={TWO_COL} data-dsa2-evidence="1">
               <Dsa2TechnicalPanel
                 technical={details.technical}
                 symbol={symbol}
@@ -879,7 +886,7 @@ export default function ForkDsa2Page() {
               />
             </div>
 
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+            <div className={TWO_COL} data-dsa2-conclusion="1">
               {/* 左栏 */}
               <div className="flex flex-col gap-5">
               <section className={`${CARD} p-5`} data-dsa2-core>

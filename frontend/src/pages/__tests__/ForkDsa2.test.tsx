@@ -347,6 +347,29 @@ describe('真实 payload 回归（云端 600519 那份原样回放）', () => {
   })
 })
 
+describe('深度分析2 版面：上下两行的左右分栏必须对齐', () => {
+  it('证据行（技术面/模型预测）与结论行（核心洞察/情绪）共用同一套栅格', async () => {
+    latest.mockResolvedValue(realRow600519)
+    getHistory.mockResolvedValue({ symbol: '600519', name: '贵州茅台', count: 0, items: [] })
+    renderPage('600519')
+    await screen.findByText('贵州茅台')
+
+    const evidence = document.querySelector('[data-dsa2-evidence]') as HTMLElement
+    const conclusion = document.querySelector('[data-dsa2-conclusion]') as HTMLElement
+    expect(evidence).toBeTruthy()
+    expect(conclusion).toBeTruthy()
+
+    // 两行各自写死宽度就会差几十像素，右栏左边界对不齐（用户截图就是这个）
+    expect(evidence.className).toBe(conclusion.className)
+    expect(evidence.className).toContain('lg:grid-cols-[minmax(0,1fr)_330px]')
+    // 旧的那个 300px 右栏不许再出现
+    expect(document.body.innerHTML).not.toContain('_300px]')
+
+    // 两行右栏的左边缘落在同一列：同一父容器、同一栅格定义即可保证
+    expect(evidence.parentElement).toBe(conclusion.parentElement)
+  })
+})
+
 describe('股票池排除北交所', () => {
   it('isBeijingCode 认 bj / 4xx / 8xx / 920xxx，不误伤沪深主板与创业板', async () => {
     const actual = await vi.importActual<typeof import('@/lib/dsa-api')>('@/lib/dsa-api')
