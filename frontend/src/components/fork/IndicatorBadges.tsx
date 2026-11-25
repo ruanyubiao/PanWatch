@@ -111,18 +111,24 @@ export function IndicatorBadges({
               : undefined
           }
         />
-        <ForkSuggestionBadge
-          suggestion={suggestion}
-          stockName={stockName}
-          stockSymbol={stockSymbol}
-          kline={kline}
-          market={market}
-          hasPosition={hasPosition}
-          showTechnicalCompanion={false}
-          hideSourceLine
-          hideTechnicalPrefix
-          titleHint={aiHint ?? undefined}
-        />
+        {/* AI 角标是绝对定位 + ``-translate-x-1/2``，会往左溢出半颗（约 12px），
+            gap-1 只留 4px，角标就压到前一颗技术面徽章的字上了。这里给 AI 徽章
+            外面套一层留白（0.625rem），让那半颗角标落在空隙里 —— 上游 BadgeChip
+            一行没动（用户 2026-11-25 报 UI 问题）。 */}
+        <span className="inline-flex pl-2.5" data-fork-ai-badge-gap="">
+          <ForkSuggestionBadge
+            suggestion={suggestion}
+            stockName={stockName}
+            stockSymbol={stockSymbol}
+            kline={kline}
+            market={market}
+            hasPosition={hasPosition}
+            showTechnicalCompanion={false}
+            hideSourceLine
+            hideTechnicalPrefix
+            titleHint={aiHint ?? undefined}
+          />
+        </span>
       </div>
     </div>
   )

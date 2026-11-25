@@ -106,4 +106,24 @@ describe('指标列徽章顺序', () => {
     const matches = (container.textContent || '').match(/回避/g) || []
     expect(matches).toHaveLength(1)
   })
+
+  /**
+   * AI 角标压在技术面徽章上的 UI 问题（用户 2026-11-25 截图）。
+   *
+   * 角标在 ``BadgeChip`` 里是 ``absolute left-0 -translate-x-1/2``，会往左溢出
+   * 自己一半宽度（约 12px），而两颗徽章之间的 ``gap-1`` 只有 4px。修法是在 AI 徽章
+   * 外面套一层左留白，**不动上游 BadgeChip**。这条钉住那层留白存在且不小于角标溢出量。
+   */
+  it('AI 徽章前留出空隙，避免 AI 角标压到技术面徽章上', () => {
+    const { container } = render(
+      <IndicatorBadges suggestion={suggestion} kline={bearishKline} klineTr={klineTr} />,
+    )
+    const gap = container.querySelector('[data-fork-ai-badge-gap]')
+    expect(gap, 'AI 徽章必须有留白包裹层').toBeTruthy()
+    const classes = gap!.className
+    // 角标溢出半颗 ≈ 12px；gap-1(4px) + pl-2.5(10px) = 14px ≥ 12px
+    expect(classes).toContain('pl-2.5')
+    // 留白层里面才是 AI 徽章本体，顺序不能反过来
+    expect(gap!.querySelector('button')).toBeTruthy()
+  })
 })
