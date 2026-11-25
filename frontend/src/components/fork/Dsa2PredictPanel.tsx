@@ -37,7 +37,7 @@ export const DSA2_PREDICT_TEXTS_ZH = {
   rank: '名次',
   universe: (n: number) => `全市场 ${n} 只`,
   pct: '分位',
-  pctHint: '分位 100 = 当日第 1 名；越高越靠前',
+  pctHint: '越高越靠前（100 = 第 1 名）',
   zone: '有效性判定',
   inZone: '在有效区（前 10%）',
   outZone: '不在有效区（无信息）',
