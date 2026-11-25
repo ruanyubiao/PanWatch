@@ -671,13 +671,17 @@ describe('fork: 分析页全市场表格', () => {
     await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
     expect(codesInOrder()).toEqual(['000001', '600519', '920000'])
 
-    // 第一次点「模型预测」→ 名次降序（名次大的在前：1500 → 900 → 5）
+    // 第一次点「模型预测」→ 名次**升序**（5 → 900 → 1500）：名次 1 才是模型最看好，
+    // 先点头名才是这一列想给的答案；悬停提示也得跟着说「点击升序」。
+    const predictHeader = screen.getByRole('button', { name: '按模型预测排序' })
+    expect(predictHeader.getAttribute('title')).toBe('点击升序')
+    await userEvent.click(predictHeader)
+    await waitFor(() => expect(codesInOrder()).toEqual(['600519', '000001', '920000']))
+    expect(screen.getByRole('button', { name: '按模型预测排序' }).getAttribute('title')).toBe('点击降序')
+
+    // 再点一次 → 名次降序（1500 最前）
     await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
     await waitFor(() => expect(codesInOrder()).toEqual(['920000', '000001', '600519']))
-
-    // 再点一次 → 名次升序（5 最前 —— 名次 1 才是模型最看好）
-    await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
-    await waitFor(() => expect(codesInOrder()).toEqual(['600519', '000001', '920000']))
 
     // 再点一次 → 取消排序，回到接口原始顺序
     await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
@@ -690,11 +694,13 @@ describe('fork: 分析页全市场表格', () => {
     renderTable({ predictRanks: { '600519': 5, '000001': 900 } })
 
     await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
-    await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
-    await waitFor(() => expect(codesInOrder()).toEqual(['000001', '600519', '920000']))
-
+    // 第一次是升序：有数的按名次（5 → 900），没数的恒最后
     await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
     await waitFor(() => expect(codesInOrder()).toEqual(['600519', '000001', '920000']))
+
+    // 第二次是降序：900 → 5，没数的仍然最后
+    await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
+    await waitFor(() => expect(codesInOrder()).toEqual(['000001', '600519', '920000']))
   })
 
   it('「模型预测」列：整张 map 缺失（当天没跑推理）时排序不报错，退回按代码排', async () => {

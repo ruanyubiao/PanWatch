@@ -262,12 +262,20 @@ export function compareRows(
 }
 
 /**
- * 表头三态循环：未排序 → 降序 → 升序 → 未排序（``null`` = 回到接口给的原始顺序，
+ * 表头三态循环：未排序 → 第一档 → 第二档 → 未排序（``null`` = 回到接口给的原始顺序，
  * 也就是按代码升序）。提示语与图标状态都跟这三态走。
+ *
+ * ``firstDir`` 默认 ``'desc'``（数值列都是「大的在前」，与既有行为一致）；
+ * 「模型预测」列传 ``'asc'``——那一列是**名次**，1 才是模型最看好，
+ * 第一次点击要先看到头名，而不是全市场倒数第一名。
  */
-export function nextSortState(current: SortState | null, key: SortKey): SortState | null {
-  if (!current || current.key !== key) return { key, dir: 'desc' }
-  if (current.dir === 'desc') return { key, dir: 'asc' }
+export function nextSortState(
+  current: SortState | null,
+  key: SortKey,
+  firstDir: 'asc' | 'desc' = 'desc',
+): SortState | null {
+  if (!current || current.key !== key) return { key, dir: firstDir }
+  if (current.dir === firstDir) return { key, dir: firstDir === 'desc' ? 'asc' : 'desc' }
   return null
 }
 
@@ -277,6 +285,13 @@ interface ColumnDef {
   key: string
   label: string
   sortKey?: SortKey
+  /**
+   * 第一次点表头时的方向，默认 ``'desc'``。
+   *
+   * 「模型预测」列是名次（1 = 模型最看好），传 ``'asc'``，否则第一次点击
+   * 会先把全市场倒数第一名排到第一屏 —— 那不是排序想给人的答案。
+   */
+  firstDir?: 'asc' | 'desc'
   align?: 'right'
   /** 固定列宽（用户指定：市场/代码/名称/状态/指标/来源/操作） */
   width?: number
@@ -319,7 +334,7 @@ const COLUMNS: ColumnDef[] = [
   // 220 → 104：格子里是「#4028 19.31」，11–12px 等宽下约 76px，留 8+8 内边距与 18px 左间距
   // 之后还剩富余（名次最大 4 位数、分位最长 6 个字符「100.00」也装得下）。
   // 挪到「指标」前：紧跟在「状态」后面，先看名次再看结论，读数动线先生后后判断。
-  { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, sortKey: 'predict_rank', width: 104, padLeft: 18 },
+  { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, sortKey: 'predict_rank', firstDir: 'asc', width: 104, padLeft: 18 },
   // 指标列：列宽 140（本轮不动），左内边距 20 → 12（前一颗「模型预测」已经撑开了距离）
   { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 140, padLeft: 12 },
   // 操作列 252：Agent 状态列整列删掉，改成操作列里一颗「A」图标；
@@ -334,10 +349,14 @@ export function sortIconState(sort: SortState | null, key: SortKey): 'none' | 'a
 }
 
 /** 表头悬停提示：说的是「下一次点击会发生什么」（与用户给的截图一致）。 */
-export function sortHintOf(sort: SortState | null, key: SortKey): string {
+export function sortHintOf(
+  sort: SortState | null,
+  key: SortKey,
+  firstDir: 'asc' | 'desc' = 'desc',
+): string {
   const state = sortIconState(sort, key)
-  if (state === 'none') return MARKET_TABLE_TEXTS_ZH.sortToDesc
-  if (state === 'desc') return MARKET_TABLE_TEXTS_ZH.sortToAsc
+  if (state === 'none') return firstDir === 'asc' ? MARKET_TABLE_TEXTS_ZH.sortToAsc : MARKET_TABLE_TEXTS_ZH.sortToDesc
+  if (state === firstDir) return firstDir === 'asc' ? MARKET_TABLE_TEXTS_ZH.sortToDesc : MARKET_TABLE_TEXTS_ZH.sortToAsc
   return MARKET_TABLE_TEXTS_ZH.sortCancel
 }
 
@@ -752,8 +771,12 @@ export function StockMarketTable({
                         <button
                           type="button"
                           aria-label={MARKET_TABLE_TEXTS_ZH.sortBy(column.label)}
-                          title={sortHintOf(sort, column.sortKey)}
-                          onClick={() => setSort(current => nextSortState(current, column.sortKey as SortKey))}
+                          title={sortHintOf(sort, column.sortKey, column.firstDir)}
+                          onClick={() =>
+                            setSort(current =>
+                              nextSortState(current, column.sortKey as SortKey, column.firstDir),
+                            )
+                          }
                           className={`inline-flex items-center gap-1 transition-colors hover:text-primary ${
                             iconState === 'none' ? '' : 'text-primary'
                           }`}
