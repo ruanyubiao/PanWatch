@@ -153,6 +153,27 @@ describe('模型预测区（时点 + 有效区）', () => {
     expect(screen.getByText(/不能说它在看空/)).toBeTruthy()
   })
 
+  it('人话说明常驻可见（不在折叠区），两种区间都渲染', () => {
+    const { container, rerender } = render(
+      <Dsa2PredictPanel
+        prediction={{ ...inZone, rank_no: 4028, pct: 19.31 }}
+        symbol="000975"
+        reportAsof="2026-11-24"
+      />,
+    )
+    const out = container.querySelector('[data-dsa2-predict-plain="1"]')
+    expect(out).toBeTruthy()
+    expect(out!.textContent).toContain('怎么用')
+    expect(out!.textContent).toContain('为什么只看前 10%')
+    // 必须挂在 details 之外，否则要点开折叠才看得到
+    expect(out!.closest('details')).toBeNull()
+
+    rerender(<Dsa2PredictPanel prediction={inZone} symbol="600519" reportAsof="2026-11-24" />)
+    const inside = container.querySelector('[data-dsa2-predict-plain="1"]')
+    expect(inside).toBeTruthy()
+    expect(inside!.closest('details')).toBeNull()
+  })
+
   it('阈值就是分位 90（前 10%）：89.99 不算，90 算', () => {
     expect(PREDICT_EFFECTIVE_PCT).toBe(90)
     const { rerender } = render(

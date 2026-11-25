@@ -43,6 +43,8 @@ export const DSA2_PREDICT_TEXTS_ZH = {
   outZone: '不在有效区（无信息）',
   inZoneHint: '这是模型唯一有实测信息的区间：值得作为一条参考，但它只说明相对位置靠前，不是买入信号。',
   outZoneHint: '模型对这个区间没有实测信息，按「无信息」处理 —— 不能说它在看空这只票，也不能据此回避。',
+  plainUse: '怎么用：只看有没有进前 10%（约前 500 名）。进了，当成「再多看一眼这只票」的理由；没进，就当这个信号不存在 —— 不看空，也不据此卖出。',
+  plainWhy: '为什么只看前 10%：2026 全年实测里，只有最头部那一档真有超额（+172bp），中间和尾部各档基本往下偏（−95 ~ +57bp），整体排序不成立，所以只有头部有点信息。',
   loading: '正在读取预测…',
   empty: '这只票没有预测记录',
   emptyHint: '可能不在股票池内（北交所/ST/上市不足），或当天推理还没跑（每日 17:00 同步后计算）。',
@@ -249,6 +251,15 @@ export function Dsa2PredictPanel({ prediction, symbol, reportAsof }: Props) {
             <span data-dsa2-predict-hint="1">
               {inZone ? DSA2_PREDICT_TEXTS_ZH.inZoneHint : DSA2_PREDICT_TEXTS_ZH.outZoneHint}
             </span>
+          </div>
+
+          {/* 人话说明：始终可见，不进折叠区 —— 这块最容易被误读成一个「看涨分数」 */}
+          <div
+            className="space-y-1.5 border-l-2 border-slate-700/70 pl-2.5 text-[11px] leading-relaxed text-slate-400"
+            data-dsa2-predict-plain="1"
+          >
+            <p>{DSA2_PREDICT_TEXTS_ZH.plainUse}</p>
+            <p>{DSA2_PREDICT_TEXTS_ZH.plainWhy}</p>
           </div>
 
           <details className="group">
