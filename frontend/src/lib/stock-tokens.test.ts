@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isLikelyAShareCode, looksLikeCode, normalizeSymbol, sameListingCode, splitStockTokens } from '@/lib/stock-tokens'
+import { isLikelyAShareCode, looksLikeCode, normalizeSymbol, parseStockInput, sameListingCode, splitStockTokens } from '@/lib/stock-tokens'
 
 /**
  * 批量添加的输入切分。
@@ -27,8 +27,14 @@ describe('splitStockTokens', () => {
     expect(splitStockTokens('  600519，，,000001,,  ')).toEqual(['600519', '000001'])
   })
 
-  it('保留代码与名称混合的输入，并去掉首尾空白', () => {
-    expect(splitStockTokens(' 600519  贵州茅台 ，比亚迪 ')).toEqual(['600519', '贵州茅台', '比亚迪'])
+  it('一行「代码 名称」合成一条，名称不再单独成条', () => {
+    // 用户 2026-11-25 报的原始输入：三行输入只应得到两只股票
+    expect(splitStockTokens('600486 扬农化工\n000981 山子高科\n600486 扬农化工')).toEqual([
+      '600486',
+      '000981',
+    ])
+    // 名称单独出现（没有代码）时仍各自成条，交给搜索解析
+    expect(splitStockTokens(' 600519  贵州茅台 ，比亚迪 ')).toEqual(['600519', '比亚迪'])
   })
 
   it('去重但保留首次出现的顺序', () => {
@@ -40,6 +46,50 @@ describe('splitStockTokens', () => {
   it('空输入返回空数组', () => {
     expect(splitStockTokens('')).toEqual([])
     expect(splitStockTokens('   \n\t ')).toEqual([])
+  })
+})
+
+describe('parseStockInput', () => {
+  it('代码 + 名称成一条，并带上名称提示', () => {
+    expect(parseStockInput('600486 扬农化工')).toEqual([
+      { token: '600486', nameHint: '扬农化工', raw: '600486 扬农化工' },
+    ])
+  })
+
+  it('用户这次的三行输入：同一只票合并，只剩两条', () => {
+    const entries = parseStockInput('600486 扬农化工\n000981 山子高科\n600486 扬农化工')
+    expect(entries.map(e => e.token)).toEqual(['600486', '000981'])
+    expect(entries.map(e => e.nameHint)).toEqual(['扬农化工', '山子高科'])
+  })
+
+  it('同一行多组「代码 名称」逐组配对，两个代码不会互相吞掉', () => {
+    expect(parseStockInput('600519 贵州茅台 000001 平安银行').map(e => e.token)).toEqual([
+      '600519',
+      '000001',
+    ])
+    // 两个代码相邻时谁也不是谁的名字
+    expect(parseStockInput('600519 000001')).toEqual([
+      { token: '600519', raw: '600519' },
+      { token: '000001', raw: '000001' },
+    ])
+  })
+
+  it('只有名称、或名称在前，都不配对（交给搜索解析）', () => {
+    expect(parseStockInput('比亚迪')).toEqual([{ token: '比亚迪', raw: '比亚迪' }])
+    expect(parseStockInput('扬农化工 600486').map(e => e.token)).toEqual(['扬农化工', '600486'])
+  })
+
+  it('先出现纯代码、后来带上名称时补上提示，不新增条目', () => {
+    const entries = parseStockInput('600486\n600486 扬农化工')
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({ token: '600486', nameHint: '扬农化工' })
+  })
+
+  it('分隔符混用时仍然一行一条', () => {
+    expect(parseStockInput('600486 扬农化工，000981 山子高科').map(e => e.raw)).toEqual([
+      '600486 扬农化工',
+      '000981 山子高科',
+    ])
   })
 })
 

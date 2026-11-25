@@ -10,19 +10,68 @@
 
 const SEPARATOR = /[\s,，、;；:：/\\|]+/
 
-/** 切分并去重（保留首次出现的顺序）。 */
-export function splitStockTokens(input: string): string[] {
-  const out: string[] = []
-  const seen = new Set<string>()
-  for (const raw of String(input || '').split(SEPARATOR)) {
-    const token = raw.trim()
-    if (!token) continue
-    const key = token.toUpperCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push(token)
+/** 一条输入项：token 送去解析，nameHint 只是提示（不单独成条）。 */
+export interface StockInputEntry {
+  /** 解析主键：优先代码，没有代码时是名称 */
+  token: string
+  /** 同一行里跟在代码后面的名称，用于兜底搜索与确认回显 */
+  nameHint?: string
+  /** 原始片段，弹窗里原样回显（用户 2026-11-25：一行一只是常态） */
+  raw: string
+}
+
+/** 代码的判等键（大小写不敏感）。 */
+function tokenKey(token: string): string {
+  return token.toUpperCase()
+}
+
+/**
+ * 切分用户输入的一条条股票（fork 专用）。
+ *
+ * 用户粘贴的常态是「代码 名称」一行一只（600486 扬农化工）。早先按空白一刀切，
+ * 一行会变成「600486」+「扬农化工」两条，而两条解析到的是同一只票，于是列表
+ * 里出现重复的两行（用户 2026-11-25 报的 bug）。
+ *
+ * 现在的规则：同一行里「代码 + 紧跟的一个非代码词」合成一条（当名称提示），
+ * 其余词仍各自成条；单行里出现多组也是同样的配对（600519 贵州茅台 000001 平安银行）。
+ * 真正按「解析后的代码」去重放在弹窗里做 —— 那里才知道 token 到底是哪只票。
+ */
+export function parseStockInput(input: string): StockInputEntry[] {
+  const out: StockInputEntry[] = []
+  const seen = new Map<string, StockInputEntry>()
+
+  for (const line of String(input || '').split(/\r?\n/)) {
+    const parts = line
+      .split(SEPARATOR)
+      .map(part => part.trim())
+      .filter(Boolean)
+
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i]
+      const next = parts[i + 1]
+      const pairWithNext = looksLikeCode(part) && !!next && !looksLikeCode(next)
+      const entry: StockInputEntry = pairWithNext
+        ? { token: part, nameHint: next, raw: `${part} ${next}` }
+        : { token: part, raw: part }
+      if (pairWithNext) i += 1
+
+      const key = tokenKey(entry.token)
+      const dup = seen.get(key)
+      if (dup) {
+        // 同一只票先以纯代码出现、后来又带上了名称：补上名称提示即可
+        if (!dup.nameHint && entry.nameHint) dup.nameHint = entry.nameHint
+        continue
+      }
+      seen.set(key, entry)
+      out.push(entry)
+    }
   }
   return out
+}
+
+/** 只要 token 列表（保留首次出现的顺序）。 */
+export function splitStockTokens(input: string): string[] {
+  return parseStockInput(input).map(entry => entry.token)
 }
 
 /**

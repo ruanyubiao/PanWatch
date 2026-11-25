@@ -19,7 +19,7 @@ import {
   DialogTitle,
 } from '@panwatch/base-ui/components/ui/dialog'
 import { useToast } from '@panwatch/base-ui/components/ui/toast'
-import { isLikelyAShareCode, normalizeSymbol, splitStockTokens } from '@/lib/stock-tokens'
+import { isLikelyAShareCode, normalizeSymbol, parseStockInput, type StockInputEntry } from '@/lib/stock-tokens'
 
 /**
  * fork：弹窗内的固定中文文案（变量名以 _ZH 结尾，仓库的 check:i18n 放行这种声明）。
@@ -27,9 +27,9 @@ import { isLikelyAShareCode, normalizeSymbol, splitStockTokens } from '@/lib/sto
  */
 const BATCH_ADD_TEXTS_ZH = {
   title: '添加股票',
-  description: '支持一次输入多只，用空格、换行、逗号（中英文）、顿号、斜杠、竖线、冒号或分号分隔。',
+  description: '一行一只，可带名称（如「600486 扬农化工」）；也支持用空格、换行、逗号、顿号、斜杠、竖线、冒号或分号分隔。',
   searchLabel: '搜索股票',
-  placeholder: '600519 000001\n比亚迪，宁德时代 002594/300750',
+  placeholder: '600486 扬农化工\n000981 山子高科\n600519 000001 比亚迪',
   recognizedPrefix: '已识别',
   recognizedSuffix: '个输入',
   missing: '未找到匹配的股票',
@@ -46,8 +46,10 @@ const BATCH_ADD_TEXTS_ZH = {
  *
  * 上游弹窗一次只能选一只，且带 全部/A股/港股/美股 的市场筛选。fork 版：
  *   - 只搜 A 股（market=CN），没有市场切换
- *   - 输入框支持多只：按空白 / 中英文逗号 / 顿号 / 斜杠 / 反斜杠 / 竖线 /
+ *   - 输入框支持多只：「代码 名称」一行一只（600486 扬农化工）算一条；
+ *     其余按空白 / 中英文逗号 / 顿号 / 斜杠 / 反斜杠 / 竖线 /
  *     冒号 / 分号 切分（切分规则见 lib/stock-tokens.ts，有单测）
+ *   - 解析后再按代码去一次重（同一只票的两种写法只留一行）
  *   - 先「解析」把每个 token 解析成股票，人工确认后再「确认添加」
  *   - 后端没有批量接口，所以添加是前端循环 POST /stocks（用户明确认可）
  */
@@ -62,6 +64,8 @@ interface SearchResult {
 type TokenStatus = 'ok' | 'ambiguous' | 'missing' | 'etf'
 
 interface ResolvedRow {
+  /** 用户原始片段（「600486 扬农化工」或「比亚迪」），列表里原样回显 */
+  raw: string
   token: string
   status: TokenStatus
   chosen: SearchResult | null
@@ -86,7 +90,7 @@ export function BatchAddStocksDialog({
   const [submitting, setSubmitting] = useState(false)
   const [parsed, setParsed] = useState(false)
 
-  const tokens = useMemo(() => splitStockTokens(text), [text])
+  const entries = useMemo(() => parseStockInput(text), [text])
 
   useEffect(() => {
     if (!open) {
@@ -98,65 +102,94 @@ export function BatchAddStocksDialog({
     }
   }, [open])
 
-  const resolveOne = useCallback(async (token: string): Promise<ResolvedRow> => {
-    let raw: SearchResult[] = []
+  const searchStocks = useCallback(async (query: string): Promise<SearchResult[]> => {
     try {
-      raw = await fetchAPI<SearchResult[]>(
-        `/stocks/search?q=${encodeURIComponent(token)}&market=CN`,
+      return (
+        (await fetchAPI<SearchResult[]>(
+          `/stocks/search?q=${encodeURIComponent(query)}&market=CN`,
+        )) || []
       )
     } catch {
-      raw = []
+      return []
     }
-    raw = raw || []
-
-    // fork 页只服务股票：搜到的 ETF 一律不接受（ETF 有自己的代码段，
-    // 不能因为「搜不到股票」就把它当代码直接加进来）。
-    const results = raw.filter(item => (item.asset_type || 'stock') !== 'etf')
-    if (results.length === 0 && raw.length > 0) {
-      return { token, status: 'etf', chosen: null, candidates: [] }
-    }
-
-    const normalized = normalizeSymbol(token)
-    const exact = results.find(item => normalizeSymbol(item.symbol) === normalized)
-    if (exact) return { token, status: 'ok', chosen: exact, candidates: results }
-
-    const byName = results.find(item => item.name === token)
-    if (byName) return { token, status: 'ok', chosen: byName, candidates: results }
-
-    if (results.length === 1) {
-      return { token, status: 'ok', chosen: results[0], candidates: results }
-    }
-    if (results.length === 0) {
-      // 搜索没命中：只有「像 A 股代码」的输入才允许按代码添加（新股/停牌等），
-      // 否则 12345 这种随手输入就会被写成垃圾自选。
-      if (isLikelyAShareCode(token)) {
-        return {
-          token,
-          status: 'ok',
-          chosen: { symbol: normalized, name: normalized, market: 'CN', asset_type: 'stock' },
-          candidates: [],
-        }
-      }
-      return { token, status: 'missing', chosen: null, candidates: [] }
-    }
-    return { token, status: 'ambiguous', chosen: results[0], candidates: results }
   }, [])
 
+  const resolveOne = useCallback(
+    async (entry: StockInputEntry): Promise<ResolvedRow> => {
+      const token = entry.token
+      const raw = entry.raw
+      let found = await searchStocks(token)
+      // 「代码 名称」里的代码搜不到（新股、改名、停牌）时，用名称再试一次：
+      // 名称只是提示，不单独成条，所以这一行仍然只算一只票。
+      if (found.length === 0 && entry.nameHint) {
+        found = await searchStocks(entry.nameHint)
+      }
+
+      // fork 页只服务股票：搜到的 ETF 一律不接受（ETF 有自己的代码段，
+      // 不能因为「搜不到股票」就把它当代码直接加进来）。
+      const results = found.filter(item => (item.asset_type || 'stock') !== 'etf')
+      if (results.length === 0 && found.length > 0) {
+        return { raw, token, status: 'etf', chosen: null, candidates: [] }
+      }
+
+      const normalized = normalizeSymbol(token)
+      const exact = results.find(item => normalizeSymbol(item.symbol) === normalized)
+      if (exact) return { raw, token, status: 'ok', chosen: exact, candidates: results }
+
+      const byName = results.find(item => item.name === token || item.name === entry.nameHint)
+      if (byName) return { raw, token, status: 'ok', chosen: byName, candidates: results }
+
+      if (results.length === 1) {
+        return { raw, token, status: 'ok', chosen: results[0], candidates: results }
+      }
+      if (results.length === 0) {
+        // 搜索没命中：只有「像 A 股代码」的输入才允许按代码添加（新股/停牌等），
+        // 否则 12345 这种随手输入就会被写成垃圾自选。
+        if (isLikelyAShareCode(token)) {
+          return {
+            raw,
+            token,
+            status: 'ok',
+            chosen: { symbol: normalized, name: normalized, market: 'CN', asset_type: 'stock' },
+            candidates: [],
+          }
+        }
+        return { raw, token, status: 'missing', chosen: null, candidates: [] }
+      }
+      return { raw, token, status: 'ambiguous', chosen: results[0], candidates: results }
+    },
+    [searchStocks],
+  )
+
   const handleResolve = useCallback(async () => {
-    if (tokens.length === 0) return
+    if (entries.length === 0) return
     setResolving(true)
     try {
       const next: ResolvedRow[] = []
       // 没有批量搜索接口，逐个查
-      for (const token of tokens) {
-        next.push(await resolveOne(token))
+      for (const entry of entries) {
+        next.push(await resolveOne(entry))
       }
-      setRows(next)
+      // 按「解析后的代码」再去一次重：600486 与 扬农化工 指向同一只票，
+      // 输入里同时出现时只保留一条（用户 2026-11-25 报的重复行）。
+      const bySymbol = new Map<string, ResolvedRow>()
+      const deduped: ResolvedRow[] = []
+      for (const row of next) {
+        const symbol = row.chosen ? normalizeSymbol(row.chosen.symbol) : ''
+        if (!symbol) {
+          deduped.push(row)
+          continue
+        }
+        if (bySymbol.has(symbol)) continue
+        bySymbol.set(symbol, row)
+        deduped.push(row)
+      }
+      setRows(deduped)
       setParsed(true)
     } finally {
       setResolving(false)
     }
-  }, [resolveOne, tokens])
+  }, [entries, resolveOne])
 
   const pendingRows = rows.filter(row => row.status !== 'missing' && row.chosen)
   const newRows = pendingRows.filter(row => !existingSymbols.has(String(row.chosen?.symbol)))
@@ -218,8 +251,9 @@ export function BatchAddStocksDialog({
           />
           <div className="mt-2 flex items-center justify-between gap-2">
             <span className="text-[11px] text-muted-foreground">
-              {BATCH_ADD_TEXTS_ZH.recognizedPrefix} {tokens.length} {BATCH_ADD_TEXTS_ZH.recognizedSuffix}
-              {tokens.length > 0 && `：${tokens.slice(0, 6).join(' / ')}${tokens.length > 6 ? ' …' : ''}`}
+              {BATCH_ADD_TEXTS_ZH.recognizedPrefix} {entries.length} {BATCH_ADD_TEXTS_ZH.recognizedSuffix}
+              {entries.length > 0 &&
+                `：${entries.slice(0, 6).map(entry => entry.raw).join(' / ')}${entries.length > 6 ? ' …' : ''}`}
             </span>
           </div>
         </div>
@@ -234,8 +268,8 @@ export function BatchAddStocksDialog({
                   key={`${row.token}-${index}`}
                   className="flex items-center gap-2 border-b border-border/40 px-3 py-2 last:border-b-0"
                 >
-                  <span className="w-24 shrink-0 truncate font-mono text-[11px] text-muted-foreground">
-                    {row.token}
+                  <span className="w-40 shrink-0 truncate font-mono text-[11px] text-muted-foreground">
+                    {row.raw}
                   </span>
                   {row.status === 'missing' ? (
                     <span className="flex-1 text-[12px] text-rose-500">{BATCH_ADD_TEXTS_ZH.missing}</span>
@@ -297,7 +331,7 @@ export function BatchAddStocksDialog({
             type="button"
             size="sm"
             className="bg-emerald-600 text-white hover:bg-emerald-600/90"
-            disabled={tokens.length === 0 || resolving}
+            disabled={entries.length === 0 || resolving}
             onClick={() => void handleResolve()}
           >
             {resolving && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
