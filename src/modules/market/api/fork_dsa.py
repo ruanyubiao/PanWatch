@@ -24,13 +24,14 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from ..fork_dsa import data, service, store
+from ..fork_dsa import data, service, store, technical as technical_mod
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 _SYMBOL_RE = re.compile(r"^(?:sh|sz|bj)?(\d{6})(?:\.(?:SH|SZ|BJ))?$", re.I)
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _bad(status: int, code: str, message: str) -> HTTPException:
@@ -119,6 +120,33 @@ def get_latest(symbol: str = Query(...)):
     if not row:
         return {"id": None, "symbol": code, "status": "none", "report": None}
     return row
+
+
+@router.get("/dsa/technical")
+def get_technical(symbol: str = Query(...), asof: Optional[str] = Query(None)):
+    """按「报告基准日」复原技术面 —— 只有旧报告（没存 technical 块）才调。
+
+    为什么要有这个口子：技术面块是这一版才加进 payload 的，之前跑的报告没有。
+    直接拿今天的技术面去补旧报告是错的（用户口径：报告 3 天前跑的，今天打开
+    不能给今天的数据）。所以按报告自己的 ``bar_asof`` 只读到那一天为止的日线，
+    读到的是**那一根已收盘日线**，与当时一致；并且不叠加实时快照。
+
+    返回结构与会落进 ``details.technical`` 的块一致，另加 ``reconstructed=True``，
+    页面据此标「按报告基准日复原」而不是「报告内保存」。
+    """
+    code = _normalize_symbol(symbol)
+    asof = (asof or "").strip() or None
+    if asof and not _DATE_RE.match(asof):
+        raise _bad(400, "dsa_bad_asof", f"日期格式应为 YYYY-MM-DD：{asof}")
+    try:
+        snapshot = data.load_market_snapshot(code, as_of=asof)
+    except data.MarketDataUnavailable as exc:
+        raise _bad(503, "dsa_market_data_unavailable", str(exc)) from exc
+    if not snapshot.get("available"):
+        raise _bad(404, "dsa_technical_unavailable", snapshot.get("reason") or "技术面不可用")
+    block = technical_mod.build(snapshot)
+    block["reconstructed"] = True
+    return block
 
 
 @router.get("/dsa/history")

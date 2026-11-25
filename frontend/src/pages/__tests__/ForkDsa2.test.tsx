@@ -74,6 +74,18 @@ vi.mock('@/lib/dsa-api', async () => {
     getDsaQueue: (...args: unknown[]) => getQueue(...args),
     deleteDsaQueueItem: vi.fn(),
     getDsaHistory: (...args: unknown[]) => getHistory(...args),
+    // 本文件不测技术面/预测两块（它们在 Dsa2Evidence.test.tsx 里单独测），
+    // 但页面渲染时会走「旧报告复原」那条路，这里必须给一个确定的答复，
+    // 否则会真发请求、在 jsdom 里变成一条无意义的失败。
+    getDsaTechnical: vi.fn(() => Promise.resolve({ available: false, reason: '本用例不取技术面' })),
+  }
+})
+
+vi.mock('@/lib/predict-api', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/predict-api')>('@/lib/predict-api')
+  return {
+    ...actual,
+    getPredictStock: vi.fn(() => Promise.resolve(null)),
   }
 })
 

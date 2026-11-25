@@ -18,7 +18,16 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-from . import data, prompt as prompt_mod, queue, schema, sources, store
+from . import (
+    data,
+    predict_link,
+    prompt as prompt_mod,
+    queue,
+    schema,
+    sources,
+    store,
+    technical,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -266,6 +275,11 @@ def _worker(symbol: str, name: Optional[str], model_id: Optional[int], report_id
         report["details"]["northbound"] = collected.get("northbound") or {"available": False}
         # 数据源面板（页面渲染用）。历史报告没有这一项，前端要能容忍缺失。
         report["details"]["sources"] = collected.get("sources") or sources.module_status({})
+        # 技术面快照：与报告一起存，旧报告永远显示旧数据（用户口径：报告可能是
+        # 3 天前的，今天打开不能给今天的技术指标）。页面只读它，不现取。
+        report["details"]["technical"] = technical.build(snapshot)
+        # 模型预测快照：同样存时点，页面显示时带上它自己的 trade_date。
+        report["details"]["prediction"] = predict_link.snapshot(symbol)
         report["details"]["data_sources"] = [
             "本机行情库（日线/均线/技术指标）",
             "东财板块归属",

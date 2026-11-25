@@ -120,11 +120,16 @@ def resolve_name(code: str) -> Optional[str]:
     return (row or {}).get("name") or None
 
 
-def load_market_snapshot(code: str, bars: int = 130) -> dict[str, Any]:
+def load_market_snapshot(code: str, bars: int = 130, as_of: Optional[str] = None) -> dict[str, Any]:
     """个股行情 + 均线 + 技术面 + 近期统计（全部来自 MySQL）。
 
     ``code`` 是 6 位纯数字代码（``stock_info.code``）；库里 ``symbol`` 带 sh/sz 前缀。
     返回的 ``available=False`` 表示库里没有这只票（新股未入仓或代码不存在）。
+
+    ``as_of``（``YYYY-MM-DD``）：只读到这一天为止的日线，且**不叠加实时快照**。
+    用途是给旧报告「复原当时的技术面」—— 报告里没存技术面块时，按它自己的
+    基准日重读那一根日线，看到的仍是当天的数，而不是今天的。默认 ``None``
+    保持原行为（读到最新 + 盘中补实时价）。
     """
     conn = _connect()
     try:
@@ -136,11 +141,19 @@ def load_market_snapshot(code: str, bars: int = 130) -> dict[str, Any]:
             info = cur.fetchone()
             if not info:
                 return {"available": False, "code": code, "reason": "行情库里没有这个代码"}
-            cur.execute(
-                f"SELECT {_BAR_COLUMNS} FROM stock_daily d "
-                "WHERE d.symbol = %s ORDER BY d.trade_date DESC LIMIT %s",
-                (info["symbol"], int(bars)),
-            )
+            if as_of:
+                cur.execute(
+                    f"SELECT {_BAR_COLUMNS} FROM stock_daily d "
+                    "WHERE d.symbol = %s AND d.trade_date <= %s "
+                    "ORDER BY d.trade_date DESC LIMIT %s",
+                    (info["symbol"], as_of, int(bars)),
+                )
+            else:
+                cur.execute(
+                    f"SELECT {_BAR_COLUMNS} FROM stock_daily d "
+                    "WHERE d.symbol = %s ORDER BY d.trade_date DESC LIMIT %s",
+                    (info["symbol"], int(bars)),
+                )
             rows = cur.fetchall() or []
     finally:
         conn.close()
@@ -175,7 +188,11 @@ def load_market_snapshot(code: str, bars: int = 130) -> dict[str, Any]:
 
     # 盘中：库里最新一根是上一交易日，价格/当日量额要靠实时快照补上，
     # 否则页面会把昨天的收盘价和昨天的涨跌幅当成今天的行情。
-    quote = load_realtime_quote(code)
+    # 按历史日期复原（``as_of``）时不取实时价：那会拿今天的价去配历史的技术面。
+    if as_of:
+        quote: dict[str, Any] = {"available": False, "reason": "按报告基准日复原，不叠加实时快照"}
+    else:
+        quote = load_realtime_quote(code)
     intraday = bool(
         quote.get("available")
         and quote.get("price") is not None
@@ -237,6 +254,7 @@ def load_market_snapshot(code: str, bars: int = 130) -> dict[str, Any]:
         "name": info.get("name"),
         "exchange": info.get("exchange"),
         "asof": asof,  # 技术面基准日：库里最新一根已收盘日线
+        "as_of_requested": as_of,  # 非空 = 按历史日期复原（页面据此标注）
         "bar_close": bar_price,
         "intraday": intraday,  # True = 现价与当日量额来自实时快照
         "quote_date": quote.get("quote_date") if intraday else None,

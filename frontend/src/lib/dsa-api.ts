@@ -80,6 +80,65 @@ export interface DsaDetails {
   data_sources?: string[]
   /** 数据源清单（含「未配置」的模块）。老报告没有这一项，页面要容忍缺失。 */
   sources?: DsaSource[]
+  /**
+   * 技术面快照 —— **与报告一起保存**的那一份。
+   *
+   * 用户口径：报告可能是 3 天前跑的，今天打开不能给今天的技术指标。所以页面
+   * 只读这里存的值，绝不现取；`asof` 是日线基准日，`captured_at` 是报告生成时间。
+   * 老报告（这一版之前跑的）没有这个字段。
+   */
+  technical?: DsaTechnical | null
+  /** 模型预测快照（同样带自己的 trade_date）。老报告没有。 */
+  prediction?: DsaPrediction | null
+}
+
+export interface DsaTechnical {
+  available: boolean
+  code?: string | null
+  /** 日线基准日（已收盘的那根）—— 技术指标算到哪一天 */
+  asof?: string | null
+  /** 报告生成时间（≠ asof） */
+  captured_at?: string | null
+  bar_close?: number | null
+  price?: number | null
+  intraday?: boolean
+  quote_time?: string | null
+  /** 库里 tech_score 原值（未持仓口径评分，各项累加） */
+  score?: number | null
+  trend?: string | null
+  macd?: string | null
+  rsi?: string | null
+  kdj?: string | null
+  boll?: string | null
+  volume?: string | null
+  support?: number | null
+  resistance?: number | null
+  ma?: { ma5?: number | null; ma10?: number | null; ma20?: number | null; ma60?: number | null }
+  volume_ratio?: number | null
+  high_20?: number | null
+  low_20?: number | null
+  ret_5d?: number | null
+  ret_20d?: number | null
+  ret_60d?: number | null
+  /** true = 旧报告没有存，按报告的基准日从行情库复原（仍是那一天的数） */
+  reconstructed?: boolean
+  reason?: string | null
+}
+
+export interface DsaPrediction {
+  available: boolean
+  code?: string | null
+  /** 预测对应的交易日（一般是报告基准日当天收盘后算出来的那一批） */
+  trade_date?: string | null
+  rank_no?: number | null
+  universe?: number | null
+  /** 分位：100 = 当日第 1 名（越高越靠前） */
+  pct?: number | null
+  score?: number | null
+  model_version?: string | null
+  scored_at?: string | null
+  captured_at?: string | null
+  reason?: string | null
 }
 
 export interface DsaReport {
@@ -158,6 +217,17 @@ export function getDsaHistory(symbol: string, limit = 20) {
   return fetchAPI<DsaHistoryResponse>(
     `/stocks/dsa/history?symbol=${encodeURIComponent(symbol)}&limit=${limit}`,
   )
+}
+
+/**
+ * 按「报告基准日」复原技术面 —— 只给**旧报告**用（payload 里没有 technical 块）。
+ *
+ * 后端会只读到 ``asof`` 那一天为止的日线并关掉实时快照，所以拿到的不是今天的数。
+ * 新报告不走这条路：直接读 payload 里存的那一份。
+ */
+export function getDsaTechnical(symbol: string, asof?: string | null) {
+  const suffix = asof ? `&asof=${encodeURIComponent(asof)}` : ''
+  return fetchAPI<DsaTechnical>(`/stocks/dsa/technical?symbol=${encodeURIComponent(symbol)}${suffix}`)
 }
 
 /** 队列快照（页面「队列」按钮读这个）。 */

@@ -39,6 +39,8 @@ import {
 } from 'lucide-react'
 import { Button } from '@panwatch/base-ui/components/ui/button'
 import { marketSignTextClass } from '@/lib/market-colors'
+import { Dsa2TechnicalPanel } from '@/components/fork/Dsa2TechnicalPanel'
+import { Dsa2PredictPanel } from '@/components/fork/Dsa2PredictPanel'
 import {
   DSA_POLL_MS,
   DSA_QUEUE_POLL_MS,
@@ -858,9 +860,28 @@ export default function ForkDsa2Page() {
         ) : null}
 
         {report ? (
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
-            {/* 左栏 */}
-            <div className="flex flex-col gap-5">
+          <>
+            {/*
+              技术面 + 模型预测：紧跟在头部（名字区）后面，是「证据」不是「结论」，
+              所以放在 AI 的核心洞察之前。两块都只读报告里存的快照，打开页面不会
+              拿今天的数据去补旧报告。
+            */}
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_330px]" data-dsa2-evidence="1">
+              <Dsa2TechnicalPanel
+                technical={details.technical}
+                symbol={symbol}
+                reportAsof={meta.bar_asof || meta.asof || null}
+              />
+              <Dsa2PredictPanel
+                prediction={details.prediction}
+                symbol={symbol}
+                reportAsof={meta.bar_asof || meta.asof || null}
+              />
+            </div>
+
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
+              {/* 左栏 */}
+              <div className="flex flex-col gap-5">
               <section className={`${CARD} p-5`} data-dsa2-core>
                 <h2 className="flex items-center gap-2 text-sm font-medium text-cyan-300">
                   <Sparkles className="h-4 w-4" />
@@ -981,7 +1002,8 @@ export default function ForkDsa2Page() {
                 ) : null}
               </section>
             </aside>
-          </div>
+            </div>
+          </>
         ) : null}
 
         {loaded && !row && !error ? (

@@ -19,7 +19,14 @@ from src.modules.market.api import fork_dsa
 from src.modules.market.fork_dsa import calendar as calendar_mod
 from src.modules.market.fork_dsa import data as dsa_data
 from src.modules.market.fork_dsa import prompt as prompt_mod
-from src.modules.market.fork_dsa import schema, service, sources, store
+from src.modules.market.fork_dsa import (
+    predict_link,
+    schema,
+    service,
+    sources,
+    store,
+    technical,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -1397,3 +1404,198 @@ def test_resolve_name_never_raises(monkeypatch):
 
     monkeypatch.setattr(dsa_data, "_connect", lambda: Boom())
     assert dsa_data.resolve_name("000975") is None
+
+
+# ── 技术面 / 模型预测：与报告一起保存的那两块 ──────────────────────────
+#
+# 用户口径（原话）：报告可能是 3 天前的，我今天打开，不能给我今天的数据。
+# 所以这两块的所有用例都围绕「这个数是哪一天的」：
+#   payload 里存了什么就显示什么，绝不现取；旧报告按自己的基准日复原。
+
+
+def _full_snapshot():
+    snap = _snapshot()
+    snap.update(
+        {
+            "code": "000975",
+            "bar_close": 21.04,
+            "price": 21.6,  # 盘中现价，与 bar_close 不同
+            "intraday": True,
+            "quote_time": "2026-11-25 10:21:00",
+            "as_of_requested": None,
+            "tech": {
+                "score": -4,
+                "trend": "空头排列，趋势偏弱",
+                "macd": "MACD 死叉，短线动能转弱",
+                "rsi": "RSI 中性",
+                "kdj": "KDJ 金叉，短线转强",
+                "boll": "BOLL 开口放大",
+                "volume": "平量",
+                "support": 19.53,
+                "resistance": 25.66,
+            },
+        }
+    )
+    return snap
+
+
+def test_technical_snapshot_records_bar_date_and_report_time():
+    """评分基准是 bar_close，asof 是日线日，captured_at 是报告生成时间 —— 三者分开"""
+    block = technical.build(_full_snapshot())
+    assert block["available"] is True
+    assert block["asof"] == "2026-11-10"  # 日线基准日（不是今天）
+    assert block["captured_at"]  # 报告生成时间，另存
+    assert block["score"] == -4
+    assert block["trend"] == "空头排列，趋势偏弱"
+    assert block["support"] == 19.53 and block["resistance"] == 25.66
+    assert block["ma"]["ma5"] == 9.61
+    # 盘中现价与收盘价都要留着：页面显示现价，评分仍按收盘
+    assert block["bar_close"] == 21.04 and block["price"] == 21.6
+    assert block["intraday"] is True
+
+
+def test_technical_snapshot_flags_missing_indicators():
+    """新股/日线不足：available=False + 原因，页面据此显示「数据不足」而不是 0 分"""
+    block = technical.build({"code": "301999", "asof": "2026-11-10", "tech": {}})
+    assert block["available"] is False
+    assert "没有技术指标" in block["reason"]
+    assert "score" not in block
+
+
+def test_worker_persists_technical_and_prediction(monkeypatch):
+    """报告 payload 里必须真的带上这两块（前端只读它，不现取）"""
+    monkeypatch.setattr(
+        service,
+        "_collect",
+        lambda symbol, name: {
+            "snapshot": _full_snapshot(),
+            "boards": {"available": True, "tags": []},
+            "flow": {"available": True},
+            "news": {"available": False, "reason": "没有搜到相关新闻"},
+            "phase": {"phase": "postmarket", "label": "盘后", "market_local_time": "x", "calendar": "db"},
+            "limitations": [],
+        },
+    )
+    monkeypatch.setattr(service, "_run_model", lambda collected, *, db, model_id: (dict(_raw_report()), "fake/model"))
+    monkeypatch.setattr(
+        service.predict_link,
+        "snapshot",
+        lambda code: {"available": True, "code": code, "trade_date": "2026-11-10", "rank_no": 402, "universe": 4991, "pct": 91.94},
+    )
+
+    row_id = store.create("000975", "山金国际")
+    service._worker("000975", "山金国际", None, row_id)
+    report = store.get(row_id)["report"]
+
+    tech_block = report["details"]["technical"]
+    assert tech_block["available"] is True
+    assert tech_block["asof"] == "2026-11-10"
+    assert tech_block["score"] == -4
+
+    predict_block = report["details"]["prediction"]
+    assert predict_block["available"] is True
+    assert predict_block["rank_no"] == 402 and predict_block["trade_date"] == "2026-11-10"
+
+
+def test_predict_link_swallows_missing_table(monkeypatch):
+    """预测表是可选依赖：表没建 / 查询报错只能是 available=False，不能拖垮整次分析"""
+
+    def boom(code, days=1):
+        raise RuntimeError("Table 'stock.stock_predict_daily' doesn't exist")
+
+    from src.modules.market.fork_predict import data as predict_data
+
+    monkeypatch.setattr(predict_data, "load_stock", boom)
+    block = predict_link.snapshot("000975")
+    assert block["available"] is False
+    assert "预测库读取失败" in block["reason"]
+
+
+def test_predict_link_reports_no_record(monkeypatch):
+    from src.modules.market.fork_predict import data as predict_data
+
+    monkeypatch.setattr(predict_data, "load_stock", lambda code, days=1: None)
+    block = predict_link.snapshot("920992")
+    assert block["available"] is False
+    assert "还没有这只票的记录" in block["reason"]
+
+
+def test_technical_endpoint_restores_by_report_date(monkeypatch):
+    """旧报告复原：必须把 asof 传下去（后端只读到那天为止、不叠加实时价）"""
+    captured = {}
+
+    def fake_snapshot(code, bars=130, as_of=None):
+        captured["code"] = code
+        captured["as_of"] = as_of
+        snap = _full_snapshot()
+        snap["asof"] = as_of
+        snap["as_of_requested"] = as_of
+        snap["intraday"] = False
+        snap["quote_time"] = None
+        snap["price"] = snap["bar_close"]  # 复原时不拿今天的现价
+        return snap
+
+    monkeypatch.setattr(fork_dsa.data, "load_market_snapshot", fake_snapshot)
+    block = fork_dsa.get_technical(symbol="000975", asof="2026-11-24")
+
+    assert captured == {"code": "000975", "as_of": "2026-11-24"}
+    assert block["reconstructed"] is True
+    assert block["asof"] == "2026-11-24"
+    assert block["price"] == block["bar_close"]  # 不是今天的价
+
+
+def test_technical_endpoint_rejects_bad_date(monkeypatch):
+    with pytest.raises(HTTPException) as exc:
+        fork_dsa.get_technical(symbol="000975", asof="2026/11/24")
+    assert exc.value.status_code == 400
+    assert exc.value.detail["code"] == "dsa_bad_asof"
+
+
+def test_technical_endpoint_rejects_beijing():
+    """北交所仍然不进股票池（复原口子也不能成为例外）"""
+    with pytest.raises(HTTPException) as exc:
+        fork_dsa.get_technical(symbol="bj430047", asof="2026-11-24")
+    assert exc.value.detail["code"] == "dsa_beijing_excluded"
+
+
+def test_snapshot_as_of_reads_up_to_that_day_only(monkeypatch):
+    """SQL 必须带 trade_date <= asof，且**不调实时快照**"""
+    executed = {}
+
+    class Cursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, sql, params=None):
+            executed.setdefault("sql", []).append(" ".join(sql.split()))
+            executed.setdefault("params", []).append(params)
+
+        def fetchone(self):
+            if executed.get("_info_done"):
+                return None
+            executed["_info_done"] = True
+            return {"code": "000975", "symbol": "sz000975", "exchange": "SZ", "name": "山金国际", "status": "L"}
+
+        def fetchall(self):
+            return []
+
+    class Conn:
+        def cursor(self):
+            return Cursor()
+
+        def close(self):
+            pass
+
+    def no_realtime(code):  # 复原时不该问实时价
+        raise AssertionError("按基准日复原时不应该取实时快照")
+
+    monkeypatch.setattr(dsa_data, "_connect", lambda: Conn())
+    monkeypatch.setattr(dsa_data, "load_realtime_quote", no_realtime)
+
+    result = dsa_data.load_market_snapshot("000975", as_of="2026-11-24")
+    assert any("trade_date <= %s" in sql for sql in executed["sql"])
+    # 没有日线 → available=False，但 SQL 已经按日期过滤过了（这一步就是本用例要钉的）
+    assert result["available"] is False
