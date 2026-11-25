@@ -17,10 +17,10 @@
  */
 import { useTranslation } from 'react-i18next'
 import {
-  SuggestionBadge,
   type KlineSummary,
   type SuggestionInfo,
 } from '@panwatch/biz-ui/components/suggestion-badge'
+import { ForkSuggestionBadge } from '@/components/fork/ForkSuggestionBadge'
 import {
   TechnicalBadge,
   technicalToneFromSuggestionAction,
@@ -41,8 +41,12 @@ export interface IndicatorBadgesProps {
   /**
    * 原「来源」列那行文字（用户口径：不并排显示，只进悬停提示）。
    *
-   * ``technicalHint`` → 技术面徽章（回避 / 买入 / 观望那颗）的 title；
-   * ``aiHint``        → AI 建议徽章的 title。两者都是「来源那行在前、原提示在后」。
+   * ``technicalHint`` → 技术面徽章（回避 / 买入 / 观望那颗）的 title。**只要有技术面
+   *                    徽章就一定有**（2026-11-25 用户指出：有 AI 建议时它被漏掉了）——
+   *                    那行字说的是「技术面数据是哪天的」，与有没有 AI 建议无关。
+   * ``aiHint``        → AI 建议徽章的 title，只有存在 AI 建议时才有值。
+   *
+   * 两者都是「来源那行在前、原提示在后」。
    */
   technicalHint?: string | null
   aiHint?: string | null
@@ -73,7 +77,7 @@ export function IndicatorBadges({
     suggestion?.agent_name === 'technical_fallback' || suggestion?.agent_label === '技术指标'
   if (!suggestion || isTechnical) {
     return (
-      <SuggestionBadge
+      <ForkSuggestionBadge
         suggestion={suggestion}
         stockName={stockName}
         stockSymbol={stockSymbol}
@@ -107,7 +111,7 @@ export function IndicatorBadges({
               : undefined
           }
         />
-        <SuggestionBadge
+        <ForkSuggestionBadge
           suggestion={suggestion}
           stockName={stockName}
           stockSymbol={stockSymbol}

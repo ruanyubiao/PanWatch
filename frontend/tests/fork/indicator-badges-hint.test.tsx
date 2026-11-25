@@ -1,9 +1,9 @@
 /**
  * 分析页「指标」列徽章的悬停提示 —— 原「来源」列那行文字挂在哪颗徽章上。
  *
- * 用户口径（2026-11-24）：「来源」列改成「模型预测」之后，那行来源文字不并排显示，
- * 而是放进悬停提示：技术面那行（「技术指标 · 11-23」）挂技术面徽章，
- * AI 那行（「AI深度 · 16:39（已过期）」）挂 AI 徽章，**原提示接在这段文字后面**。
+ * 用户口径（2026-11-24，2026-11-25 补充）：「来源」列改成「模型预测」之后，那行来源
+ * 文字不并排显示，而是放进悬停提示：技术面那行（「技术指标 · 11-23」）**永远**挂技术面
+ * 徽章、AI 那行（「AI深度 · 16:39（已过期）」）挂 AI 徽章，**原提示接在这段文字后面**。
  *
  * tooltip 的内容在截图里看不出来，所以这里直接断言 title 属性。
  * 技术面徽章只在传了 onOpenKline 时才是 <button>，所以按 title 取，不按 role 取。
@@ -84,23 +84,25 @@ describe('fork: 指标列徽章的悬停提示带着原「来源」那行文字'
     expect(hinted[0].split('\n')).toHaveLength(2)
   })
 
-  it('两颗同时在：来源那行只在 AI 那颗上，技术面那颗保持原提示', () => {
+  it('两颗同时在：技术面那颗带「技术指标 · 11-23」，AI 那颗带「AI深度 …」，各接原提示', () => {
     const { container } = render(
       <IndicatorBadges
         suggestion={suggestion}
         kline={bearishKline}
         klineTr={klineTr}
         aiHint="AI深度 · 16:39（已过期）"
-        technicalHint={null}
+        technicalHint="技术指标 · 11-23"
         onOpenKline={() => {}}
       />,
     )
     const titles = allTitles(container)
-    expect(titles.filter(t => t.includes('AI深度'))).toHaveLength(1)
-    const techTitles = titles.filter(t => !t.includes('AI深度') && !t.includes('减仓'))
-    for (const title of techTitles) {
-      expect(title).not.toContain('\n')
-    }
+    // 2026-11-25 用户口径：技术指标那行**永远**在技术面徽章上（上一版有 AI 建议时漏了）
+    const techTitles = titles.filter(t => t.startsWith('技术指标 · 11-23'))
+    expect(techTitles).toHaveLength(1)
+    expect(techTitles[0].split('\n')).toHaveLength(2)
+    const aiTitles = titles.filter(t => t.includes('AI深度 · 16:39（已过期）'))
+    expect(aiTitles).toHaveLength(1)
+    expect(aiTitles[0].split('\n')).toHaveLength(2)
   })
 
   it('不传提示时 title 与上游一致（其他页面不受影响）', () => {

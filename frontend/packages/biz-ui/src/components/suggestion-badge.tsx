@@ -82,31 +82,6 @@ interface SuggestionBadgeProps {
   market?: string           // 市场（用于技术指标弹窗）
   hasPosition?: boolean     // 是否持仓（用于技术指标弹窗）
   showTechnicalCompanion?: boolean // 是否展示技术指标对照徽章
-  /**
-   * 是否隐藏徽章下方的「来源：xxx · 时间（已过期）」那一行。
-   *
-   * 默认 false = 保持上游行为不变。fork 的分析页表格里**单独有一列「来源」**，
-   * 徽章再自带一行就会同一份信息出现两次（用户截图反馈的那个 bug），
-   * 那里传 true。弹窗里的来源信息不受影响。
-   */
-  hideSourceLine?: boolean
-  /**
-   * 是否隐藏技术面徽章前面的「指标 · 」前缀。
-   *
-   * 默认 false = 保持上游行为不变（持仓 / 自选页仍然是「指标 · 买入」，
-   * 那里没有列标题说明这颗徽章是什么）。fork 分析页的「指标」列里，
-   * 列标题已经写了「指标」，前缀会让徽章读成「指标 · 买入」——
-   * 用户反馈只要「买入」，那一处传 true。
-   */
-  hideTechnicalPrefix?: boolean
-  /**
-   * fork：接在徽章悬停提示**前面**的一段文字（默认 undefined = 与上游完全一致）。
-   *
-   * 分析页把原来的「来源」列改成「模型预测」之后，那行来源文字（例：
-   * 「AI深度 · 16:39（已过期）」/「技术指标 · 11-23」）不再单独占一列，而是挂到
-   * 对应徽章的 title 上，**原提示接在它后面**（用户口径）。
-   */
-  titleHint?: string
 }
 
 // 格式化建议时间（自动转换为本地时区，只显示时:分）
@@ -164,9 +139,6 @@ export function SuggestionBadge({
   market = 'CN',
   hasPosition = false,
   showTechnicalCompanion = true,
-  hideSourceLine = false,
-  hideTechnicalPrefix = false,
-  titleHint,
 }: SuggestionBadgeProps) {
   const { t, i18n } = useTranslation('bizUi')
   const tr = (key: string, options?: Record<string, unknown>) =>
@@ -176,8 +148,6 @@ export function SuggestionBadge({
   const locale = (i18n.resolvedLanguage || i18n.language).toLowerCase().startsWith('en') ? 'en-US' : 'zh-CN'
   const english = locale === 'en-US'
   const isTechnical = suggestion?.agent_name === 'technical_fallback' || suggestion?.agent_label === '技术指标'
-  /** fork：``titleHint`` 在前、原提示在后（换行分隔）；不传时与上游完全一致。 */
-  const titleWithHint = (base: string) => (titleHint ? `${titleHint}\n${base}` : base)
   const knownAgents = new Set(['intraday_monitor', 'daily_report', 'premarket_outlook', 'technical_fallback'])
   const localizedAgent = suggestion?.agent_name && knownAgents.has(suggestion.agent_name)
     ? tr(`agents.${suggestion.agent_name}`)
@@ -188,9 +158,6 @@ export function SuggestionBadge({
   const technicalLabel = (tech: ReturnType<typeof buildKlineSuggestion> | null) => tech
     ? localizedAction(tech.action, tech.action_label)
     : tr('technicalPending')
-  /** 技术面徽章文案：「指标 · 买入」或（hideTechnicalPrefix）只留「买入」。 */
-  const technicalCompanionLabel = (tech: ReturnType<typeof buildKlineSuggestion> | null) =>
-    hideTechnicalPrefix ? technicalLabel(tech) : `${tr('technicalShort')} · ${technicalLabel(tech)}`
   const [dialogOpen, setDialogOpen] = useState(false)
   const [klineDialogOpen, setKlineDialogOpen] = useState(false)
   const onDialogOpenChange = (open: boolean) => {
@@ -234,11 +201,11 @@ export function SuggestionBadge({
               />
               {isAI && showTechnicalCompanion && (
                 <TechnicalBadge
-                  label={technicalCompanionLabel(tech)}
+                  label={`${tr('technicalShort')} · ${technicalLabel(tech)}`}
                   tone={tech ? technicalToneFromSuggestionAction(tech.action, tech.action_label) : 'neutral'}
                   size="lg"
                   onClick={(e) => { e.stopPropagation(); setKlineDialogOpen(true) }}
-                  title={titleWithHint(tr('technicalTitle'))}
+                  title={tr('technicalTitle')}
                 />
               )}
             </div>
@@ -381,7 +348,7 @@ export function SuggestionBadge({
               e.stopPropagation()
               setKlineDialogOpen(true)
             }}
-            title={titleWithHint(tr('technicalTitle'))}
+            title={tr('technicalTitle')}
           />
         </div>
 
@@ -421,25 +388,25 @@ export function SuggestionBadge({
               if (isTechnical) setKlineDialogOpen(true)
               else setDialogOpen(true)
             }}
-            title={titleWithHint(sourceInfo ? `${sourceInfo} - ${tr('detailTitle')}` : tr('detailTitle'))}
+            title={sourceInfo ? `${sourceInfo} - ${tr('detailTitle')}` : tr('detailTitle')}
           />
           {showTechnicalCompanion && !isTechnical && (
             (() => {
               const tech = kline ? buildKlineSuggestion(kline as any, hasPosition, klineTr) : null
               return (
                 <TechnicalBadge
-                  label={technicalCompanionLabel(tech)}
+                  label={`${tr('technicalShort')} · ${technicalLabel(tech)}`}
                   tone={tech ? technicalToneFromSuggestionAction(tech.action, tech.action_label) : 'neutral'}
                   size="md"
                   onClick={(e) => { e.stopPropagation(); setKlineDialogOpen(true) }}
-                  title={titleWithHint(tr('technicalTitle'))}
+                  title={tr('technicalTitle')}
                 />
               )
             })()
           )}
         </div>
-        {/* 来源和时间（显示在徽章下方，仅 AI 建议以增强区分；开关见 hideSourceLine）*/}
-        {isAI && !hideSourceLine && (
+        {/* 来源和时间（显示在徽章下方，仅 AI 建议以增强区分）*/}
+        {isAI && (
           <div className="mt-1 text-[10px] text-muted-foreground/70">
             {tr('source')}{localizedAgent || 'AI'}{timeStr && ` · ${timeStr}`}
             {suggestion.is_expired && <span className="ml-1 text-amber-600">{tr('expired')}</span>}

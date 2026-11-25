@@ -42,7 +42,8 @@ import {
  * 列宽（用户逐列指定）：市场 60 / 代码 80 / 名称 140 / 成交量 96 / 成交额 104 /
  * 换手率 84（这三列排在**总市值前面**）/ 总市值之后紧跟**状态 68**
  * （停牌 / 正常 / ST 这类 2–3 字标签）/ 指标 160 → 120（本页最新要求再减 40）/
- * 模型预测（原「来源」）200 → 220 / 操作 180 → 220 → 252（Agent 配置图标搬进操作列，fork 的「深度分析2」再占一颗）；
+ * 模型预测（原「来源」）200 → 220 → 104，并从「指标」后面挪到前面、可排序（按名次）/
+ * 操作 180 → 220 → 252（Agent 配置图标搬进操作列，fork 的「深度分析2」再占一颗）；
  * 其余数值列只给最小列宽，宽屏时摊开剩余空间。
  *
  * 本组件只管「取数 / 筛选 / 排序 / 分页 / 表格骨架 / 列的格式」——三个富列
@@ -184,13 +185,23 @@ export type SortKey =
   | 'turnover_rate'
   | 'total_market_cap'
   | 'score'
+  /** fork 2026-11-25：「模型预测」列按**名次**排（1 = 模型最看好，越小越前）。 */
+  | 'predict_rank'
 
 export interface SortState {
   key: SortKey
   dir: 'asc' | 'desc'
 }
 
-/** 取排序用的值；「状态」取库里的 tech_score（无分返回 null）。 */
+/**
+ * 取排序用的值。
+ *
+ * 返回 ``null`` = 这一行没有可比值（新股无 tech_*、缺行情、当天没跑推理），
+ * 排序时**恒排最后**（见 ``compareRows``）。
+ *
+ * ``predict_rank`` 自己取不到：预测在另一张表里、由页面持有，所以这一列必须由
+ * 调用方注入取值函数（``compareRows`` 的第 4 个参数）——组件不认识预测接口。
+ */
 function sortValue(row: MarketRow, key: SortKey): number | string | null {
   switch (key) {
     case 'code':
@@ -223,12 +234,21 @@ function sortValue(row: MarketRow, key: SortKey): number | string | null {
 }
 
 /**
- * 行比较。空值（新股无 tech_*、缺行情）**恒排最后**，与升降序无关 ——
+ * 行比较。空值（新股无 tech_*、缺行情、当天没跑推理）**恒排最后**，与升降序无关 ——
  * 否则倒序时「数据不足」的票会集体跑到第一屏，看着像有结论。
+ *
+ * ``valueOf`` 让调用方补上自己那一列的取值（目前只有 ``predict_rank``：预测在
+ * ``stock_predict_daily``，由页面持有，表格组件不认识这个接口）。不传时行为与
+ * 原来完全一致。
  */
-export function compareRows(a: MarketRow, b: MarketRow, sort: SortState): number {
-  const av = sortValue(a, sort.key)
-  const bv = sortValue(b, sort.key)
+export function compareRows(
+  a: MarketRow,
+  b: MarketRow,
+  sort: SortState,
+  valueOf: (row: MarketRow, key: SortKey) => number | string | null = sortValue,
+): number {
+  const av = valueOf(a, sort.key)
+  const bv = valueOf(b, sort.key)
   if (av == null && bv == null) return a.code.localeCompare(b.code)
   if (av == null) return 1
   if (bv == null) return -1
@@ -295,10 +315,13 @@ const COLUMNS: ColumnDef[] = [
   // 标签是 2–3 个字的短文案（正常/停牌/ST/*ST/退市），右侧内边距收到 2px 全给标签：
   // 48 − 20（左间距）− 2（右内边距）= 26px 给标签，「停牌」这类 2 字标签正好 24px。
   { key: 'trade_status', label: MARKET_TABLE_TEXTS_ZH.colTradeStatus, width: 48, padLeft: 20, padRight: 2 },
-  // 指标列：左内边距 20px，列宽 200 → 180 → 160 → 120 → 140（本轮 +20）
-  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 140, padLeft: 20 },
-  // 「模型预测」列 200 → 220：格子里是「#1234 · 99.98」，比原来那句「技术指标 · 11-24」宽一点
-  { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, width: 220 },
+  // 「模型预测」列（2026-11-25 用户三点要求）：① 可排序（按名次）② 收窄 ③ 挪到「指标」前面。
+  // 220 → 104：格子里是「#4028 19.31」，11–12px 等宽下约 76px，留 8+8 内边距与 18px 左间距
+  // 之后还剩富余（名次最大 4 位数、分位最长 6 个字符「100.00」也装得下）。
+  // 挪到「指标」前：紧跟在「状态」后面，先看名次再看结论，读数动线先生后后判断。
+  { key: 'source', label: MARKET_TABLE_TEXTS_ZH.colSource, sortKey: 'predict_rank', width: 104, padLeft: 18 },
+  // 指标列：列宽 140（本轮不动），左内边距 20 → 12（前一颗「模型预测」已经撑开了距离）
+  { key: 'indicator', label: MARKET_TABLE_TEXTS_ZH.colIndicator, sortKey: 'score', width: 140, padLeft: 12 },
   // 操作列 252：Agent 状态列整列删掉，改成操作列里一颗「A」图标；
   // fork 的「深度分析2」再占一颗（7 颗图标 = 7×28 + 6×2 间距 + 16 内边距 ≈ 224，留余量）
   { key: 'actions', label: MARKET_TABLE_TEXTS_ZH.colActions, width: 252 },
@@ -348,6 +371,14 @@ interface StockMarketTableProps {
   existingSymbols: Set<string>
   /** 只看已关注（自选）的股票。由筛选行那颗开关控制，默认 false。 */
   followedOnly?: boolean
+  /**
+   * 「模型预测」列的排序值：代码 → 名次（1 = 模型最看好）。
+   *
+   * 预测在 ``stock_predict_daily``（另一个接口、由页面一次取回整张表），表格组件
+   * 不碰预测接口，只拿这张 map 参与排序。没有这个 prop（或某只票不在 map 里）
+   * 时那一格恒排最后 —— 与「新股无技术分」同一套规则，不许把「没数据」混在头名。
+   */
+  predictRanks?: Record<string, number> | null
   onCounts?: (counts: MarketBoardCounts) => void
   onAdd: (row: MarketRow) => Promise<void> | void
   onRemove: (row: MarketRow) => void
@@ -409,6 +440,7 @@ export function StockMarketTable({
   query,
   filters,
   followedOnly = false,
+  predictRanks = null,
   existingSymbols,
   onCounts,
   onAdd,
@@ -499,8 +531,15 @@ export function StockMarketTable({
     [scopedRows, board, query, activeFilters, getRowAction],
   )
   const sorted = useMemo(
-    () => (sort ? [...filtered].sort((a, b) => compareRows(a, b, sort)) : filtered),
-    [filtered, sort],
+    () =>
+      sort
+        ? [...filtered].sort((a, b) =>
+            compareRows(a, b, sort, (row, key) =>
+              key === 'predict_rank' ? predictRanks?.[row.code] ?? null : sortValue(row, key),
+            ),
+          )
+        : filtered,
+    [filtered, sort, predictRanks],
   )
   const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize))
   const safePage = Math.min(page, pageCount)
@@ -681,7 +720,7 @@ export function StockMarketTable({
               保留 w-full：容器比 1442 窄时表格正好按 colgroup 的 px 排（列宽=设定值），
               窄到不够就横向滚动；只有容器比 1442 还宽时 table-fixed 才会把余量按比例摊给各列——
               这是原来就有的行为（宽屏铺满），本次不动 */}
-          <table className="w-full min-w-[1494px] table-fixed text-[12px]">
+          <table className="w-full min-w-[1378px] table-fixed text-[12px]">
             <colgroup>
               {COLUMNS.map(column => (
                 <col

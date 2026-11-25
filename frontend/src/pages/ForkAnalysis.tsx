@@ -506,6 +506,20 @@ export default function StocksPage() {
       alive = false
     }
   }, [marketReloadToken])
+  /**
+   * 「模型预测」列排序用（2026-11-25 用户要求按名次排）：代码 → 名次。
+   *
+   * 表格组件不认识预测接口，只拿这张 map 参与排序（见 StockMarketTable 的
+   * ``predictRanks``）。当天还没跑推理时是 null，那一列点表头排序不会报错，
+   * 所有行都算「无数据」→ 退回按代码排。
+   */
+  const predictRankMap = useMemo(() => {
+    const scores = predictScores?.scores
+    if (!scores) return null
+    const map: Record<string, number> = {}
+    for (const [code, item] of Object.entries(scores)) map[code] = item.rank_no
+    return map
+  }, [predictScores])
   const [tableLoading, setTableLoading] = useState(false)
   // fork：批量添加弹窗
   const [showBatchAdd, setShowBatchAdd] = useState(false)
@@ -1878,28 +1892,28 @@ export default function StocksPage() {
   /**
    * fork：原来「来源」列那行文字的出处（2026-11-24 起不再单独占一列）。
    *
-   * 用户的明确口径（这一轮）：
-   *   - 有 AI 建议 → 「AI深度 · 16:39（已过期）」，挂到**AI 徽章**的悬停提示上，
-   *     原来的提示接在后面；
-   *   - 没有 AI 建议 → 「技术指标 · 11-23」，挂到**技术面徽章**（回避 / 买入 /
-   *     观望那颗）的悬停提示上，原来的提示接在后面。
+   * 用户的明确口径（两轮，逐条落地）：
+   *   - 「技术指标 · 11-24」**永远**挂到技术面徽章（回避 / 买入 / 观望那颗）的
+   *     悬停提示上 —— 这行说的是「技术面数据是哪天的」，与有没有 AI 建议无关；
+   *     2026-11-25 用户指出：有 AI 建议时这行被漏掉了，所以这里改成**两个都返回**，
+   *     不再用 kind 二选一。
+   *   - 有 AI 建议时，另有「AI深度 · 16:39（已过期）」挂到 **AI 徽章**的悬停提示上。
+   *   - 两种情况都是「那行来源文字在前、原提示在后」（用户原话）。
    *
    * 为什么不并排显示：那一列已改成「模型预测」，再塞一段来源文字会把列撑宽，
    * 一行两种口径也读不出主次（用户口径）。
    */
-  const rowSourceHint = (row: MarketRow): { text: string; kind: 'ai' | 'tech' } => {
+  const rowSourceHints = (row: MarketRow): { techText: string; aiText: string | null } => {
     const { suggestion } = getSuggestionForStock(row.code, 'CN')
-    if (suggestion?.agent_label || suggestion?.created_at) {
-      const time = suggestionTimeText(suggestion.created_at)
-      let text = [sourceAgentLabel(suggestion.agent_label), time].filter(Boolean).join(' · ')
-      if (suggestion.is_expired) text += MARKET_ROW_TEXTS_ZH.expired
-      return { text, kind: 'ai' }
-    }
     const date = row.trade_date ? row.trade_date.slice(5) : ''
-    return {
-      text: [MARKET_ROW_TEXTS_ZH.technical, date].filter(Boolean).join(' · '),
-      kind: 'tech',
+    const techText = [MARKET_ROW_TEXTS_ZH.technical, date].filter(Boolean).join(' · ')
+    if (!(suggestion?.agent_label || suggestion?.created_at)) {
+      return { techText, aiText: null }
     }
+    const time = suggestionTimeText(suggestion.created_at)
+    let aiText = [sourceAgentLabel(suggestion.agent_label), time].filter(Boolean).join(' · ')
+    if (suggestion.is_expired) aiText += MARKET_ROW_TEXTS_ZH.expired
+    return { techText, aiText }
   }
 
   /**
@@ -1917,12 +1931,12 @@ export default function StocksPage() {
   const renderMarketIndicator = (row: MarketRow) => {
     const { suggestion } = getSuggestionForStock(row.code, 'CN')
     const kline = rowSummary(row)
-    const hint = rowSourceHint(row)
+    const hint = rowSourceHints(row)
     if (!suggestion && !kline) {
       return (
         <span
           className="text-[11px] text-muted-foreground/70"
-          title={[FORK_ANALYSIS_TEXTS_ZH.indicatorEmptyHint, hint.text]
+          title={[FORK_ANALYSIS_TEXTS_ZH.indicatorEmptyHint, hint.techText, hint.aiText]
             .filter(Boolean)
             .join('\n')}
         >
@@ -1942,8 +1956,8 @@ export default function StocksPage() {
         market="CN"
         hasPosition={false}
         klineTr={klineTr}
-        technicalHint={hint.kind === 'tech' ? hint.text : null}
-        aiHint={hint.kind === 'ai' ? hint.text : null}
+        technicalHint={hint.techText}
+        aiHint={hint.aiText}
         onOpenKline={() => openMarketKline(row)}
       />
     )
@@ -3068,6 +3082,7 @@ export default function StocksPage() {
               renderTradeStatus={renderMarketTradeStatus}
               renderSource={renderMarketSource}
               renderActions={renderMarketActions}
+              predictRanks={predictRankMap}
             />
           ) : (
             <>

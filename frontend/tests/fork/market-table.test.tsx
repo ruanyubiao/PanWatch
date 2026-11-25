@@ -10,7 +10,7 @@ vi.mock('@panwatch/api', () => ({ fetchAPI: vi.fn() }))
 
 /**
  * fork 分析页的行表格。这里钉住用户明确要求过的事：
- *   1. 列的**顺序与名称**（市场 代码 名称 昨收价 现价 涨跌 最高价 最低价 成交量 成交额 换手率 总市值 状态 指标 模型预测 操作）
+ *   1. 列的**顺序与名称**（市场 代码 名称 昨收价 现价 涨跌 最高价 最低价 成交量 成交额 换手率 总市值 状态 模型预测 指标 操作）
  *   2. 数据**只**来自 /stocks/market-table —— 再也不发 /quotes/batch 与
  *      /klines/summary/batch（那两条就是「查外网次数太多被屏蔽」的元凶）
  *   3. 市场列只出 沪/深/北
@@ -192,8 +192,8 @@ describe('fork: 分析页全市场表格', () => {
       '换手率',
       '总市值',
       '状态',
-      '指标',
       '模型预测',
+      '指标',
       '操作',
     ])
   })
@@ -305,13 +305,16 @@ describe('fork: 分析页全市场表格', () => {
     expect(widthOf('换手率')).toBe('68px')
     expect(widthOf('总市值')).toBe('88px')
     expect(widthOf('状态')).toBe('48px')
-    // 指标列 140；操作列 220 → 252（fork 的「深度分析2」图标再占一颗）
+    // 指标列 140；模型预测 220 → 104（自己收窄并挪到指标前面）；操作列 252
     expect(widthOf('指标')).toBe('140px')
+    expect(widthOf('模型预测')).toBe('104px')
     expect(widthOf('操作')).toBe('252px')
     expect(headers).not.toContain('Agent 状态')
+    // 顺序：模型预测紧跟在数据之后、指标前面（用户 2026-11-25 要求挪到指标列前）
+    expect(headers.indexOf('模型预测')).toBe(headers.indexOf('指标') - 1)
 
-    // 表宽 = 各列之和 1494（1474 + 模型预测列「来源」200 → 220）
-    expect(table.className).toContain('min-w-[1494px]')
+    // 表宽 = 各列之和 1378（1494 − 模型预测 220 + 104）
+    expect(table.className).toContain('min-w-[1378px]')
 
     // 市场～总市值不再留 minWidth（否则浏览器会按内容撑开，固定宽失效）
     const cols = table.querySelectorAll('colgroup col')
@@ -319,9 +322,12 @@ describe('fork: 分析页全市场表格', () => {
       expect((cols[headers.indexOf(label)] as HTMLElement).style.minWidth).toBe('')
     }
 
-    // 指标列前面 20px 间距（表头与单元格共用 paddingLeft，否则对不齐）
+    // 指标列前面 12px 间距（表头与单元格共用 paddingLeft，否则对不齐）
     const indicatorHeader = within(table).getAllByRole('columnheader')[headers.indexOf('指标')]
-    expect((indicatorHeader as HTMLElement).style.paddingLeft).toBe('20px')
+    expect((indicatorHeader as HTMLElement).style.paddingLeft).toBe('12px')
+    // 模型预测列前面 18px：与「状态」标签拉开距离（它现在紧跟状态列）
+    const sourceHeader = within(table).getAllByRole('columnheader')[headers.indexOf('模型预测')]
+    expect((sourceHeader as HTMLElement).style.paddingLeft).toBe('18px')
     // 名称列收窄到 60 后左右内边距改成 4px，否则四字名会被截成省略号
     const nameHeader = within(table).getAllByRole('columnheader')[headers.indexOf('名称')]
     expect((nameHeader as HTMLElement).style.paddingLeft).toBe('4px')
@@ -656,6 +662,48 @@ describe('fork: 分析页全市场表格', () => {
     // 数值列：涨跌降序
     await userEvent.click(screen.getByRole('button', { name: '按涨跌排序' }))
     await waitFor(() => expect(codesInOrder()).toEqual(['600519', '920000', '000001']))
+  })
+
+  it('表头点击排序：「模型预测」列按名次排，没有预测的票恒排最后', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable({ predictRanks: { '600519': 5, '000001': 900, '920000': 1500 } })
+
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    expect(codesInOrder()).toEqual(['000001', '600519', '920000'])
+
+    // 第一次点「模型预测」→ 名次降序（名次大的在前：1500 → 900 → 5）
+    await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
+    await waitFor(() => expect(codesInOrder()).toEqual(['920000', '000001', '600519']))
+
+    // 再点一次 → 名次升序（5 最前 —— 名次 1 才是模型最看好）
+    await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
+    await waitFor(() => expect(codesInOrder()).toEqual(['600519', '000001', '920000']))
+
+    // 再点一次 → 取消排序，回到接口原始顺序
+    await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
+    await waitFor(() => expect(codesInOrder()).toEqual(['000001', '600519', '920000']))
+  })
+
+  it('「模型预测」列：没有预测的票在升/降序里都排最后，不混进头名', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    // 920000 当天没有预测（不在 map 里）
+    renderTable({ predictRanks: { '600519': 5, '000001': 900 } })
+
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
+    await waitFor(() => expect(codesInOrder()).toEqual(['000001', '600519', '920000']))
+
+    await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
+    await waitFor(() => expect(codesInOrder()).toEqual(['600519', '000001', '920000']))
+  })
+
+  it('「模型预测」列：整张 map 缺失（当天没跑推理）时排序不报错，退回按代码排', async () => {
+    vi.mocked(fetchAPI).mockResolvedValue(response())
+    renderTable()
+
+    await waitFor(() => expect(screen.getByText('贵州茅台')).toBeTruthy())
+    await userEvent.click(screen.getByRole('button', { name: '按模型预测排序' }))
+    await waitFor(() => expect(codesInOrder()).toEqual(['000001', '600519', '920000']))
   })
 
   it('搜索走 Everything 语法，匹配「代码 + 名称」', async () => {

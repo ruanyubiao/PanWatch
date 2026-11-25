@@ -69,13 +69,26 @@ describe('fork: 分析页工具条按钮顺序', () => {
     // 没有预测时给「—」，不是 0
     expect(cell).toContain('predictNone')
 
-    // 来源那行改挂到「指标」列徽章的悬停提示：技术面那行→技术面徽章，AI 那行→AI 徽章
-    const hintStart = source.indexOf('const rowSourceHint')
+    // 来源那行改挂到「指标」列徽章的悬停提示（2026-11-25 起：两条同时给，不再二选一）
+    const hintStart = source.indexOf('const rowSourceHints')
     const indicatorStart = source.indexOf('const renderMarketIndicator')
     expect(hintStart).toBeGreaterThan(-1)
-    expect(source.slice(hintStart, indicatorStart)).toContain("kind: 'ai'")
+    const hintBody = source.slice(hintStart, indicatorStart)
+    expect(hintBody).toContain('techText')
+    expect(hintBody).toContain('aiText')
+    expect(hintBody).not.toContain("kind: 'ai'")
     const indicator = source.slice(indicatorStart, source.indexOf('const renderMarketTradeStatus'))
-    expect(indicator).toContain("technicalHint={hint.kind === 'tech' ? hint.text : null}")
-    expect(indicator).toContain("aiHint={hint.kind === 'ai' ? hint.text : null}")
+    // 技术面那行**永远**传（有 AI 建议时也不能漏 —— 用户 2026-11-25 指出过）
+    expect(indicator).toContain('technicalHint={hint.techText}')
+    expect(indicator).toContain('aiHint={hint.aiText}')
+  })
+
+  it('「模型预测」列按名次排序：表格拿到 predictRanks，页面不再自己排序', async () => {
+    const source = await readSource()
+    expect(source).toContain('predictRanks={predictRankMap}')
+    // 排序值由页面把预测接口的 map 转一次，表格组件不认识预测接口
+    const mapStart = source.indexOf('const predictRankMap')
+    expect(mapStart).toBeGreaterThan(-1)
+    expect(source.slice(mapStart, mapStart + 400)).toContain('item.rank_no')
   })
 })
